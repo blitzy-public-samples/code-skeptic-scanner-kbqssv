@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: [3.9]
+        node-version: [16.x]
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Set up Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v2
+      with:
+        node-version: ${{ matrix.node-version }}
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Install Node.js dependencies
+      run: |
+        npm ci
+
+    - name: Run backend linting and type checking
+      run: |
+        flake8 .
+        mypy .
+
+    - name: Run frontend linting
+      run: |
+        npm run lint
+
+    - name: Run backend tests
+      run: |
+        pytest --cov=./ --cov-report=xml
+
+    - name: Run frontend tests
+      run: |
+        npm test -- --coverage
+
+    - name: Upload backend coverage to Codecov
+      uses: codecov/codecov-action@v1
+      with:
+        file: ./coverage.xml
+        flags: backend
+
+    - name: Upload frontend coverage to Codecov
+      uses: codecov/codecov-action@v1
+      with:
+        file: ./coverage/coverage-final.json
+        flags: frontend
+
+# HUMAN ASSISTANCE NEEDED
+# Please review the following:
+# 1. Ensure that the Python and Node.js versions are appropriate for your project.
+# 2. Verify that the file paths for requirements.txt, test files, and coverage reports are correct.
+# 3. Confirm that the linting, type checking, and testing commands match your project's setup.
+# 4. Check if additional environment variables or secrets are needed for the workflow.
