@@ -1,0 +1,75 @@
+// TwitterAPISettings.tsx
+import React, { useState } from 'react';
+import { updateTwitterAPIConfig } from '@/services/configService';
+
+const TwitterAPISettings: React.FC = () => {
+  const [apiKey, setApiKey] = useState('');
+  const [apiSecret, setApiSecret] = useState('');
+  const [accessToken, setAccessToken] = useState('');
+  const [accessTokenSecret, setAccessTokenSecret] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await updateTwitterAPIConfig({
+        apiKey,
+        apiSecret,
+        accessToken,
+        accessTokenSecret,
+      });
+      alert('Twitter API settings updated successfully');
+    } catch (error) {
+      console.error('Error updating Twitter API settings:', error);
+      alert('Failed to update Twitter API settings');
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <h2>Twitter API Settings</h2>
+      <div>
+        <label htmlFor="apiKey">API Key:</label>
+        <input
+          type="text"
+          id="apiKey"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          required
+        />
+      </div>
+      <div>
+        <label htmlFor="apiSecret">API Secret:</label>
+        <input
+          type="password"
+          id="apiSecret"
+          value={apiSecret}
+          onChange={(e) => setApiSecret(e.target.value)}
+          required
+        />
+      </div>
+      <div>
+        <label htmlFor="accessToken">Access Token:</label>
+        <input
+          type="text"
+          id="accessToken"
+          value={accessToken}
+          onChange={(e) => setAccessToken(e.target.value)}
+          required
+        />
+      </div>
+      <div>
+        <label htmlFor="accessTokenSecret">Access Token Secret:</label>
+        <input
+          type="password"
+          id="accessTokenSecret"
+          value={accessTokenSecret}
+          onChange={(e) => setAccessTokenSecret(e.target.value)}
+          required
+        />
+      </div>
+      <button type="submit">Save Twitter API Settings</button>
+    </form>
+  );
+};
+
+export default TwitterAPISettings;
