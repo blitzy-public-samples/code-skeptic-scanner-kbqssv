@@ -1,0 +1,39 @@
+import React, { useEffect, useState } from 'react';
+import { getLatestTweets } from '@/services/twitterService';
+import { TweetCard } from '@/components/TweetManagement';
+
+const RealTimeFeed: React.FC = () => {
+  const [tweets, setTweets] = useState<any[]>([]);
+
+  useEffect(() => {
+    const fetchTweets = async () => {
+      const latestTweets = await getLatestTweets();
+      setTweets(latestTweets);
+    };
+
+    fetchTweets();
+
+    const interval = setInterval(fetchTweets, 30000); // Update every 30 seconds
+
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="real-time-feed">
+      <h2>Real-Time Tweet Feed</h2>
+      {tweets.map((tweet) => (
+        <TweetCard key={tweet.id} tweet={tweet} />
+      ))}
+    </div>
+  );
+};
+
+// HUMAN ASSISTANCE NEEDED
+// The following areas may need improvement:
+// 1. Error handling for API calls
+// 2. Loading state management
+// 3. Pagination or infinite scrolling for large number of tweets
+// 4. Proper typing for the tweet data structure
+// 5. Accessibility improvements
+
+export default RealTimeFeed;
