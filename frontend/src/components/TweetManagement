@@ -1,0 +1,65 @@
+import React, { useState, useEffect } from 'react';
+import { getTweets } from '@/services/twitterService';
+import { TweetCard } from '@/components/TweetManagement';
+
+interface Tweet {
+  id: string;
+  content: string;
+  // Add other tweet properties as needed
+}
+
+interface TweetListProps {
+  filters: {
+    // Add filter properties as needed
+  };
+}
+
+export const TweetList: React.FC<TweetListProps> = ({ filters }) => {
+  const [tweets, setTweets] = useState<Tweet[]>([]);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(false);
+
+  // HUMAN ASSISTANCE NEEDED
+  // The following useEffect hook and fetchTweets function may need adjustments
+  // based on the actual implementation of the getTweets service and pagination logic
+  useEffect(() => {
+    fetchTweets();
+  }, [filters, page]);
+
+  const fetchTweets = async () => {
+    setLoading(true);
+    try {
+      const newTweets = await getTweets(filters, page);
+      setTweets(prevTweets => [...prevTweets, ...newTweets]);
+    } catch (error) {
+      console.error('Error fetching tweets:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // HUMAN ASSISTANCE NEEDED
+  // Implement proper infinite scrolling logic
+  const handleScroll = () => {
+    if (
+      window.innerHeight + document.documentElement.scrollTop ===
+      document.documentElement.offsetHeight
+    ) {
+      setPage(prevPage => prevPage + 1);
+    }
+  };
+
+  useEffect(() => {
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  return (
+    <div className="tweet-list">
+      {tweets.map(tweet => (
+        <TweetCard key={tweet.id} tweet={tweet} />
+      ))}
+      {loading && <div>Loading...</div>}
+    </div>
+  );
+};
