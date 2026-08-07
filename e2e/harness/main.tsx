@@ -1,35 +1,43 @@
 /**
- * Entry point for the Playwright end-to-end harness.
+ * Entry module of the Playwright end-to-end harness, loaded by
+ * `e2e/harness/index.html` as `/main.tsx`.
  *
- * Declares its own route table over the real component modules in
- * `frontend/src/components`, mirroring the four routes that
- * `frontend/src/app.tsx` declares at lines 20-23.
+ * Mounts the four routed component modules of `frontend/src/components` into the
+ * `#root` element, under a Redux store built from the two `frontend/src/store`
+ * slice reducers and a `BrowserRouter`. `e2e/vite.harness.config.ts` supplies
+ * module resolution for every specifier below.
  *
- * `frontend/src/app.tsx` is deliberately not mounted: it imports `store` from
- * `@/store`, whose reducer is invalid, imports a `setupInterceptors` symbol that
- * `frontend/src/services/api.ts` never exports, and default-imports
- * `TweetManagement`, which has only a named export. The store below is built from
- * the slices' own default reducers instead.
- *
- * Resolution of the extension-less component files and of the specifiers that
- * have no implementation is handled by `e2e/vite.harness.config.ts`.
+ * Adding a route takes one `<Route>` entry in the block at the bottom of this
+ * file; `e2e/README.md` covers the harness end to end.
  */
 
-import React from 'react';
-import ReactDOM from 'react-dom/client';
+import { createRoot } from 'react-dom/client';
 import { Provider } from 'react-redux';
+import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import { configureStore } from '@reduxjs/toolkit';
-import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
+
+import tweetReducer from '@/store/tweetSlice';
+import configReducer from '@/store/configSlice';
 
 import RealTimeFeed from '@/components/Dashboard';
 import { TweetList } from '@/components/TweetManagement';
 import TrendCharts from '@/components/Analytics';
 import TwitterAPISettings from '@/components/Configuration';
 
-import tweetReducer from '@/store/tweetSlice';
-import configReducer from '@/store/configSlice';
+/** Shape of the `dateRange` prop that `@/components/Analytics` requires. */
+interface DateRange {
+  startDate: string;
+  endDate: string;
+}
 
-/** Valid store over the two slices' default reducers. */
+// stable props identities
+const EMPTY_FILTERS = {};
+const ANALYTICS_DATE_RANGE: DateRange = {
+  startDate: '2024-01-01',
+  endDate: '2024-01-31',
+};
+
+// store
 const store = configureStore({
   reducer: {
     tweets: tweetReducer,
@@ -37,41 +45,22 @@ const store = configureStore({
   },
 });
 
-/**
- * `frontend/src/components/Analytics` requires a `dateRange` prop and reads both
- * members. Fixed values keep the rendered output identical on every run.
- */
-const DATE_RANGE = { startDate: '2024-01-01', endDate: '2024-01-31' };
-
-/** `frontend/src/components/TweetManagement` requires a `filters` prop. */
-const FILTERS = {};
-
-function Harness(): JSX.Element {
-  return (
-    <Provider store={store}>
-      <BrowserRouter>
-        <nav data-testid="harness-nav">
-          <Link to="/">Dashboard</Link>
-          <Link to="/tweets">Tweets</Link>
-          <Link to="/analytics">Analytics</Link>
-          <Link to="/configuration">Configuration</Link>
-        </nav>
-        <main data-testid="harness-outlet">
-          <Routes>
-            <Route path="/" element={<RealTimeFeed />} />
-            <Route path="/tweets" element={<TweetList filters={FILTERS} />} />
-            <Route path="/analytics" element={<TrendCharts dateRange={DATE_RANGE} />} />
-            <Route path="/configuration" element={<TwitterAPISettings />} />
-          </Routes>
-        </main>
-      </BrowserRouter>
-    </Provider>
-  );
+// root element
+const rootElement = document.getElementById('root');
+if (rootElement === null) {
+  throw new Error('e2e/harness/index.html must provide an element with id "root"');
 }
 
-const container = document.getElementById('root');
-if (container === null) {
-  throw new Error('harness/index.html must provide an element with id "root"');
-}
-
-ReactDOM.createRoot(container).render(<Harness />);
+// mount
+createRoot(rootElement).render(
+  <Provider store={store}>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<RealTimeFeed />} />
+        <Route path="/tweets" element={<TweetList filters={EMPTY_FILTERS} />} />
+        <Route path="/analytics" element={<TrendCharts dateRange={ANALYTICS_DATE_RANGE} />} />
+        <Route path="/configuration" element={<TwitterAPISettings />} />
+      </Routes>
+    </BrowserRouter>
+  </Provider>,
+);
