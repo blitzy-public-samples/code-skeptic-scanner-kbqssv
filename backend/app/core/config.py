@@ -19,10 +19,10 @@ class Settings(BaseSettings):
     BIGQUERY_DATASET: str
     DOUBT_RATING_THRESHOLD: float = 0.7
     POPULARITY_THRESHOLD: int = 100
-    ALLOWED_ORIGINS: List[str] = []  # TESTING: read by configure_cors
-    ALGORITHM: str = "HS256"  # TESTING: read by create_access_token
-    PROJECT_ID: str = ""  # TESTING: read by firestore.get_db
-    TWITTER_TRACK_KEYWORDS: List[str] = []  # TESTING: read by stream starters
+    ALLOWED_ORIGINS: List[str] = []  # TESTING: undeclared setting
+    ALGORITHM: str = "HS256"  # TESTING: undeclared setting
+    PROJECT_ID: str = ""  # TESTING: undeclared setting
+    TWITTER_TRACK_KEYWORDS: List[str] = []  # TESTING: undeclared setting
 
     class Config:
         env_file = ".env"

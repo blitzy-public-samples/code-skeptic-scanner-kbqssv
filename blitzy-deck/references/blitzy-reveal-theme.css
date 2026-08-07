@@ -2,6 +2,7 @@
    Blitzy reveal.js theme - canonical reference stylesheet
 
    Block 1  Design tokens
+   Block 1b Derived tokens
    Block 2  Base reveal.js typography and layout
    Block 3  Slide types
    Block 4  Components
@@ -39,6 +40,26 @@
   --gradient-hero: linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%);
   --gradient-divider: linear-gradient(135deg, #2D1C77 0%, #5B39F3 100%);
   --gradient-accent-bar: linear-gradient(90deg, #5B39F3 0%, #94FAD5 100%);
+}
+
+
+/* --------------------------------------------------------------------------
+   Block 1b - Derived tokens
+
+   Further properties used by Blocks 2-6. The Block 1 set above is unchanged.
+
+   --blitzy-text-muted-accessible  readable secondary text: eyebrow, KPI label
+                                   and table caption. Measures 6.39:1 on
+                                   --blitzy-surface-0 and 5.68:1 on
+                                   --blitzy-surface-2, against the WCAG 2.1 AA
+                                   minimum of 4.5:1 for normal text.
+   --blitzy-text-muted             Block 1, decorative and non-text use.
+   --blitzy-shadow-card            elevation of .kpi-card.
+   -------------------------------------------------------------------------- */
+
+:root {
+  --blitzy-text-muted-accessible: #5F5F5F;
+  --blitzy-shadow-card: 0 12px 30px rgba(0, 0, 0, 0.06);
 }
 
 
@@ -255,6 +276,16 @@
   color: var(--blitzy-primary);
 }
 
+/* Keyboard focus indicator for the navigation arrows, which reveal.js renders
+   with `outline: 0`. */
+
+.reveal .controls button:focus-visible {
+  outline: 4px solid var(--blitzy-primary-deep);
+  outline-offset: 4px;
+  border-radius: 8px;
+  box-shadow: 0 0 0 4px var(--blitzy-surface-0);
+}
+
 .reveal .progress {
   color: var(--blitzy-primary);
   background: var(--blitzy-border);
@@ -285,11 +316,13 @@
 
 /* Shared full-bleed frame and inverted text */
 
+/* `display` is declared only on the `.present` rule below; reveal.js controls
+   slide visibility. */
+
 .reveal .slides section.slide-title,
 .reveal .slides section.slide-divider,
 .reveal .slides section.slide-closing {
   box-sizing: border-box;
-  display: flex;
   flex-direction: column;
   width: 100%;
   min-height: 1080px;
@@ -519,7 +552,7 @@
   line-height: 1.3;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--blitzy-text-muted);
+  color: var(--blitzy-text-muted-accessible);
   margin: 0 0 20px;
 }
 
@@ -550,7 +583,7 @@
   background: var(--blitzy-surface-2);
   border: 2px solid var(--blitzy-border-soft);
   border-radius: 20px;
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.06);
+  box-shadow: var(--blitzy-shadow-card);
 }
 
 .reveal .slides section .kpi-card::before {
@@ -576,7 +609,7 @@
   line-height: 1.35;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--blitzy-text-muted);
+  color: var(--blitzy-text-muted-accessible);
   margin: 0;
 }
 
@@ -820,7 +853,7 @@
   font-weight: 500;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--blitzy-text-muted);
+  color: var(--blitzy-text-muted-accessible);
   text-align: left;
   padding: 0 0 14px;
 }
@@ -874,4 +907,3 @@
   font-size: 34px;
   letter-spacing: -0.01em;
 }
-

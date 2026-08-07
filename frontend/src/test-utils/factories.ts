@@ -1,68 +1,83 @@
 /**
- * Fixture builders for the frontend Jest suite.
+ * Fixture builders for the frontend Jest suite: the single definition point for
+ * the tweet and user test data the colocated suites consume.
  *
- * This module is the single definition point for the tweet and user test data
- * consumed by the colocated `*.test.ts` and `*.test.tsx` suites. It provides:
+ * Each builder applies its optional `overrides` last and returns a new object whose `Date`, array and
+ * nested-object members are fresh instances - including the ones supplied through `overrides`, which are
+ * copied rather than aliased. Nothing this module exports is a shared mutable value.
  *
- * - `makeTweet` - the ten-field `Tweet` declared by `src/schema/tweetSchema.ts`.
- * - `makeUser` - the five-field `User` declared by `src/schema/userSchema.ts`.
- * - `makeFeedTweet` - the separate `{ id, text }` shape that the tweet list
- *   components render and key on.
- * - `FIXED_TWEET_TIMESTAMP` and `FIXED_USER_CREATED_AT` - the fixed instants the
- *   builders emit, available for suites to assert against.
- *
- * Every builder takes an optional `overrides` object that is applied last, and
- * returns a new object whose `Date` and array members are fresh instances on
- * every call.
- *
- * `src/schema/tweetSchema.test.ts` and `src/schema/userSchema.test.ts` parse
- * `makeTweet()` and `makeUser()` through the real zod schemas.
- *
- * Usage and the wider frontend testing conventions: `frontend/TESTING.md`.
- * Recorded design decisions: `docs/testing/DECISION-LOG.md`.
+ * `FIXED_TWEET_TIMESTAMP` and `FIXED_USER_CREATED_AT` are the ISO-8601 literals the builders emit, as
+ * immutable strings; `fixedTweetTimestamp()` and `fixedUserCreatedAt()` return those instants as `Date`s.
  */
 
 import type { Tweet } from '../schema/tweetSchema';
 import type { User } from '../schema/userSchema';
 
-/**
- * ISO-8601 instant backing every `Tweet.timestamp` produced by this module.
- */
-const TWEET_TIMESTAMP_ISO = '2024-01-15T12:00:00.000Z';
+/** ISO-8601 literal behind every `Tweet.timestamp` this module produces; a primitive, so it cannot be mutated. */
+export const FIXED_TWEET_TIMESTAMP = '2024-01-15T12:00:00.000Z';
 
-/**
- * ISO-8601 instant backing every `User.created_at` produced by this module.
- */
-const USER_CREATED_AT_ISO = '2023-06-01T08:30:00.000Z';
+/** ISO-8601 literal behind every `User.created_at` this module produces, on the same terms. */
+export const FIXED_USER_CREATED_AT = '2023-06-01T08:30:00.000Z';
 
-/**
- * Body text carried by both tweet fixtures, so the two shapes describe the
- * same notional tweet.
- */
 const TWEET_TEXT = 'Not convinced AI coding assistants actually save anyone time.';
 
 /**
- * The `timestamp` carried by `makeTweet()` when it is not overridden.
+ * The `timestamp` `makeTweet()` emits when it is not overridden.
  *
- * Suites compare against this constant. Each call to `makeTweet()` rebuilds its
- * own `Date` from the underlying literal, so this instance is never handed out
- * and cannot be mutated through a fixture.
+ * @returns A new `Date` at {@link FIXED_TWEET_TIMESTAMP} on every call.
  */
-export const FIXED_TWEET_TIMESTAMP = new Date(TWEET_TIMESTAMP_ISO);
+export function fixedTweetTimestamp(): Date {
+  return new Date(FIXED_TWEET_TIMESTAMP);
+}
 
 /**
- * The `created_at` carried by `makeUser()` when it is not overridden.
+ * The `created_at` `makeUser()` emits when it is not overridden.
  *
- * As with `FIXED_TWEET_TIMESTAMP`, `makeUser()` rebuilds its own `Date` and
- * never hands out this instance.
+ * @returns A new `Date` at {@link FIXED_USER_CREATED_AT} on every call.
  */
-export const FIXED_USER_CREATED_AT = new Date(USER_CREATED_AT_ISO);
+export function fixedUserCreatedAt(): Date {
+  return new Date(FIXED_USER_CREATED_AT);
+}
 
 /**
- * The tweet shape rendered by the feed and list components, which key on `id`.
- *
- * Distinct from the `Tweet` of `src/schema/tweetSchema.ts`, which declares no
- * `id` field. The two shapes are not interchangeable.
+ * A deep copy of one fixture member. `Date` objects and arrays are rebuilt and plain objects are rebuilt
+ * member by member; primitives, `null` and anything with a non-plain prototype are returned unchanged, which
+ * leaves a non-`Date` override intact.
+ */
+function cloneMember(value: unknown): unknown {
+  if (value instanceof Date) {
+    return new Date(value.getTime());
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(cloneMember);
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype === Object.prototype || prototype === null) {
+      return cloneFixture(value as Record<string, unknown>);
+    }
+  }
+
+  return value;
+}
+
+/**
+ * A fixture whose every member is a fresh instance. Each builder passes its base-plus-overrides object
+ * through here, so a `Date` or array handed in through `overrides` is copied rather than aliased.
+ */
+function cloneFixture<T extends object>(fixture: T): T {
+  const cloned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fixture)) {
+    cloned[key] = cloneMember(value);
+  }
+  return cloned as T;
+}
+
+/**
+ * The shape the feed and list components render and key on. The schema `Tweet`
+ * declares no `id`, so the two shapes are not interchangeable.
  */
 export interface FeedTweet {
   id: string;
@@ -70,22 +85,20 @@ export interface FeedTweet {
 }
 
 /**
- * Builds a `Tweet` that satisfies `tweetSchema` in full.
+ * Builds a `Tweet` that satisfies `tweetSchema` in full. `timestamp` is a real
+ * `Date`, which the schema requires and an ISO string cannot satisfy, and
+ * `quoted_tweet_id` is always present because the field is nullable rather than
+ * optional: `null` is accepted, an absent key is not.
  *
- * All ten fields are populated. `quoted_tweet_id` is always present because the
- * schema field is nullable rather than optional: `null` is accepted, an absent
- * key is not. `timestamp` is a real `Date`, which the schema requires; an
- * ISO string in its place is rejected.
- *
- * @param overrides - Fields to replace on the returned tweet.
- * @returns A schema-valid `Tweet` with fresh `Date` and array members.
+ * @param overrides - Fields to replace on the returned tweet; any `Date` or array supplied here is copied.
+ * @returns A schema-valid `Tweet` whose every `Date` and array member is a fresh instance.
  */
 export function makeTweet(overrides: Partial<Tweet> = {}): Tweet {
-  return {
+  return cloneFixture({
     tweet_id: 'tweet-1',
     content: TWEET_TEXT,
     user_id: 'user-1',
-    timestamp: new Date(TWEET_TIMESTAMP_ISO),
+    timestamp: fixedTweetTimestamp(),
     likes_count: 42,
     retweets_count: 7,
     doubt_rating: 0.8,
@@ -93,44 +106,37 @@ export function makeTweet(overrides: Partial<Tweet> = {}): Tweet {
     media_urls: [],
     quoted_tweet_id: null,
     ...overrides,
-  };
+  });
 }
 
 /**
- * Builds a `User` that satisfies `userSchema` in full.
+ * Builds a `User` that satisfies `userSchema` in full, with `created_at` a real
+ * `Date`. Its `user_id` matches the `user_id` of `makeTweet()`, so the two
+ * fixtures pair without either being overridden.
  *
- * All five fields are populated, and `created_at` is a real `Date` as the schema
- * requires. `user_id` matches the `user_id` of `makeTweet()`, so a suite can pair
- * the two fixtures without overriding either.
- *
- * @param overrides - Fields to replace on the returned user.
+ * @param overrides - Fields to replace on the returned user; a `Date` supplied here is copied.
  * @returns A schema-valid `User` with a fresh `created_at` instance.
  */
 export function makeUser(overrides: Partial<User> = {}): User {
-  return {
+  return cloneFixture({
     user_id: 'user-1',
     username: 'skeptic_dev',
     display_name: 'Skeptic Dev',
     followers_count: 1234,
-    created_at: new Date(USER_CREATED_AT_ISO),
+    created_at: fixedUserCreatedAt(),
     ...overrides,
-  };
+  });
 }
 
 /**
- * Builds a `FeedTweet`, the `{ id, text }` shape the tweet list components
- * render.
- *
- * The schema `Tweet` declares no `id`, so a fixture for one shape never
- * satisfies the other.
+ * Builds a {@link FeedTweet} carrying a stable synthetic `id` and `text`, freshly allocated on every call.
  *
  * @param overrides - Fields to replace on the returned feed tweet.
- * @returns A `FeedTweet` carrying a stable synthetic `id` and `text`.
  */
 export function makeFeedTweet(overrides: Partial<FeedTweet> = {}): FeedTweet {
-  return {
+  return cloneFixture({
     id: 'feed-tweet-1',
     text: TWEET_TEXT,
     ...overrides,
-  };
+  });
 }

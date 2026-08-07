@@ -5,10 +5,7 @@
  * entirely by `e2e/harness`. Nothing under `frontend/` or `backend/` is created,
  * modified or renamed; those files are read only for their source text.
  *
- * Dev-server only. Playwright's `webServer` runs `vite`, never `vite build`.
- *
- * Rationale for every decision in this file is recorded in
- * `docs/testing/DECISION-LOG.md`.
+ * Configures the dev server only: it declares no `build` options.
  */
 
 import fs from 'node:fs';
@@ -20,11 +17,7 @@ import react from '@vitejs/plugin-react';
 /* Paths                                                                      */
 /* -------------------------------------------------------------------------- */
 
-/**
- * `e2e/package.json` declares no `type`, so Vite bundles this config to CJS and
- * `__dirname` is defined. Every path below derives from `__dirname`; none reads
- * `process.cwd()`.
- */
+/** Every path below derives from `__dirname`; none reads `process.cwd()`. */
 const HERE = __dirname;
 const REPO_ROOT = path.resolve(HERE, '..');
 const FRONTEND = path.join(REPO_ROOT, 'frontend');
@@ -32,6 +25,7 @@ const FRONTEND_SRC = path.join(FRONTEND, 'src');
 const FRONTEND_MODULES = path.join(FRONTEND, 'node_modules');
 const HARNESS = path.join(HERE, 'harness');
 const STUBS = path.join(HARNESS, 'stubs');
+const CACHE_DIR = path.join(HERE, 'node_modules', '.vite');
 
 /* -------------------------------------------------------------------------- */
 /* Module tables                                                              */
@@ -39,9 +33,8 @@ const STUBS = path.join(HARNESS, 'stubs');
 
 /**
  * Component modules that exist on disk as extension-less FILES, not directories.
- * No loader can be inferred from their path.
  *
- * To extend the harness with another such component, add its file name here.
+ * Add a file name to extend the harness.
  */
 const EXTENSIONLESS_COMPONENTS = [
   'Dashboard',
@@ -51,14 +44,13 @@ const EXTENSIONLESS_COMPONENTS = [
 ] as const;
 
 /**
- * Module specifiers the frontend imports that have no implementation anywhere in
- * the repository, mapped to their stand-ins under `e2e/harness/stubs`.
+ * Module specifiers with no implementation in the repository, mapped to their
+ * stand-ins under `e2e/harness/stubs`.
  *
- * Keys are paths under `frontend/src` without an extension. Each redirect is
- * applied only while the real module is absent.
+ * Keys are paths under `frontend/src` without an extension. Each redirect applies
+ * only while the real module is absent.
  *
- * To stub another missing module, add one entry here and create the matching
- * file under `e2e/harness/stubs`.
+ * Add an entry plus the matching file under `e2e/harness/stubs` to extend.
  */
 const STUB_MODULES: Record<string, string> = {
   'services/analyticsService': 'analyticsService.ts',
@@ -70,15 +62,19 @@ const STUB_MODULES: Record<string, string> = {
  * Named exports the frontend imports but never declares. Each entry is appended
  * to the end of the real module's source text; nothing in that text is rewritten.
  *
+ * A missing named export is a link-time error under native ESM, so every entry
+ * here exists to let the importing module load. Each value is `undefined`, which
+ * is the value the same import already has under Jest and CommonJS, so the
+ * importer reaches the same branch in the harness as it does everywhere else.
+ *
  * Keys are paths under `frontend/src` without an extension. Values map an export
  * name to an expression evaluated in that module's own scope.
  *
- * To supply another missing binding, add one entry here.
+ * Add an entry to extend.
  */
 const COMPAT_EXPORTS: Record<string, Record<string, string>> = {
   'services/api': {
-    api: 'axios',
-    setupInterceptors: '() => {}',
+    api: 'undefined',
   },
   'services/twitterService': {
     getTweets: 'undefined',
@@ -89,11 +85,9 @@ const COMPAT_EXPORTS: Record<string, Record<string, string>> = {
 };
 
 /**
- * Bare specifiers the frontend imports that no installed package provides,
- * mapped to paths under `frontend/src`.
- *
- * This table is the single source of truth for both the resolver below and the
- * matching `resolve.alias` entries.
+ * Bare specifiers no installed package provides, mapped to paths under
+ * `frontend/src`. Drives the resolver below and the matching `resolve.alias`
+ * entries.
  */
 const BARE_MODULE_SPECIFIERS: Record<string, string> = {
   'app/services/api': 'services/api',
@@ -103,14 +97,12 @@ const BARE_MODULE_SPECIFIERS: Record<string, string> = {
 
 /**
  * Runtime packages the harness graph imports. Each is pinned to an absolute path
- * under `frontend/node_modules`, which is the only copy of them on disk.
+ * under `frontend/node_modules`, which is the harness's canonical resolution
+ * location for them.
  *
- * This table drives both `resolve.alias` and `optimizeDeps.include`.
+ * Ordered longest specifier first; `resolve.alias` matches in order.
  *
- * Ordered longest specifier first: a shorter package name would otherwise claim a
- * longer one's subpath.
- *
- * To add a runtime dependency to the harness, add one entry here.
+ * Add an entry to extend.
  */
 const FRONTEND_PACKAGES = [
   'react-dom/client',
@@ -134,13 +126,54 @@ const DEDUPED_PACKAGES = [
   '@reduxjs/toolkit',
 ] as const;
 
+/* -------------------------------------------------------------------------- */
+/* Dev-server file access                                                     */
+/* -------------------------------------------------------------------------- */
+
 /**
- * esbuild TypeScript options, serialised to a string.
+ * The only directories this dev server may read over `/@fs/`: the harness itself,
+ * which contains `harness/stubs`; the pre-bundle cache, from which the optimised
+ * deps are served; and the frontend sources and package tree the aliases resolve
+ * to. Vite adds its own client directory by itself, and the cache directory is not
+ * auto-allowed.
  *
- * Vite skips its own tsconfig lookup entirely when `tsconfigRaw` is a string, and
- * performs it for every `ts`/`tsx` loader when it is an object. The string form is
- * therefore required here, and is passed to each `transformWithEsbuild` call as
- * well as to `esbuild` below.
+ * The Vite root is `e2e/harness` and the nearest manifest is `e2e/package.json`,
+ * so `server.fs.strict` scopes access to `e2e/` unless the directories holding the
+ * graph are named here. Nothing outside these four is part of the harness graph.
+ *
+ * To serve another directory, add one entry here.
+ */
+const ALLOWED_SERVE_ROOTS = [HARNESS, CACHE_DIR, FRONTEND_SRC, FRONTEND_MODULES] as const;
+
+/**
+ * Sensitive file names refused inside the allowed roots. Replaces Vite's default
+ * deny list, whose three entries are the first three here.
+ */
+const DENIED_FILE_PATTERNS = [
+  '.env',
+  '.env.*',
+  '*.{crt,pem}',
+  '*.{key,pfx,p12,cer,cert,jks,keystore}',
+  '.npmrc',
+  '.netrc',
+  'id_rsa*',
+  '*.local',
+  '**/.git/**',
+] as const;
+
+/** The `DENIED_FILE_PATTERNS` names, applied to a resolved absolute path. */
+const DENIED_PATH_EXPRESSION =
+  /(^|[\\/])(\.env(\.[^\\/]*)?|\.npmrc|\.netrc|id_rsa[^\\/]*|\.git)([\\/]|$)|\.(crt|pem|key|pfx|p12|cer|cert|jks|keystore|local)$/i;
+
+/** URL prefix under which Vite serves a file by absolute path. */
+const FS_URL_PREFIX = '/@fs/';
+
+/** Dev-server endpoint that spawns a local editor process; the harness never uses it. */
+const OPEN_IN_EDITOR_PATH = '/__open-in-editor';
+
+/**
+ * esbuild TypeScript options in string form, which suppresses Vite's own tsconfig
+ * lookup. Passed to every `transformWithEsbuild` call and to `esbuild` below.
  */
 const TSCONFIG_RAW = JSON.stringify({
   compilerOptions: {
@@ -183,18 +216,14 @@ const virtualIdByModuleKey = new Map<string, string>();
 /** Normalised module key to the stub that replaces it while the real module is absent. */
 const stubsByModuleKey = new Map<string, { relative: string; stubPath: string }>();
 
-/**
- * Forward-slash form of a path. Vite normalises separators on every id it hands
- * back, so virtual ids are built in this form to begin with.
- */
+/** Forward-slash form of a path, the form every virtual id is built in. */
 function toPosixPath(candidate: string): string {
   return candidate.replace(/\\/g, '/');
 }
 
 /**
- * Separator- and case-normalised form used as the key for every lookup. Vite's
- * alias replacement is a plain string substitution, so ids reach this plugin with
- * mixed separators on Windows.
+ * Separator- and case-normalised key for every lookup below. Ids reach this
+ * plugin with mixed separators on Windows.
  */
 function normalizeKey(candidate: string): string {
   const slashed = toPosixPath(candidate);
@@ -229,8 +258,8 @@ function registerVirtualModule(relative: string, prefix: string, loader: 'ts' | 
     return;
   }
 
-  // An extension-less file is handed to esbuild under a synthetic `.tsx` name,
-  // which is what lets the loader be inferred.
+  // Marker: an extension-less file is handed to esbuild under a synthetic
+  // `<realPath>.<loader>` name, which is what fixes its loader.
   const isExtensionless = path.extname(realPath) === '';
   const transformFilename = isExtensionless ? `${realPath}.${loader}` : realPath;
 
@@ -242,8 +271,8 @@ function registerVirtualModule(relative: string, prefix: string, loader: 'ts' | 
     compat: COMPAT_EXPORTS[relative] ?? {},
   });
 
-  // Both spellings are registered: the alias-expanded path without an extension
-  // and the fully qualified path of the file on disk.
+  // Marker: two spellings registered - the alias-expanded extension-less path and
+  // the fully qualified path of the file on disk.
   virtualIdByModuleKey.set(normalizeKey(path.join(FRONTEND_SRC, relative)), virtualId);
   virtualIdByModuleKey.set(normalizeKey(realPath), virtualId);
 }
@@ -272,12 +301,8 @@ for (const [relative, stubFile] of Object.entries(STUB_MODULES)) {
 
 /**
  * Every spelling under which an import may reach this plugin, normalised for
- * comparison against the registries above.
- *
- * `resolve.alias` is applied before `enforce: 'pre'` plugins and re-enters the
- * resolver with the rewritten id, and `vite:resolve` runs after them, so an
- * import arrives here either bare, `@/`-prefixed, already absolute, or still
- * relative.
+ * comparison against the registries above: bare, `@/`-prefixed, already absolute,
+ * or relative to its importer.
  */
 function candidateModuleKeys(id: string, importer: string | undefined): string[] {
   const keys: string[] = [];
@@ -311,8 +336,7 @@ function compatExportTail(compat: Record<string, string>): string {
     return '';
   }
 
-  // A prefixed local keeps the appended declaration from colliding with an
-  // identically named binding the module already imports.
+  // Marker: prefixed locals cannot collide with a binding the module already has.
   const declarations = names.map((name) => {
     const local = `__harnessCompat_${name}`;
     return `const ${local} = ${compat[name]};\nexport { ${local} as ${name} };`;
@@ -322,13 +346,13 @@ function compatExportTail(compat: Record<string, string>): string {
 }
 
 /**
- * Resolves the frontend sources that no bundler can load as written:
+ * Resolves three classes of frontend source:
  *
  * - the extension-less component files, through a NUL-prefixed virtual id whose
  *   `load` hook hands the source text to esbuild under a synthetic `.tsx` name;
- * - the module specifiers that have no implementation, to the harness stubs,
- *   only while the real module is absent;
- * - the real modules whose importers expect exports they never declare, through a
+ * - the specifiers with no implementation, to the harness stubs, only while the
+ *   real module is absent;
+ * - the modules whose importers expect exports they never declare, through a
  *   NUL-prefixed virtual id that appends those exports to the real source text.
  */
 function harnessSourceResolver(): Plugin {
@@ -337,7 +361,7 @@ function harnessSourceResolver(): Plugin {
     enforce: 'pre',
 
     resolveId(id, importer) {
-      // Already claimed; returning the id keeps the prefix from being stacked.
+      // Marker: already-claimed ids are returned as-is, never re-prefixed.
       if (id.startsWith('\0')) {
         return virtualModules.has(normalizeKey(withoutQuery(id))) ? id : null;
       }
@@ -380,39 +404,128 @@ function harnessSourceResolver(): Plugin {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Filesystem guard                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Absolute path a `/@fs/` URL addresses, after query and fragment removal, one
+ * round of percent-decoding, `.`/`..` normalisation and symlink resolution.
+ * Returns `null` when the URL cannot be decoded.
+ */
+function resolveServedPath(url: string): string | null {
+  let candidate: string;
+  try {
+    // Slicing one character before the end of the prefix keeps the leading slash.
+    candidate = decodeURIComponent(
+      withoutQuery(url).split('#')[0].slice(FS_URL_PREFIX.length - 1),
+    );
+  } catch {
+    return null;
+  }
+
+  // A Windows `/@fs/` URL carries the drive letter after the leading slash.
+  if (/^\/[A-Za-z]:/.test(candidate)) {
+    candidate = candidate.slice(1);
+  }
+
+  const resolved = path.resolve(candidate);
+  try {
+    return fs.realpathSync.native(resolved).replace(/^\\\\\?\\/, '');
+  } catch {
+    return resolved;
+  }
+}
+
+/** Whether a resolved path is one of the allowed roots or sits inside one. */
+function isWithinAllowedRoot(candidate: string): boolean {
+  const candidateKey = normalizeKey(candidate);
+  return ALLOWED_SERVE_ROOTS.some((root) => {
+    const rootKey = normalizeKey(root);
+    return candidateKey === rootKey || candidateKey.startsWith(`${rootKey}/`);
+  });
+}
+
+/**
+ * Refuses two dev-server requests before any Vite middleware sees them:
+ *
+ * - `/__open-in-editor`, which spawns a local editor process;
+ * - a `/@fs/` read that resolves outside `ALLOWED_SERVE_ROOTS` or onto a
+ *   `DENIED_FILE_PATTERNS` name. The check runs on the decoded, normalised,
+ *   symlink-resolved path, so alternate spellings of one path are refused too,
+ *   and it covers every extension including `.html`.
+ */
+function harnessFilesystemGuard(): Plugin {
+  return {
+    name: 'harness-filesystem-guard',
+    enforce: 'pre',
+
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const url = req.url ?? '';
+
+        const forbid = (): void => {
+          res.statusCode = 403;
+          res.setHeader('Content-Type', 'text/plain');
+          res.end('403 Forbidden');
+        };
+
+        if (withoutQuery(url).split('#')[0] === OPEN_IN_EDITOR_PATH) {
+          forbid();
+          return;
+        }
+
+        if (url.startsWith(FS_URL_PREFIX)) {
+          const served = resolveServedPath(url);
+          if (served === null || !isWithinAllowedRoot(served) || DENIED_PATH_EXPRESSION.test(served)) {
+            forbid();
+            return;
+          }
+        }
+
+        next();
+      });
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /* Configuration                                                              */
 /* -------------------------------------------------------------------------- */
 
 export default defineConfig({
   root: HARNESS,
 
-  // Supplies the history fallback the repository has no configuration for, so
-  // every client route serves the harness entry.
+  // No public directory: the harness serves no static assets.
+  publicDir: false,
+
+  // SPA history fallback: every client route serves the harness entry.
   appType: 'spa',
 
-  // The custom resolver carries `enforce: 'pre'` and so runs before the React
-  // plugin regardless of order here.
-  plugins: [harnessSourceResolver(), react()],
+  // Both custom plugins carry `enforce: 'pre'` and run before `react()`.
+  plugins: [harnessFilesystemGuard(), harnessSourceResolver(), react()],
 
   server: {
     host: '127.0.0.1',
     port: 4173,
     // Fail the start on a port collision; do not select another port.
     strictPort: true,
+    // Only the harness page reads this server, and it is same-origin.
+    cors: false,
     fs: {
-      // The root is `e2e/harness` and `e2e/package.json` is the nearest manifest,
-      // so Vite scopes filesystem access to `e2e/` unless the repository root is
-      // named here. Every module under `frontend/src` is served through it.
-      allow: [REPO_ROOT],
+      strict: true,
+      // `ALLOWED_SERVE_ROOTS` is the whole set of directories the harness graph
+      // reaches; Vite adds its own client directory itself.
+      allow: [...ALLOWED_SERVE_ROOTS],
+      deny: [...DENIED_FILE_PATTERNS],
     },
   },
 
   // The default cache directory resolves against the root, which has no
   // `node_modules`.
-  cacheDir: path.join(HERE, 'node_modules', '.vite'),
+  cacheDir: CACHE_DIR,
 
-  // The dev-server log is the harness's health signal. Playwright pipes this
-  // output, and it is kept intact and unscrolled.
+  // Keeps the whole dev-server log, unscrolled, so a failed start is legible in
+  // whatever captures this process's output.
   logLevel: 'info',
   clearScreen: false,
 
@@ -441,14 +554,22 @@ export default defineConfig({
   },
 
   // `frontend/src/services/api.ts` reads `process.env` at module scope, which a
-  // browser does not provide. The dev server installs these entries as globals
-  // through `@vite/env`, walking each key and assigning in declaration order, so
-  // the broadest key comes first and the narrowest last.
+  // browser does not provide.
   //
-  // `REACT_APP_API_BASE_URL` resolves to the `undefined` literal, which keeps the
-  // base URL that production computes today.
+  // A dev server does not substitute these entries into the served source: on the
+  // pinned vite 4.5.14 the `vite:define` transform returns early outside a build,
+  // and the client env module assigns each key onto the global object instead,
+  // splitting the key on `.` and creating the missing objects as it goes. It walks
+  // the keys in the order declared here, and that order is load-bearing:
+  // `process.env` has to be assigned before the two keys under it, or it would
+  // replace the object they were just written onto.
+  //
+  // Every replacement is valid JSON or a bare identifier, which is what esbuild's
+  // `define` accepts, so a build substitutes the same values: `'{}'` is the JSON
+  // empty object, and `REACT_APP_API_BASE_URL` resolves to the `undefined`
+  // literal, which keeps the base URL that production computes today.
   define: {
-    'process.env': '({})',
+    'process.env': '{}',
     'process.env.NODE_ENV': JSON.stringify('development'),
     'process.env.REACT_APP_API_BASE_URL': 'undefined',
   },

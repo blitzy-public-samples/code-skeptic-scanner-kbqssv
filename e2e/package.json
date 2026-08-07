@@ -6,7 +6,7 @@
   "scripts": {
     "test": "playwright test",
     "test:headed": "playwright test --headed",
-    "test:debug": "PWDEBUG=1 playwright test",
+    "test:debug": "playwright test --debug",
     "report": "playwright show-report",
     "harness": "vite --config vite.harness.config.ts",
     "install:browsers": "playwright install --with-deps chromium"
