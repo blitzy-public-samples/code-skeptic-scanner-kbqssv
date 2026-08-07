@@ -1,128 +1,29 @@
-# ===========================================================================
-# Code Skeptic Scanner - backend dependency manifest (runtime + test stack)
-#
-# Before this file existed the repository declared ZERO Python dependencies,
-# while `backend/app/**` imported 16 third-party distributions and
-# `.github/workflows/ci.yml` ran `pip install -r requirements.txt` against a
-# file that did not exist.  This manifest declares the complete effective
-# footprint so the backend can be installed, imported, tested and served.
-#
-# TARGET RUNTIME: CPython 3.9  (.github/workflows/ci.yml -> python-version: [3.9])
-#   Create the environment with:
-#     python3.9 -m venv .venv-backend
-#     .\.venv-backend\Scripts\Activate.ps1        # PowerShell
-#     python -m pip install --upgrade pip setuptools wheel
-#     python -m pip install -r backend/requirements-dev.txt
-#
-# Every version below is pinned exactly.  There is no lock file in this
-# repository, so these pins are the only reproducibility mechanism.
-# ===========================================================================
-
-
-# ---------------------------------------------------------------------------
-# Web framework / ASGI
-# ---------------------------------------------------------------------------
-fastapi==0.95.2
-# starlette is pinned explicitly (fastapi 0.95.2 requires >=0.27.0,<0.28.0)
-# because starlette 0.27's TestClient is what the integration suite uses.
-starlette==0.27.0
-uvicorn==0.22.0
-
-# ---------------------------------------------------------------------------
-# Settings / schema
-#
-# PYDANTIC V1 ONLY.  `app/core/config.py` does `from pydantic import
-# BaseSettings`, which was moved out of pydantic in v2 (pydantic-settings).
-# Installing pydantic 2.x makes every backend module unimportable.
-# ---------------------------------------------------------------------------
-pydantic==1.10.13
-
-# ---------------------------------------------------------------------------
-# Twitter ingestion
-#
-# TWEEPY < 4.0 ONLY.  `app/services/twitter_service.py` and
-# `app/tasks/tweet_processor.py` both do `from tweepy import StreamListener`,
-# a class removed in tweepy 4.x.
-# ---------------------------------------------------------------------------
-tweepy==3.10.0
-
-# ---------------------------------------------------------------------------
-# LLM
-#
-# OPENAI 0.x ONLY.  `app/services/llm_service.py` does
-# `from openai import Completion`, which does not exist in openai>=1.0.
-# ---------------------------------------------------------------------------
-openai==0.27.8
-
-# ---------------------------------------------------------------------------
-# Google Cloud data layer
-#
-# google-api-core is pinned at 2.11.1: newer releases emit a Python-3.9
-# FutureWarning that would otherwise surface in every test run.
-# ---------------------------------------------------------------------------
-google-cloud-firestore==2.11.1
-google-cloud-bigquery==3.11.4
-google-auth==2.22.0
-google-api-core==2.11.1
-
-# ---------------------------------------------------------------------------
-# Auth / crypto
-#
-# bcrypt is pinned at 4.0.1: bcrypt 5.x removed the `__about__` attribute that
-# passlib 1.7.4 reads, which breaks CryptContext(schemes=['bcrypt']).
-# ---------------------------------------------------------------------------
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-bcrypt==4.0.1
-
-# ---------------------------------------------------------------------------
-# Analytics
-#
-# numpy is pinned at 1.24.4: numpy 2.x is ABI-incompatible with pandas 1.5.3
-# ("numpy.dtype size changed" at import time).
-# ---------------------------------------------------------------------------
-pandas==1.5.3
-numpy==1.24.4
-
-# ---------------------------------------------------------------------------
-# Imported for a type hint only
-#
-# `app/api/routes` imports `from sqlalchemy.orm import Session` even though the
-# data layer is Firestore/BigQuery.  The import must resolve for the module to
-# load, so the distribution is declared.
-# ---------------------------------------------------------------------------
-sqlalchemy==1.4.49
-
-# ---------------------------------------------------------------------------
-# Transitive pins required for a deterministic, pre-release-free install
-#
-# google-api-core 2.11.1 caps protobuf at <5.0, and every grpcio-status >= 1.64
-# requires protobuf >= 5.26.  Left unpinned, pip backtracks into the PRE-RELEASE
-# `grpcio-status==1.63.0rc1` as the only candidate it finds that satisfies both.
-# 1.62.3 is the highest STABLE release that accepts protobuf 4.x.
-# ---------------------------------------------------------------------------
-grpcio-status==1.62.3
-protobuf==4.25.9
-
-
-# ===========================================================================
-# TEST STACK
-# ===========================================================================
-
-# pytest 8.4.2 is the last release supporting Python 3.9 (the 9.0 line drops it).
+# test stack
 pytest==8.4.2
 pytest-asyncio==0.26.0
 pytest-cov==6.1.1
 coverage==7.10.7
-
-# httpx MUST stay below 0.28.  starlette 0.27's TestClient passes `app=` to
-# httpx.Client, a shortcut removed in httpx 0.28; with 0.28+ TestClient
-# construction fails outright with
-#   TypeError: __init__() got an unexpected keyword argument 'app'
 httpx==0.27.2
-
-# Deterministic clock for JWT-expiry and date-ranged analytics assertions.
 freezegun==1.5.5
-
-# Optional parallelism (`pytest -n auto`); not enabled by default.
 pytest-xdist==3.8.0
+
+# runtime stack the tests exercise
+fastapi==0.95.2
+starlette==0.27.0
+pydantic==1.10.13
+uvicorn==0.22.0
+tweepy==3.10.0
+openai==0.27.8
+google-cloud-firestore==2.11.1
+google-cloud-bigquery==3.11.4
+google-auth==2.22.0
+google-api-core==2.11.1
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+pandas==1.5.3
+numpy==1.24.4
+sqlalchemy==1.4.49
+
+# transitive constraint
+grpcio-status==1.62.3
