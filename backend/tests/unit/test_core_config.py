@@ -1,55 +1,64 @@
-"""Unit suite for ``app/core/config.py``: the backend configuration contract.
+"""Unit suite for ``app/core/config.py``: the backend configuration
+contract.
 
 ``app/core/config.py`` declares one pydantic v1 ``BaseSettings`` subclass,
-``Settings``, and instantiates it once at module scope as ``settings``. Other
-backend modules read their configuration from that singleton and several
-construct a ``Settings()`` of their own, so the values pinned here are the
-oracles the rest of the backend suite asserts against — most directly
-``POPULARITY_THRESHOLD``, which the tweet-processor suite parametrises its
-popularity matrix around, and ``TWITTER_TRACK_KEYWORDS``, which the same suite
-asserts as the ``track`` keyword handed to ``stream.filter``.
+``Settings``, and instantiates it once at module scope as ``settings``.
+The values pinned here are the oracles the rest of the backend suite
+asserts against.
 
 What this module asserts
 ------------------------
 Declared defaults
-    The effective value of every field ``Settings`` declares with a default,
-    and the three attributes of the nested ``Settings.Config``.
+    The fallback value of every field ``Settings`` declares with a default, and
+    the three attributes of the nested ``Settings.Config``.
 Required fields
     That each of the eight fields declared *without* a default is genuinely
     required, that omitting one raises ``pydantic.ValidationError`` naming that
     field, and that the required set contains exactly those eight names.
     ``NOTION_API_KEY`` is declared ``Optional[str] = None``, so it is asserted
     to be optional rather than counted among them.
+The shared singleton
+    That ``app.core.config.settings`` is a ``Settings`` instance and that each
+    required field on it carries the exact value the environment supplied,
+    which is the environment-over-default precedence every other backend
+    module depends on.
 Class-versus-instance access
     That reading a declared field off the ``Settings`` *class* raises
-    ``AttributeError``. pydantic v1 moves declared fields out of the class
-    namespace into ``Settings.__fields__``, so the attribute does not exist on
-    the class even though it resolves on an instance. This is the root cause of
-    the ``app/db/bigquery.py`` failures: that module reads
-    ``Settings.GOOGLE_CLOUD_PROJECT`` at class level twice, and declaring
-    further instance fields cannot make those reads resolve.
+    ``AttributeError``, because pydantic v1 moves declared fields out of
+    the class namespace into ``Settings.__fields__``.
 Fields declared for testability
     That ``ALLOWED_ORIGINS``, ``ALGORITHM``, ``PROJECT_ID`` and
-    ``TWITTER_TRACK_KEYWORDS`` are declared fields carrying their
-    least-privilege defaults, that ``PROJECT_ID`` is not an alias of
-    ``GOOGLE_CLOUD_PROJECT``, and that ``TWITTER_CONSUMER_KEY`` and
-    ``TWITTER_CONSUMER_SECRET`` remain undeclared.
+    ``TWITTER_TRACK_KEYWORDS`` carry their least-privilege defaults, and
+    that ``TWITTER_CONSUMER_KEY`` and ``TWITTER_CONSUMER_SECRET`` remain
+    undeclared.
 
 Isolation
 ---------
 ``Settings`` is a ``BaseSettings`` subclass, so a field's value comes from the
-process environment and from the ``.env`` file named by
-``Settings.Config.env_file`` before it falls back to its declared default. Any
-assertion about a *default* is therefore made against a ``Settings`` built by
-:func:`_construct_settings`, which unsets the names under test and disables the
-``.env`` source, so neither an exported variable nor a developer's local
-``.env`` can decide the outcome. The values read from the shared singleton are
-covered by :func:`test_singleton_fields_are_not_shadowed_by_environment`.
+process environment, then from the ``.env`` file named by
+``Settings.Config.env_file``, and only then from the value declared in the
+class body. Assertions here are split along that precedence, and none of them
+depends on a variable happening to be absent from the surrounding environment:
+
+* An assertion about a **declared** value runs against a ``Settings`` built by
+  :func:`_construct_settings`, which unsets the names under test and passes
+  ``_env_file=None``, so neither an exported variable nor a developer's local
+  ``.env`` contributes.
+* An assertion about the value the shared **singleton** carries rests on
+  ``backend/tests/conftest.py`` having assigned that value to the process
+  environment at its own module scope, before ``app.core.config`` was imported.
+  The process environment outranks the ``.env`` source, so the assignment
+  decides the field.
+  :func:`test_singleton_fields_are_pinned_by_the_test_prologue` asserts that
+  precondition directly, through the ``pinned_settings_env`` fixture.
+* ``NOTION_API_KEY`` is declared ``None``, a value no environment string can
+  express, so it is asserted from ``Settings.__fields__`` and from an isolated
+  construction only — never from a singleton. The prologue removes the name
+  from the environment.
 
 This module imports ``app.core.config`` and nothing else from ``app``. Shared
-setup — environment seeding for the eight required fields, the Google
-credential neutraliser and the socket guard — comes from
-``backend/tests/conftest.py``.
+setup — the environment normalisation, the Google credential neutraliser and
+the network guard — comes from ``backend/tests/conftest.py``.
 """
 
 import os
@@ -59,20 +68,20 @@ from pydantic import ValidationError
 
 import app.core.config as config_module
 from app.core.config import Settings
+from tests.conftest import (
+    REQUIRED_SETTINGS_ENV,
+    TESTABILITY_SETTINGS_VALUES,
+)
 
 pytestmark = pytest.mark.unit
 
 
-# --------------------------------------------------------------------------- #
 # The contract this suite pins.  Every literal below is read from
 # ``app/core/config.py``; none is recomputed from the model.
-# --------------------------------------------------------------------------- #
 
 #: The eight fields ``Settings`` declares without a default.
-#: ``NOTION_API_KEY`` is declared ``Optional[str] = None`` and is not one of
-#: them; :func:`test_settings_omits_notion_api_key` and
-#: :func:`test_required_field_set_is_exactly_the_declared_eight` hold that
-#: line.
+#: ``NOTION_API_KEY`` is declared ``Optional[str] = None`` and is not one
+#: of them.
 REQUIRED_FIELD_NAMES = (
     "SECRET_KEY",
     "TWITTER_API_KEY",
@@ -94,9 +103,7 @@ POPULARITY_THRESHOLD_DEFAULT = 100
 DOUBT_RATING_THRESHOLD_DEFAULT = 0.7
 
 #: Remaining defaulted fields, paired with the default each declares.
-#: ``NOTION_API_KEY`` is covered by
-#: :func:`test_notion_api_key_default_is_none`, which asserts identity with
-#: ``None``.
+#: ``NOTION_API_KEY`` is asserted separately, for identity with ``None``.
 SINGLETON_FIELD_DEFAULTS = (
     ("PROJECT_NAME", "Twitter Bot"),
     ("API_V1_STR", "/api/v1"),
@@ -107,13 +114,24 @@ SINGLETON_FIELD_DEFAULTS = (
 )
 
 #: Every field whose value this suite reads from ``config_module.settings``.
+#: ``NOTION_API_KEY`` is deliberately absent: its declared value is ``None``,
+#: so the prologue removes the name instead of pinning it and
+#: :func:`test_notion_api_key_declared_default_is_none` and
+#: :func:`test_settings_omits_notion_api_key` carry that field.
 SINGLETON_ASSERTED_FIELD_NAMES = tuple(
     [name for name, _ in SINGLETON_FIELD_DEFAULTS]
     + [
         "POPULARITY_THRESHOLD",
         "DOUBT_RATING_THRESHOLD",
-        "NOTION_API_KEY",
     ]
+)
+
+#: The eight required fields paired with the value
+#: ``backend/tests/conftest.py`` assigns to the environment for the whole
+#: session.  Those assignments are unconditional, so each pair is the exact
+#: value the shared ``settings`` singleton was built from.
+REQUIRED_FIELD_SEEDED_VALUES = tuple(
+    (name, REQUIRED_SETTINGS_ENV[name]) for name in REQUIRED_FIELD_NAMES
 )
 
 #: The two string attributes of the nested ``Settings.Config``.  ``Config`` is
@@ -126,8 +144,8 @@ CONFIG_ATTRIBUTE_EXPECTATIONS = (
     ("env_file_encoding", "utf-8"),
 )
 
-#: The four fields declared so the application object can be constructed under
-#: test, paired with the least-privilege default each carries.
+#: The four fields declared so the application object can be constructed
+#: under test, paired with the least-privilege default each carries.
 TESTABILITY_FIELD_DEFAULTS = (
     ("ALLOWED_ORIGINS", []),
     ("ALGORITHM", "HS256"),
@@ -135,47 +153,51 @@ TESTABILITY_FIELD_DEFAULTS = (
     ("TWITTER_TRACK_KEYWORDS", []),
 )
 
-#: Names of the fields in :data:`TESTABILITY_FIELD_DEFAULTS`.
 TESTABILITY_FIELD_NAMES = tuple(name for name, _ in TESTABILITY_FIELD_DEFAULTS)
 
 #: Read by ``app/services/twitter_service.py`` and
-#: ``app/tasks/tweet_processor.py``, declared by ``Settings`` nowhere.  The two
-#: suites covering those modules supply them with ``monkeypatch``.
+#: ``app/tasks/tweet_processor.py``, declared by ``Settings`` nowhere.
 UNDECLARED_CONSUMER_FIELD_NAMES = (
     "TWITTER_CONSUMER_KEY",
     "TWITTER_CONSUMER_SECRET",
 )
 
 
-# --------------------------------------------------------------------------- #
-# Shared helper.  Consumed by the required-field matrix and by every test that
-# asserts a declared default.  The environment isolation lives here and in no
-# other place in this module.
-# --------------------------------------------------------------------------- #
+# Shared helper.  The environment isolation lives here and nowhere else in
+# this module.
 
 
 def _construct_settings(monkeypatch, absent_fields=()):
-    """Build a ``Settings`` with ``absent_fields`` unset and no ``.env`` read.
+    """Build a ``Settings`` with ``absent_fields`` unset and no ``.env``
+    read.
 
-    Each name in ``absent_fields`` is removed from the process environment
-    through ``monkeypatch``, which restores the previous value when the test
-    ends, so no test mutates ``os.environ`` itself and no test can leak a
-    change into another. ``_env_file=None`` overrides
-    ``Settings.Config.env_file`` for this construction, so a ``.env`` on disk
-    contributes nothing.
+    ``monkeypatch.delenv`` restores the previous value when the test ends,
+    so no test mutates ``os.environ`` itself.  ``_env_file=None`` overrides
+    ``Settings.Config.env_file`` for this construction, so a ``.env`` on
+    disk contributes nothing.
 
-    Returns the constructed ``Settings``. Propagates ``ValidationError`` when a
-    required field is left with no value, which is what the required-field
-    matrix asserts.
+    Propagates ``ValidationError`` when a required field is left with no
+    value.
     """
     for field_name in absent_fields:
         monkeypatch.delenv(field_name, raising=False)
     return Settings(_env_file=None)
 
 
-# --------------------------------------------------------------------------- #
 # Declared constants.
-# --------------------------------------------------------------------------- #
+
+
+def test_popularity_threshold_declared_default(monkeypatch):
+    """``POPULARITY_THRESHOLD`` declares 100 in the class body.
+
+    Read from a ``Settings`` built with the name unset and the ``.env`` source
+    disabled, so the assertion observes the declared value itself.
+    """
+    settings = _construct_settings(
+        monkeypatch, absent_fields=("POPULARITY_THRESHOLD",)
+    )
+
+    assert settings.POPULARITY_THRESHOLD == POPULARITY_THRESHOLD_DEFAULT
 
 
 def test_popularity_threshold_default():
@@ -184,25 +206,46 @@ def test_popularity_threshold_default():
     ``TweetStreamListener.on_status`` compares
     ``retweet_count + favorite_count`` against this field and returns early
     when the sum is lower, so this value is the oracle the tweet-processor
-    suite parametrises its 99 / 100 / 101 matrix around.
+    suite parametrises its 99 / 100 / 101 matrix around. The parent conftest
+    pins the environment variable of the same name to ``"100"`` before
+    ``app.core.config`` is imported, which is what fixes the value the
+    singleton carries.
     """
-    assert (
-        config_module.settings.POPULARITY_THRESHOLD
-        == POPULARITY_THRESHOLD_DEFAULT
+    assert config_module.settings.POPULARITY_THRESHOLD == POPULARITY_THRESHOLD_DEFAULT
+
+
+def test_doubt_rating_threshold_declared_default(monkeypatch):
+    """``DOUBT_RATING_THRESHOLD`` declares 0.7 in the class body."""
+    settings = _construct_settings(
+        monkeypatch, absent_fields=("DOUBT_RATING_THRESHOLD",)
     )
+
+    assert settings.DOUBT_RATING_THRESHOLD == DOUBT_RATING_THRESHOLD_DEFAULT
 
 
 def test_doubt_rating_threshold_default():
     """``DOUBT_RATING_THRESHOLD`` is 0.7 on the shared settings singleton.
 
-    Asserted as a configuration constant only. No production module reads this
-    field, so no gate anywhere compares a doubt rating against it; the constant
-    is the whole of the implemented behaviour.
+    Asserted as a configuration constant only: no production module reads
+    this field, so no gate anywhere compares a doubt rating against it.
     """
-    assert (
-        config_module.settings.DOUBT_RATING_THRESHOLD
-        == DOUBT_RATING_THRESHOLD_DEFAULT
-    )
+    assert config_module.settings.DOUBT_RATING_THRESHOLD == DOUBT_RATING_THRESHOLD_DEFAULT
+
+
+@pytest.mark.parametrize(
+    ("field_name", "expected_default"),
+    SINGLETON_FIELD_DEFAULTS,
+    ids=[name for name, _ in SINGLETON_FIELD_DEFAULTS],
+)
+def test_settings_declared_default(monkeypatch, field_name, expected_default):
+    """``field_name`` declares ``expected_default`` in the class body.
+
+    Built with ``field_name`` unset and ``_env_file=None``, so the value comes
+    from the declaration rather than from the environment or from a ``.env``.
+    """
+    settings = _construct_settings(monkeypatch, absent_fields=(field_name,))
+
+    assert getattr(settings, field_name) == expected_default
 
 
 @pytest.mark.parametrize(
@@ -211,45 +254,55 @@ def test_doubt_rating_threshold_default():
     ids=[name for name, _ in SINGLETON_FIELD_DEFAULTS],
 )
 def test_settings_default_on_singleton(field_name, expected_default):
-    """``field_name`` resolves to its declared default on the singleton.
+    """``field_name`` carries ``expected_default`` on the singleton.
 
     These are the values every other backend module sees, because each reads
     them from ``app.core.config.settings`` or from a ``Settings()`` of its own.
+    The parent conftest pins each one in the process environment before the
+    first ``app.core.config`` import.
     """
     assert getattr(config_module.settings, field_name) == expected_default
 
 
-def test_notion_api_key_default_is_none():
-    """``NOTION_API_KEY`` is ``None`` on the shared settings singleton.
+def test_notion_api_key_declared_default_is_none():
+    """``NOTION_API_KEY`` declares ``None`` and is not required.
 
-    Asserted with ``is`` rather than ``==`` so an empty string or any other
-    falsy value cannot satisfy it.
+    Read from ``Settings.__fields__``, which no environment variable and no
+    ``.env`` entry can shadow. Asserted with ``is`` rather than ``==`` so an
+    empty string or any other falsy value cannot satisfy it.
     """
-    assert config_module.settings.NOTION_API_KEY is None
+    field = Settings.__fields__["NOTION_API_KEY"]
+
+    assert field.default is None
+    assert field.required is False
 
 
-def test_singleton_fields_are_not_shadowed_by_environment():
-    """No environment variable supplies a value for a singleton-asserted field.
+def test_singleton_fields_are_pinned_by_the_test_prologue(pinned_settings_env):
+    """Every singleton-asserted field has a value pinned in the environment.
 
-    ``Settings`` resolves each field from the process environment before
-    falling back to its declared default, so a variable named after one of
-    these fields would decide the value that
-    :func:`test_settings_default_on_singleton`,
-    :func:`test_popularity_threshold_default`,
-    :func:`test_doubt_rating_threshold_default` and
-    :func:`test_notion_api_key_default_is_none` read. This asserts the
-    precondition those tests depend on.
+    ``Settings`` resolves each field from the process environment before the
+    ``.env`` source and before the declared value, so the pinned variable is
+    what decides the value that :func:`test_settings_default_on_singleton`,
+    :func:`test_popularity_threshold_default` and
+    :func:`test_doubt_rating_threshold_default` read. This asserts that
+    precondition positively: each name is present and carries the value
+    ``backend/tests/conftest.py`` assigned, whatever the surrounding machine
+    exported.
+
+    ``NOTION_API_KEY`` is asserted absent, which is the other half of the same
+    contract: no singleton assertion reads that field.
     """
-    shadowed = sorted(
-        name for name in SINGLETON_ASSERTED_FIELD_NAMES if name in os.environ
+    unpinned = sorted(
+        name
+        for name in SINGLETON_ASSERTED_FIELD_NAMES
+        if os.environ.get(name) != pinned_settings_env.get(name)
     )
 
-    assert shadowed == []
+    assert unpinned == []
+    assert "NOTION_API_KEY" not in os.environ
 
 
-# --------------------------------------------------------------------------- #
 # The nested ``Settings.Config``.
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize(
@@ -258,37 +311,19 @@ def test_singleton_fields_are_not_shadowed_by_environment():
     ids=[name for name, _ in CONFIG_ATTRIBUTE_EXPECTATIONS],
 )
 def test_settings_config_attribute(attribute_name, expected_value):
-    """``Settings.Config`` declares ``attribute_name`` as ``expected_value``.
-
-    ``Config`` is a plain nested class rather than a pydantic field, so class
-    access resolves here where it raises for every declared field.
-    """
     assert getattr(Settings.Config, attribute_name) == expected_value
 
 
 def test_settings_config_case_sensitive():
-    """``Settings.Config.case_sensitive`` is ``True``.
-
-    Asserted with ``is`` because the flag governs whether environment lookups
-    match a field name exactly, and only the boolean satisfies the contract.
-    """
     assert Settings.Config.case_sensitive is True
 
 
-# --------------------------------------------------------------------------- #
 # Required fields.  One parametrised case per field, so each case reports
 # independently.
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize("field_name", REQUIRED_FIELD_NAMES)
 def test_settings_requires_field(monkeypatch, field_name):
-    """Omitting ``field_name`` makes ``Settings()`` raise ``ValidationError``.
-
-    The raised error is asserted to name ``field_name`` and to carry pydantic
-    v1's missing-value error type, so the case cannot pass because some
-    *other* field was unset or because a supplied value failed coercion.
-    """
     with pytest.raises(ValidationError) as raised:
         _construct_settings(monkeypatch, absent_fields=(field_name,))
 
@@ -300,11 +335,6 @@ def test_settings_requires_field(monkeypatch, field_name):
 
 
 def test_settings_omits_notion_api_key(monkeypatch):
-    """``Settings()`` constructs with ``NOTION_API_KEY`` absent, yielding None.
-
-    ``NOTION_API_KEY`` is declared ``Optional[str] = None``, so it is not one
-    of the fields in :data:`REQUIRED_FIELD_NAMES`.
-    """
     settings = _construct_settings(
         monkeypatch, absent_fields=("NOTION_API_KEY",)
     )
@@ -313,12 +343,6 @@ def test_settings_omits_notion_api_key(monkeypatch):
 
 
 def test_required_field_set_is_exactly_the_declared_eight():
-    """``Settings`` declares exactly the eight fields in
-    :data:`REQUIRED_FIELD_NAMES` without a default.
-
-    Comparing the whole set rather than checking membership one name at a time
-    fails both if a required field is dropped and if a ninth is introduced.
-    """
     required_fields = {
         name
         for name, field in Settings.__fields__.items()
@@ -328,29 +352,26 @@ def test_required_field_set_is_exactly_the_declared_eight():
     assert required_fields == set(REQUIRED_FIELD_NAMES)
 
 
-# --------------------------------------------------------------------------- #
 # Class access versus instance access.
-# --------------------------------------------------------------------------- #
 
 
 def test_class_access_google_cloud_project_raises_attribute_error():
     """Class access to ``GOOGLE_CLOUD_PROJECT`` raises ``AttributeError``.
 
     Class access, not instance access: the name resolves normally on
-    ``config_module.settings``.
+    ``config_module.settings``.  pydantic v1 moves declared fields out of
+    the class namespace into ``Settings.__fields__``.
 
-    pydantic v1 moves declared fields out of the class namespace into
-    ``Settings.__fields__``, so the attribute does not exist on ``Settings``
-    itself even though it resolves on an instance.
-
-    ``app/db/bigquery.py`` performs exactly this class-level read twice — once
-    in ``get_bq_client`` and once in the ``table_id`` f-string of
-    ``insert_tweet_analytics`` — which is why ``get_bq_client``, ``run_query``
-    and ``insert_tweet_analytics`` are unreachable until a test substitutes the
-    name. Declaring further instance fields on ``Settings`` does not change it.
+    ``app/db/bigquery.py`` performs exactly this class-level read twice,
+    which is why ``get_bq_client``, ``run_query`` and
+    ``insert_tweet_analytics`` are unreachable until a test substitutes the
+    name.  Declaring further instance fields does not change it.
     """
     assert "GOOGLE_CLOUD_PROJECT" in Settings.__fields__
-    assert config_module.settings.GOOGLE_CLOUD_PROJECT
+    assert (
+        config_module.settings.GOOGLE_CLOUD_PROJECT
+        == REQUIRED_SETTINGS_ENV["GOOGLE_CLOUD_PROJECT"]
+    )
 
     with pytest.raises(AttributeError):
         getattr(Settings, "GOOGLE_CLOUD_PROJECT")
@@ -359,9 +380,9 @@ def test_class_access_google_cloud_project_raises_attribute_error():
 def test_class_access_defaulted_field_raises_attribute_error():
     """Class access raises for a field that declares a default as well.
 
-    ``POPULARITY_THRESHOLD`` is declared ``= 100`` and reading it off the class
-    still raises, which shows the behaviour belongs to every pydantic v1 field
-    rather than only to the ones declared without a default.
+    ``POPULARITY_THRESHOLD`` declares ``= 100`` and reading it off the
+    class still raises, so the behaviour belongs to every pydantic v1
+    field rather than only to the ones declared without a default.
     """
     assert (
         Settings.__fields__["POPULARITY_THRESHOLD"].default
@@ -372,15 +393,11 @@ def test_class_access_defaulted_field_raises_attribute_error():
         getattr(Settings, "POPULARITY_THRESHOLD")
 
 
-# --------------------------------------------------------------------------- #
 # Fields declared so the application object can be constructed under test.
-#
-# ``configure_cors`` reads ``ALLOWED_ORIGINS``, ``create_access_token`` reads
-# ``ALGORITHM``, ``firestore.get_db`` reads ``PROJECT_ID`` and both stream
-# starters read ``TWITTER_TRACK_KEYWORDS``.  Each assertion below runs against
-# a ``Settings`` built with all four names unset, so it observes the declared
-# default rather than whatever the surrounding environment exports.
-# --------------------------------------------------------------------------- #
+# ``configure_cors`` reads ``ALLOWED_ORIGINS``, ``create_access_token``
+# reads ``ALGORITHM``, ``firestore.get_db`` reads ``PROJECT_ID`` and both
+# stream starters read ``TWITTER_TRACK_KEYWORDS``.  Each assertion below
+# runs against a ``Settings`` built with all four names unset.
 
 
 @pytest.mark.parametrize(
@@ -389,13 +406,6 @@ def test_class_access_defaulted_field_raises_attribute_error():
     ids=TESTABILITY_FIELD_NAMES,
 )
 def test_testability_field_default(monkeypatch, field_name, expected_default):
-    """``field_name`` falls back to its least-privilege declared default.
-
-    ``ALLOWED_ORIGINS`` and ``TWITTER_TRACK_KEYWORDS`` default to the empty
-    list rather than to a wildcard or a keyword set, ``ALGORITHM`` to
-    ``"HS256"`` and ``PROJECT_ID`` to the empty string. The empty-list defaults
-    are asserted by equality, so a wildcard entry cannot satisfy them.
-    """
     settings = _construct_settings(
         monkeypatch, absent_fields=TESTABILITY_FIELD_NAMES
     )
@@ -403,13 +413,31 @@ def test_testability_field_default(monkeypatch, field_name, expected_default):
     assert getattr(settings, field_name) == expected_default
 
 
-def test_project_id_is_not_an_alias_of_google_cloud_project():
-    """``PROJECT_ID`` and ``GOOGLE_CLOUD_PROJECT`` are independent fields.
+@pytest.mark.parametrize(
+    ("field_name", "expected_default"),
+    TESTABILITY_FIELD_DEFAULTS,
+    ids=TESTABILITY_FIELD_NAMES,
+)
+def test_testability_field_on_singleton(field_name, expected_default):
+    """``field_name`` carries its least-privilege value on the singleton.
 
-    ``PROJECT_ID`` is declared with an empty-string default while
-    ``GOOGLE_CLOUD_PROJECT`` is declared without a default, so the two never
-    share a value by construction. Asserted on the declared defaults, which no
-    environment can shadow.
+    ``configure_cors`` reads ``ALLOWED_ORIGINS`` from a settings instance,
+    ``create_access_token`` reads ``ALGORITHM``, ``firestore.get_db`` reads
+    ``PROJECT_ID`` and both stream starters read ``TWITTER_TRACK_KEYWORDS``, so
+    these are the values the integration, security and stream suites observe.
+    The parent conftest pins all four in the process environment.
+    """
+    assert getattr(config_module.settings, field_name) == expected_default
+
+
+def test_project_id_is_not_an_alias_of_google_cloud_project():
+    """``PROJECT_ID`` and ``GOOGLE_CLOUD_PROJECT`` are declared
+    independently.
+
+    ``PROJECT_ID`` declares an empty-string default while
+    ``GOOGLE_CLOUD_PROJECT`` declares none and is required.  Asserted on
+    the declarations, which no environment can shadow; the two can still
+    hold equal values if the environment supplies them.
     """
     assert Settings.__fields__["PROJECT_ID"].default == ""
     assert Settings.__fields__["GOOGLE_CLOUD_PROJECT"].required is True
@@ -421,34 +449,33 @@ def test_project_id_does_not_resolve_to_google_cloud_project(monkeypatch):
     ``GOOGLE_CLOUD_PROJECT``.
 
     With ``PROJECT_ID`` unset the field falls back to the empty string while
-    ``GOOGLE_CLOUD_PROJECT`` still carries the value seeded for the suite, so
-    the two resolve differently on the same instance.
+    ``GOOGLE_CLOUD_PROJECT`` carries the value the environment supplies, so the
+    two resolve differently on the same instance. Both sides are asserted
+    against known values rather than against each other's truthiness.
     """
     settings = _construct_settings(
         monkeypatch, absent_fields=TESTABILITY_FIELD_NAMES
     )
 
-    assert settings.GOOGLE_CLOUD_PROJECT
+    assert (
+        settings.GOOGLE_CLOUD_PROJECT
+        == REQUIRED_SETTINGS_ENV["GOOGLE_CLOUD_PROJECT"]
+    )
+    assert settings.PROJECT_ID == ""
     assert settings.PROJECT_ID != settings.GOOGLE_CLOUD_PROJECT
 
 
 @pytest.mark.parametrize("field_name", TESTABILITY_FIELD_NAMES)
 def test_testability_field_is_declared(field_name):
-    """``field_name`` is a declared ``Settings`` field, not a stray attribute.
-
-    Membership in ``Settings.__fields__`` is what makes the name resolvable on
-    an instance and overridable from the environment.
-    """
     assert field_name in Settings.__fields__
 
 
 @pytest.mark.parametrize("field_name", UNDECLARED_CONSUMER_FIELD_NAMES)
 def test_consumer_field_is_not_declared(field_name):
-    """``field_name`` is read by production code but declared by ``Settings``
-    nowhere.
+    """``field_name`` is read by production code but declared nowhere.
 
-    ``start_twitter_stream`` and ``start_tweet_stream`` both read this name, so
-    each raises ``AttributeError`` on the settings instance unless a test
-    supplies it. The suites covering those modules do so with ``monkeypatch``.
+    ``start_twitter_stream`` and ``start_tweet_stream`` both read this
+    name, so each raises ``AttributeError`` on the settings instance unless
+    a test supplies it with ``monkeypatch``.
     """
     assert field_name not in Settings.__fields__

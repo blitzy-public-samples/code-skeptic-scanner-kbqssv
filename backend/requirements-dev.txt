@@ -1,3 +1,8 @@
+# Every entry is an exact pin, and backend/tests/test_dependency_closure.py
+# asserts that the interpreter running the suite has these versions installed:
+# `pip check` is silent when an installed version merely differs from a pin.
+# Rebuild with: pip install -r backend/requirements-dev.txt
+
 # test stack
 pytest==8.4.2
 pytest-asyncio==0.26.0
@@ -9,6 +14,10 @@ pytest-xdist==3.8.0
 
 # runtime stack the tests exercise
 fastapi==0.95.2
+# SECURITY EXCEPTION - starlette 0.27.0: GHSA-f96h-pmfr-66vw / CVE-2024-47874,
+# multipart-parser DoS. Unreachable here (python-multipart is absent and no
+# implemented route accepts a form or an upload) and not upgradable without
+# replacing fastapi 0.95.2, which is out of scope. See docs/testing/DECISION-LOG.md.
 starlette==0.27.0
 pydantic==1.10.13
 uvicorn==0.22.0
@@ -18,12 +27,15 @@ google-cloud-firestore==2.11.1
 google-cloud-bigquery==3.11.4
 google-auth==2.22.0
 google-api-core==2.11.1
-python-jose[cryptography]==3.5.0
+python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 pandas==1.5.3
 numpy==1.24.4
 sqlalchemy==1.4.49
 
-# transitive constraint
+# gRPC. backend/tests/conftest.py blocks the channel factories of grpc and
+# grpc.aio, so grpcio is a direct dependency of the test suite rather than a
+# transitive one and is pinned here.
+grpcio==1.80.0
 grpcio-status==1.62.3

@@ -1,9 +1,8 @@
-"""Deterministic test-data builders for the Code Skeptic Scanner backend suite.
+"""Deterministic test-data builders for the backend suite.
 
-Every backend unit and integration suite draws its payloads from this module.
-Each builder constructs its result from the literal defaults declared below and
-applies the keyword ``overrides`` last, so a caller restates only the fields a
-case actually varies.
+Each builder constructs its result from the literal defaults declared below
+and applies the keyword ``overrides`` last, so a caller restates only the
+fields a case varies.  Two no-argument calls to any builder compare equal.
 
 This module imports nothing but the standard library, declares no pytest
 fixture, and performs no I/O, no logging and no clock read.
@@ -36,10 +35,14 @@ Catalogue
 Determinism
 -----------
 Every default is a literal, and two no-argument calls to any builder compare
-equal.  Every builder returns freshly constructed containers, so no test can
-affect another by mutating a value it was handed.
+equal.  Every builder returns freshly constructed containers, and every keyword
+a caller passes is deep-copied on the way in, so a result shares no mutable
+object with another result, with the module's own defaults, or with the
+caller's argument.  No test can affect another by mutating a value it was
+handed, and no test can affect a builder by mutating a value it passed.
 """
 
+import copy
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, Dict, Optional, Tuple
@@ -54,36 +57,26 @@ __all__ = [
     "ANALYTICS_ROW_KINDS",
 ]
 
-# --------------------------------------------------------------------------- #
-# Tweet payload defaults.  Field names and types are those declared by
-# ``app/schema/tweet.py``: nine required fields plus ``quoted_tweet_id``, whose
+# Tweet payload defaults.  Field names and types are those the ``Tweet``
+# schema declares: nine required fields plus ``quoted_tweet_id``, whose
 # declared default is ``None``.
-# --------------------------------------------------------------------------- #
 
-#: ``tweet_id`` of a tweet payload and ``id_str`` of a status.
 DEFAULT_TWEET_ID: str = "1234567890"
 
-#: ``content`` of a tweet payload and ``text`` of a status.
 DEFAULT_TWEET_CONTENT: str = "This is a test tweet"
 
-#: ``user_id`` of a tweet payload.
 DEFAULT_USER_ID: str = "test_user"
 
-#: ``user.screen_name`` of a status.
 DEFAULT_SCREEN_NAME: str = "test_user"
 
 #: ``timestamp`` of a tweet payload and ``created_at`` of a status.  A
 #: :class:`datetime.datetime`, the type ``Tweet.timestamp`` declares.
 DEFAULT_TIMESTAMP: datetime = datetime(2024, 1, 1, 0, 0, 0)
 
-#: ``likes_count`` of a tweet payload.
 DEFAULT_LIKES_COUNT: int = 120
 
-#: ``retweets_count`` of a tweet payload.
 DEFAULT_RETWEETS_COUNT: int = 45
 
-#: ``doubt_rating`` of a tweet payload.  A ``float`` greater than the
-#: ``Settings.DOUBT_RATING_THRESHOLD`` of ``0.7``.
 DEFAULT_DOUBT_RATING: float = 0.75
 
 #: Source of the ``ai_tools`` list.  A tuple; :func:`make_tweet` copies it.
@@ -95,44 +88,28 @@ DEFAULT_MEDIA_URLS: Tuple[str, ...] = (
     "https://example.invalid/media/1.jpg",
 )
 
-#: ``quoted_tweet_id`` of a tweet payload, matching the schema's own default.
 DEFAULT_QUOTED_TWEET_ID: Optional[str] = None
 
-# --------------------------------------------------------------------------- #
 # Generated-response defaults.
-# --------------------------------------------------------------------------- #
 
-#: ``response`` of a generated-response payload.
 DEFAULT_RESPONSE_CONTENT: str = "This is a test response"
 
-#: ``generated_at`` of a generated-response payload; fifteen minutes after
-#: :data:`DEFAULT_TIMESTAMP`.
 DEFAULT_GENERATED_AT: datetime = datetime(2024, 1, 1, 0, 15, 0)
 
-# --------------------------------------------------------------------------- #
-# Analytics row defaults.
-#
-# ``get_tweet_analytics`` reduces its rows to ``int(df['tweet_count'].sum())``,
-# ``float(df['tweet_count'].mean())``, ``float(df['avg_retweets'].mean())``
-# and ``float(df['avg_favorites'].mean())``.  Pairing the ``"tweet"`` default
-# with a second row overriding ``tweet_count=5``, ``avg_retweets=2.0``,
-# ``avg_favorites=4.0`` and ``date=SECOND_ANALYTICS_DATE`` yields
-# ``total_tweets == 8``, ``avg_daily_tweets == 4.0``, ``avg_retweets == 1.5``,
-# ``avg_favorites == 3.0`` and a two-record ``daily_breakdown``.  The
-# ``"user"`` shape is numerically identical under ``active_users``,
-# ``avg_followers`` and ``avg_friends``.
-# --------------------------------------------------------------------------- #
+# Analytics row defaults.  Both shapes carry a date plus three numeric
+# columns, which is what ``app/services/analytics_service.py`` sums and
+# averages over the ``DataFrame`` it builds from a list of these rows.
 
-#: ``date`` of the default row, and the ``start_date`` that puts
+#: ``date`` of the default row.  Also the ``start_date`` that puts
 #: ``BETWEEN '2024-01-01' AND '2024-01-02'`` in the emitted SQL.
 FIRST_ANALYTICS_DATE: str = "2024-01-01"
 
-#: ``date`` of the second row of the pair, and the matching ``end_date``.
 SECOND_ANALYTICS_DATE: str = "2024-01-02"
 
 #: Row templates as ordered ``(key, value)`` pairs.  Insertion order is the
-#: ``SELECT`` order, which is the column order pandas gives the ``DataFrame``
-#: and therefore the key order of each ``daily_breakdown`` record.
+#: ``SELECT`` order, which is the column order pandas gives the
+#: ``DataFrame`` and therefore the key order of each ``daily_breakdown``
+#: record.
 _ANALYTICS_ROW_TEMPLATES: Dict[str, Tuple[Tuple[str, Any], ...]] = {
     "tweet": (
         ("date", FIRST_ANALYTICS_DATE),
@@ -148,44 +125,62 @@ _ANALYTICS_ROW_TEMPLATES: Dict[str, Tuple[Tuple[str, Any], ...]] = {
     ),
 }
 
-#: The ``kind`` values :func:`make_analytics_row` accepts.
 ANALYTICS_ROW_KINDS: Tuple[str, ...] = tuple(sorted(_ANALYTICS_ROW_TEMPLATES))
 
-# --------------------------------------------------------------------------- #
 # Status defaults.
-# --------------------------------------------------------------------------- #
 
-#: ``retweet_count`` of a status.  With :data:`DEFAULT_FAVORITE_COUNT` the sum
-#: is 20, below the ``Settings.POPULARITY_THRESHOLD`` of 100 that
-#: ``app/tasks/tweet_processor.py`` line 28 compares against, so an
-#: un-overridden status takes that method's early ``return True``.
+#: ``retweet_count`` of a status.  With :data:`DEFAULT_FAVORITE_COUNT` the
+#: sum is 20, below the ``Settings.POPULARITY_THRESHOLD`` of 100, so an
+#: un-overridden status takes ``on_status``'s early ``return True``.
 DEFAULT_RETWEET_COUNT: int = 10
 
-#: ``favorite_count`` of a status.
 DEFAULT_FAVORITE_COUNT: int = 10
 
 #: Sentinel distinguishing an omitted keyword from one passed as ``None``.
 _UNSET: Any = object()
 
 
+def _independent(value: Any) -> Any:
+    """Return a value that shares no mutable object with ``value``.
+
+    Applied to every keyword a builder receives.  A ``dict``, ``list`` or
+    ``set`` a caller passes in — including one it reuses across two calls,
+    and including a container nested inside another — is copied to whatever
+    depth it has, so mutating one result cannot change another or the
+    caller's own object.  Anything :func:`copy.deepcopy` cannot copy, such as a
+    :class:`unittest.mock.MagicMock` or a module, is returned unchanged, which
+    keeps a deliberately-shared stand-in shared.
+    """
+    try:
+        return copy.deepcopy(value)
+    except Exception:
+        return value
+
+
+def _independent_mapping(overrides: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``overrides`` with every value passed through
+    :func:`_independent`.
+    """
+    return {name: _independent(value) for name, value in overrides.items()}
+
+
 def make_tweet(**overrides: Any) -> Dict[str, Any]:
     """Return a tweet payload satisfying ``app/schema/tweet.py``.
 
-    The returned ``dict`` carries all ten declared fields:
-    ``tweet_id``, ``content``, ``user_id``, ``timestamp``, ``likes_count``,
+    The returned ``dict`` carries all ten declared fields: ``tweet_id``,
+    ``content``, ``user_id``, ``timestamp``, ``likes_count``,
     ``retweets_count``, ``doubt_rating``, ``ai_tools``, ``media_urls`` and
-    ``quoted_tweet_id``.  ``timestamp`` is a :class:`datetime.datetime`;
-    ``ai_tools`` and ``media_urls`` are non-empty lists of ``str``, freshly
-    copied on every call; ``doubt_rating`` is a ``float``.
+    ``quoted_tweet_id``.
 
     ``Tweet(**make_tweet())`` constructs, and so does
     ``Tweet(**make_tweet(quoted_tweet_id=None))``.  Removing any of the nine
     required keys raises a pydantic ``ValidationError``, which is how the edge
     cases of ``backend/tests/unit/test_schema.py`` are produced.
 
-    :param overrides: Keys applied after the defaults.  A key absent from the
-        schema is placed in the result unchanged.
-    :returns: A new ``dict`` sharing no mutable object with any other call.
+    :param overrides: Keys applied after the defaults, each value deep-copied.
+        A key absent from the schema is placed in the result unchanged.
+    :returns: A new ``dict`` sharing no mutable object with any other call or
+        with the argument it was built from.
 
     Usage::
 
@@ -205,7 +200,7 @@ def make_tweet(**overrides: Any) -> Dict[str, Any]:
         "media_urls": list(DEFAULT_MEDIA_URLS),
         "quoted_tweet_id": DEFAULT_QUOTED_TWEET_ID,
     }
-    payload.update(overrides)
+    payload.update(_independent_mapping(overrides))
     return payload
 
 
@@ -214,16 +209,14 @@ def make_response(**overrides: Any) -> Dict[str, Any]:
 
     The returned ``dict`` carries ``tweet_id``, ``response`` and
     ``generated_at``.  ``tweet_id`` and ``response`` are the two values
-    ``app/tasks/response_generator.py`` line 18 passes to
-    ``add_response(tweet_id, response_content)``, and ``response`` is the body
-    key ``app/api/routes/tweets.py`` line 36 returns.  ``generated_at`` is a
-    :class:`datetime.datetime`.
+    ``app/tasks/response_generator.py`` passes to ``add_response``, and
+    ``response`` is the body key the responses endpoint returns.  The
+    repository declares no response schema, so this shape claims conformance
+    to none.
 
-    The repository declares no response schema; no model validates this shape
-    and it asserts conformance to none.
-
-    :param overrides: Keys applied after the defaults.
-    :returns: A new ``dict`` sharing no mutable object with any other call.
+    :param overrides: Keys applied after the defaults, each value deep-copied.
+    :returns: A new ``dict`` sharing no mutable object with any other call or
+        with the argument it was built from.
 
     Usage::
 
@@ -235,7 +228,7 @@ def make_response(**overrides: Any) -> Dict[str, Any]:
         "response": DEFAULT_RESPONSE_CONTENT,
         "generated_at": DEFAULT_GENERATED_AT,
     }
-    payload.update(overrides)
+    payload.update(_independent_mapping(overrides))
     return payload
 
 
@@ -244,24 +237,23 @@ def make_analytics_row(
 ) -> Dict[str, Any]:
     """Return one BigQuery result row for the analytics service.
 
-    The reader is ``app/services/analytics_service.py``.
     ``kind="tweet"`` returns the row ``get_tweet_analytics`` consumes, keyed
     ``date``, ``tweet_count``, ``avg_retweets``, ``avg_favorites``.
     ``kind="user"`` returns the row ``get_user_analytics`` consumes, keyed
-    ``date``, ``active_users``, ``avg_followers``, ``avg_friends``.  Both key
-    sets are the ``as`` aliases of the ``SELECT`` list, which are the names the
-    service indexes on the ``DataFrame``.
+    ``date``, ``active_users``, ``avg_followers``, ``avg_friends``.  Both
+    key sets are the ``as`` aliases of the ``SELECT`` list, which are the
+    names the service indexes on the ``DataFrame``.
 
-    ``date`` is a ``str``.  Feeding a list of these rows through
-    ``pandas.DataFrame`` reproduces the aggregation exactly; feeding an *empty*
-    list produces a column-less frame, so the service's ``KeyError`` cases are
-    reached by omitting rows and never by dropping a key.
+    ``date`` is a ``str``.  An *empty* list of rows produces a column-less
+    frame, so the service's ``KeyError`` cases are reached by omitting rows
+    and never by dropping a key.
 
     :param kind: ``"tweet"`` or ``"user"``.  Bound by name, so it never reaches
         the returned row.  See :data:`ANALYTICS_ROW_KINDS`.
-    :param overrides: Keys applied after the defaults.
+    :param overrides: Keys applied after the defaults, each value deep-copied.
     :raises ValueError: If ``kind`` is not one of :data:`ANALYTICS_ROW_KINDS`.
-    :returns: A new ``dict`` sharing no mutable object with any other call.
+    :returns: A new ``dict`` sharing no mutable object with any other call or
+        with the argument it was built from.
 
     Usage::
 
@@ -287,7 +279,7 @@ def make_analytics_row(
             )
         )
     row: Dict[str, Any] = dict(template)
-    row.update(overrides)
+    row.update(_independent_mapping(overrides))
     return row
 
 
@@ -295,27 +287,23 @@ def make_status(**overrides: Any) -> SimpleNamespace:
     """Return a duck object standing in for a tweepy status.
 
     The result exposes ``id_str``, ``text``, ``user``, ``created_at``,
-    ``retweet_count`` and ``favorite_count`` as *attributes*, which is how both
-    listeners read a status: ``app/tasks/tweet_processor.py`` lines 20-25 read
-    all six, and ``app/services/twitter_service.py`` lines 18-21 read
-    ``id_str``, ``text``, ``user.screen_name`` and ``created_at``.  ``user`` is
-    itself a :class:`types.SimpleNamespace` carrying ``screen_name``, and
+    ``retweet_count`` and ``favorite_count`` as *attributes*, which is how
+    both listeners read a status.  ``user`` is itself a
+    :class:`types.SimpleNamespace` carrying ``screen_name``, and
     ``created_at`` is a :class:`datetime.datetime`.
 
     ``retweet_count`` and ``favorite_count`` are independently overridable,
-    which is what the popularity matrix varies against the
-    ``Settings.POPULARITY_THRESHOLD`` of 100 that
-    ``app/tasks/tweet_processor.py`` line 28 compares their *sum* against:
-    ``(50, 49)``, ``(0, 99)`` and ``(99, 0)`` sum to 99 and fall below the
-    gate, while ``(50, 50)`` and ``(50, 51)`` clear it.
+    and ``on_status`` gates on their *sum* against the
+    ``Settings.POPULARITY_THRESHOLD`` of 100.
 
-    :param overrides: Attributes applied after the defaults.  ``screen_name``
-        is lifted onto a new nested ``user``.  ``user`` replaces the nested
-        object outright, including when passed as ``None``.  Any other key
-        becomes an additional attribute.
+    :param overrides: Attributes applied after the defaults, each value
+        deep-copied.  ``screen_name`` is lifted onto a new nested ``user``.
+        ``user`` replaces the nested object outright, including when passed as
+        ``None``.  Any other key becomes an additional attribute.
     :raises TypeError: If both ``user`` and ``screen_name`` are supplied.
     :returns: A new :class:`types.SimpleNamespace`, nested object included,
-        sharing no mutable object with any other call.
+        sharing no mutable object with any other call or with the argument it
+        was built from.
 
     Usage::
 
@@ -324,6 +312,7 @@ def make_status(**overrides: Any) -> SimpleNamespace:
         make_status(screen_name="skeptic")                 # nested attribute
         make_status(user=None)                             # absent author
     """
+    overrides = _independent_mapping(overrides)
     user = overrides.pop("user", _UNSET)
     if "screen_name" in overrides:
         screen_name = overrides.pop("screen_name")

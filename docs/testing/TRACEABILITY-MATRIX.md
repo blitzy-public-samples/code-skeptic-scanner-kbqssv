@@ -12,11 +12,17 @@ it, and from each test artifact back to the construct it stands for.
 | §B | msw handler → caller and route | Every handler exported by `frontend/src/test-utils/handlers.ts` | 8 |
 | §C | Backend route → frontend callers | Every route the backend implements or is called at | 5 |
 | §D | Divergence → the suite obliged to assert it | Every mismatch §A records | 12 |
+| §E | Legacy test → its replacement, and replacement → legacy test | All 25 functions of the three deleted legacy modules, in both directions | 25 + 3 |
+| §F | Test artifact → the construct it covers | Every file of the new suite, and the production construct or infrastructure obligation behind it | 41 |
+| §G | Coverage ceiling → the assertion that stands in for it | Every branch no test can execute without changing production | 8 |
+| §H | Harness guarantee → the artifact that enforces it | Every determinism, credential, egress and isolation guarantee the three suites rest on, and the file that implements it | 12 |
 
 Coverage of the mapped set is complete: all four routes registered in `ROUTE_CONTRACTS` and all eight
-exported handlers appear in both directions, and every divergence in §A has a row in §D. The reasoning
-behind each choice is in `docs/testing/DECISION-LOG.md` §1; this document records what is true, not why it
-was chosen.
+exported handlers appear in both directions; every divergence in §A has a row in §D; all 25 legacy test
+functions appear in §E with a disposition, and §E's reverse table maps each replacement suite back to the
+legacy functions it absorbs; and every file listed as in scope for this milestone appears in §F. The
+reasoning behind each choice is in `docs/testing/DECISION-LOG.md`. Every guarantee in §H names the artifact that enforces it and the evidence it was verified with. This document records what is true, not
+why it was chosen.
 
 ## How the outcomes in this document were obtained
 
@@ -35,14 +41,18 @@ against `http://localhost`.
 
 | # | Caller | Request it emits | Backend route and contract | Outcome the backend produces today | Handler that models it | Divergences (see §D) |
 |---|--------|------------------|----------------------------|------------------------------------|------------------------|----------------------|
-| A1 | `services/api.ts` `fetchTweets(page, limit)` | `GET undefined/tweets?page=<page>&limit=<limit>` | `GET /tweets`, query `skip: int = 0`, `limit: int = 100`, returns `List[Tweet]` | `200` with the list when both coerce to `int` | isolation `GET */tweets` → 200 with three tweets; `currentBehaviorTweetsHandler()` → 200 | X1, X2 |
-| A2 | `services/twitterService.ts` `getLatestTweets(count)` | `GET undefined/tweets?page=<count>&limit=undefined` — calls the two-parameter `fetchTweets` with one argument | same route | `422` `{"detail":[{"loc":["query","limit"],"msg":"value is not a valid integer","type":"type_error.integer"}]}` | isolation → 200; `currentBehaviorTweetsHandler()` → 422 with that exact body | X3 |
-| A3 | `components/Dashboard` `RealTimeFeed`, mount effect and 30 s interval | `GET undefined/tweets?page=undefined&limit=undefined` — calls `getLatestTweets()` with no argument | same route | `422`, `loc` naming `limit` | isolation → 200; `currentBehaviorTweetsHandler()` → 422 | X3, X4 |
-| A4 | `services/api.ts` `fetchTweetById(tweetId)` | `GET undefined/tweets/<tweetId>`, no query, no body | `GET /tweets/{tweet_id}`, returns `Tweet`, raises `HTTPException(404)` when absent | `500`, body `Internal Server Error`, content type `text/plain; charset=utf-8` — the handler reads `Tweet.id`, which the pydantic model does not declare | isolation `GET */tweets/:tweetId` → 200 echoing the path parameter; `currentBehaviorTweetByIdHandler()` → that 500 | X5, X6 |
+| A1 | `services/api.ts` `fetchTweets(page, limit)` | `GET undefined/tweets?page=<page>&limit=<limit>` | `GET /tweets`, query `skip: int = 0`, `limit: int = 100`, returns `List[Tweet]` | `200` with the list when both coerce to `int` | isolation `GET */tweets` → 200 with three tweets; `currentBehaviorTweetsHandlers()` → 200 | X1, X2 |
+| A2 | `services/twitterService.ts` `getLatestTweets(count)` | `GET undefined/tweets?page=<count>&limit=undefined` — calls the two-parameter `fetchTweets` with one argument | same route | `422` `{"detail":[{"loc":["query","limit"],"msg":"value is not a valid integer","type":"type_error.integer"}]}` | isolation → 200; `currentBehaviorTweetsHandlers()` → 422 with that exact body | X3 |
+| A3 | `components/Dashboard` `RealTimeFeed`, mount effect and 30 s interval | `GET undefined/tweets?page=undefined&limit=undefined` — calls `getLatestTweets()` with no argument | same route | `422`, `loc` naming `limit` | isolation → 200; `currentBehaviorTweetsHandlers()` → 422 | X3, X4 |
+| A4 | `services/api.ts` `fetchTweetById(tweetId)` | `GET undefined/tweets/<tweetId>`, no query, no body | `GET /tweets/{tweet_id}`, returns `Tweet`, raises `HTTPException(404)` when absent | `500`, body `Internal Server Error`, content type `text/plain; charset=utf-8` — the handler reads `Tweet.id`, which the pydantic model does not declare | isolation `GET */tweets/:tweetId` → 200 echoing the path parameter; `currentBehaviorTweetByIdHandlers()` → that 500 | X5, X6 |
 | A5 | `services/twitterService.ts` `getTweetDetails(tweetId)` | wraps A4 | same route | same `500` | same as A4 | X5, X7 |
-| A6 | `services/api.ts` `generateResponse(tweetId)` | `POST undefined/generate-response`, `application/json`, body `{"tweetId":"<tweetId>"}`; reads `data.generatedResponse` | none — no router declares this path | `404` `{"detail":"Not Found"}` | isolation `POST */generate-response` → 200 `{generatedResponse}`; `currentBehaviorGenerateResponseHandler()` → that 404 | X8, X9 |
+| A6 | `services/api.ts` `generateResponse(tweetId)` | `POST undefined/generate-response`, `application/json`, body `{"tweetId":"<tweetId>"}`; reads `data.generatedResponse` | none — no router declares this path | `404` `{"detail":"Not Found"}` | isolation `POST */generate-response` → 200 `{generatedResponse}`; `currentBehaviorGenerateResponseHandlers()` → that 404 | X8, X9 |
 | A7 | `services/llmService.ts` `generateTweetResponse(tweetId)` | wraps A6; replaces any rejection with `Error('Failed to generate tweet response')` | none | `404`, seen by the caller as the replacement error | same as A6 | X8, X10 |
-| A8 | none — no module under `frontend/src/` requests it | `POST undefined/tweets/<tweetId>/responses`, no query, no body | `POST /tweets/{tweet_id}/responses`, no request body, returns a dict keyed `response` | `500`, body `Internal Server Error`, from the same `Tweet.id` access | isolation `POST */tweets/:tweetId/responses` → 200 `{response}`; `currentBehaviorTweetResponsesHandler()` → that 500 | X5, X11 |
+| A8 | none — no module under `frontend/src/` requests it | `POST undefined/tweets/<tweetId>/responses`, no query, no body | `POST /tweets/{tweet_id}/responses`, no request body, returns a dict keyed `response` | `500`, body `Internal Server Error`, from the same `Tweet.id` access | isolation `POST */tweets/:tweetId/responses` → 200 `{response}`; `currentBehaviorTweetResponsesHandlers()` → that 500 | X5, X11 |
+
+The `*/…` form in the "Handler that models it" column above names the route **path** a handler stands for,
+not the pattern it is registered under: every handler is registered as an absolute URL, once per allowed
+loopback origin. §B gives the registered patterns.
 
 Two frontend call sites issue **no HTTP request at all** and therefore have no row above and no handler:
 
@@ -55,21 +65,30 @@ Two frontend call sites issue **no HTTP request at all** and therefore have no r
 
 | # | Exported handler | Layer | Route pattern | Stands for | Answers |
 |---|------------------|-------|---------------|------------|---------|
-| B1 | `frontendIsolationHandlers[0]` (alias `handlers[0]`) | isolation, test-only | `GET */tweets` | A1, A2, A3 | `200` with `makeDefaultTweets()`; `599` when the request fails screening |
-| B2 | `frontendIsolationHandlers[1]` | isolation, test-only | `GET */tweets/:tweetId` | A4, A5 | `200` with one tweet whose `tweet_id` echoes the path parameter; `599` on screening failure |
-| B3 | `frontendIsolationHandlers[2]` | isolation, test-only | `POST */tweets/:tweetId/responses` | A8 | `200` `{response: DEFAULT_TWEET_RESPONSE}`; `599` on screening failure |
-| B4 | `frontendIsolationHandlers[3]` | isolation, test-only | `POST */generate-response` | A6, A7 | `200` `{generatedResponse: DEFAULT_GENERATED_RESPONSE}`; `599` on screening failure |
-| B5 | `currentBehaviorTweetsHandler()` | current backend behaviour | `GET */tweets` | A1, A2, A3 | `200` when `skip` and `limit` coerce to `int`, otherwise `422` naming the first failing parameter |
-| B6 | `currentBehaviorTweetByIdHandler()` | current backend behaviour | `GET */tweets/:tweetId` | A4, A5 | `500` `Internal Server Error`, `text/plain; charset=utf-8`, for every id |
-| B7 | `currentBehaviorTweetResponsesHandler()` | current backend behaviour | `POST */tweets/:tweetId/responses` | A8 | `500` `Internal Server Error`, `text/plain; charset=utf-8` |
-| B8 | `currentBehaviorGenerateResponseHandler()` | current backend behaviour | `POST */generate-response` | A6, A7 | `404` `{"detail":"Not Found"}` |
+| B1 | `frontendIsolationHandlers[0..1]` (alias `handlers[0..1]`) | isolation, test-only | `GET http://localhost/*/tweets` and `GET http://127.0.0.1/*/tweets` | A1, A2, A3 | `200` with `makeDefaultTweets()`; `599` when the request fails screening |
+| B2 | `frontendIsolationHandlers[2..3]` | isolation, test-only | `GET <origin>/*/tweets/:tweetId`, one per allowed origin | A4, A5 | `200` with one tweet whose `tweet_id` echoes the path parameter; `599` on screening failure |
+| B3 | `frontendIsolationHandlers[4..5]` | isolation, test-only | `POST <origin>/*/tweets/:tweetId/responses`, one per allowed origin | A8 | `200` `{response: DEFAULT_TWEET_RESPONSE}`; `599` on screening failure |
+| B4 | `frontendIsolationHandlers[6..7]` | isolation, test-only | `POST <origin>/*/generate-response`, one per allowed origin | A6, A7 | `200` `{generatedResponse: DEFAULT_GENERATED_RESPONSE}`; `599` on screening failure |
+| B5 | `currentBehaviorTweetsHandlers()` | current backend behaviour | `GET <origin>/*/tweets`, one handler per allowed origin | A1, A2, A3 | `200` when `skip` and `limit` coerce to `int`, otherwise `422` naming the first failing parameter |
+| B6 | `currentBehaviorTweetByIdHandlers()` | current backend behaviour | `GET <origin>/*/tweets/:tweetId`, one per allowed origin | A4, A5 | `500` `Internal Server Error`, `text/plain; charset=utf-8`, for every id |
+| B7 | `currentBehaviorTweetResponsesHandlers()` | current backend behaviour | `POST <origin>/*/tweets/:tweetId/responses`, one per allowed origin | A8 | `500` `Internal Server Error`, `text/plain; charset=utf-8` |
+| B8 | `currentBehaviorGenerateResponseHandlers()` | current backend behaviour | `POST <origin>/*/generate-response`, one per allowed origin | A6, A7 | `404` `{"detail":"Not Found"}` |
 
-`currentBackendBehaviorHandlers()` returns B5–B8 as a fresh array; it introduces no route of its own.
+Each layer-2 factory returns an array, so a call site spreads it —
+`server.use(...currentBehaviorTweetsHandlers())`. `currentBackendBehaviorHandlers()` returns B5–B8 flattened
+into one fresh array; it introduces no route of its own. `<origin>` is each entry in
+`ALLOWED_REQUEST_ORIGINS`, `http://localhost` and `http://127.0.0.1`, and the `*` segment absorbs the literal
+`undefined` base URL described above. A request to any other origin matches no handler and becomes an
+isolation violation, not a response; see §E row E7.
 
 Supporting exports and what they are for: `ROUTE_CONTRACTS` (the four contract records the screening runs
 on), `recordedRequests` / `lastRecordedRequest` / `resetRecordedRequests` (the intercepted-request log a
-suite asserts exact query, path and body values from), `allowedRequestOrigins` / `allowRequestOrigin` /
-`resetAllowedRequestOrigins` (the origin allow-list), `CONTRACT_VIOLATION_STATUS` /
+suite asserts exact query, path and body values from), `ALLOWED_REQUEST_ORIGINS` / `allowedRequestOrigins`
+(the frozen origin allow-list and its accessor; there is deliberately no mutator — see `DECISION-LOG.md`
+D19), `IsolationViolationKind` / `IsolationViolation` / `recordedIsolationViolations` /
+`resetIsolationViolations` / `recordUnhandledRequest` / `assertNoIsolationViolations` (the non-swallowable
+violation ledger for an out-of-scope origin, an unhandled request or a contract deviation),
+`CONTRACT_VIOLATION_STATUS` /
 `CONTRACT_VIOLATION_DETAIL` (the screening failure response), `BACKEND_SERVER_ERROR_STATUS` /
 `BACKEND_SERVER_ERROR_BODY` / `BACKEND_TEXT_CONTENT_TYPE` / `BACKEND_NOT_FOUND_STATUS` /
 `BACKEND_NOT_FOUND_BODY` / `BACKEND_UNPROCESSABLE_STATUS` / `backendIntegerCoercionErrorBody` (the measured
@@ -106,3 +125,145 @@ the missing behaviour is out of scope. Each is therefore an assertion obligation
 | X10 | `llmService.generateTweetResponse` discards the original error and rethrows `Error('Failed to generate tweet response')` | `services/llmService.ts` line 12 | the llmService suite asserts that exact message, so the `404` cause is provably lost |
 | X11 | no module requests `POST /tweets/{tweet_id}/responses`, so the backend's only write-shaped route has no frontend caller | absence in `frontend/src/services/` | recorded here; no frontend suite may imply the route is exercised from the UI |
 | X12 | `frontend/src/schema/tweetSchema.ts` types `timestamp` as `z.date()`, which no JSON payload can satisfy, while the wire value is an ISO-8601 string | `schema/tweetSchema.ts` vs the serialised handler payloads | the tweetSchema suite asserts that a string `timestamp` is rejected; `makeDefaultTweetsJson()` is the value the service suites compare against |
+
+## §E Legacy suite migration
+
+The three legacy modules — `backend/tests/test_api.py` (86 lines), `test_services.py` (62) and
+`test_tasks.py` (68) — held 25 test functions, six with empty bodies, and all three failed at collection:
+`test_api.py` imported `app.main` (unresolvable until the routes package existed) and additionally could not
+be parsed, `test_services.py` imported a root `services`, and `test_tasks.py` imported a root `backend`. Net
+executed assertions: zero. All three are deleted; every function is dispositioned below. The reasoning is
+`DECISION-LOG.md` §6.
+
+**Disposition counts: 7 rewritten, 3 skipped with a reason, 15 removed with a reason.**
+
+### §E.1 Legacy function → its replacement
+
+| # | Legacy module | Legacy function | Disposition | Replacement, or the reason there is none |
+|---|---------------|-----------------|-------------|------------------------------------------|
+| E1 | `test_api.py` | `test_create_tweet` — `POST /tweets/` expecting 201 | REMOVED | No `POST /tweets/` exists; the implemented write-shaped route is `POST /tweets/{tweet_id}/responses`, and no endpoint accepts a request body. Creating one would be implementing a missing product feature. |
+| E2 | `test_api.py` | `test_get_tweet` — `GET /tweets/1` expecting 200 with `content` | REWRITTEN | `tests/integration/test_http_tweets.py`, which asserts what the route really does: it reads `Tweet.id` on a pydantic model that declares none, so it raises and answers **500**, and its 404 branch is unreachable (§D X5, X6; §G G5). |
+| E3 | `test_api.py` | `test_delete_tweet` — `DELETE /tweets/1` expecting 204 | REMOVED | No `DELETE` route exists on any path. |
+| E4 | `test_api.py` | `test_create_user` — `POST /users/` expecting 201 | REMOVED | `users.py` declares a bare `APIRouter()` with no endpoint; the path answers 404, asserted once in `tests/integration/test_route_surface.py`. |
+| E5 | `test_api.py` | `test_get_user` — `GET /users/1` expecting 200 | REMOVED | Same as E4. |
+| E6 | `test_api.py` | `test_update_user` — `PUT /users/1` expecting 200 | REMOVED | Same as E4. |
+| E7 | `test_api.py` | `test_get_tweet_analytics` — `GET /analytics/tweets` expecting `total_tweets` | REWRITTEN | The route does not exist (404, asserted in `test_route_surface.py`), but the intent — aggregate tweet analytics — is covered at the layer that implements it: `tests/unit/test_services_analytics.py` asserts `get_tweet_analytics`'s `total_tweets`, `avg_daily_tweets`, `avg_retweets`, `avg_favorites` and `daily_breakdown` against controlled `run_query` rows. |
+| E8 | `test_api.py` | `test_get_user_analytics` — `GET /analytics/users` expecting `total_users` | REWRITTEN | Route absent as in E7; the intent is covered by `test_services_analytics.py` against `get_user_analytics`, which returns `total_active_users` — the legacy key `total_users` was wrong independently of the missing route. |
+| E9 | `test_api.py` | `test_get_config` — `GET /config` expecting `max_tweet_length` | REMOVED | `config.py` declares a bare `APIRouter()`; the path answers 404 (asserted in `test_route_surface.py`), and no `max_tweet_length` setting exists anywhere. |
+| E10 | `test_api.py` | `test_update_config` — `PUT /config` expecting 200 | REMOVED | Same as E9. The design documents specify `PATCH` rather than `PUT`, so the legacy method was also wrong; both are moot. |
+| E11 | `test_api.py` | `test_unauthorized_access` — expecting 401 from `POST /tweets/` | REMOVED | No route is protected: no dependency in `app/api/routes/` requires authentication, and no token endpoint exists. The 401 paths that *do* exist are in `app/api/dependencies.py` and are asserted directly by `tests/unit/test_api_dependencies.py`. |
+| E12 | `test_api.py` | `test_authorized_access` — empty body | REMOVED | Empty, and its subject (an authentication mechanism) is unimplemented. Not converted to a skip because E11 already records the absence of route-level auth. |
+| E13 | `test_services.py` | `test_fetch_tweets` — empty body, `TwitterService.fetch_tweets` | REMOVED | Neither `TwitterService` nor `fetch_tweets` exists. `app/services/twitter_service.py` exposes `TwitterStreamListener` and `start_twitter_stream` only, both covered by `tests/unit/test_services_twitter.py`. |
+| E14 | `test_services.py` | `test_process_tweets` — `TwitterService.process_tweets` | REMOVED | Same subject as E13; no such class or method. |
+| E15 | `test_services.py` | `test_generate_response` — patched `services.llm_service.openai.Completion.create` | REWRITTEN | `tests/unit/test_services_llm.py`, keeping the mocking idiom with a corrected target: the module does `from openai import Completion`, so the patch target is `app.services.llm_service.Completion.create`. Covers all five verified outcomes of `generate_response`. |
+| E16 | `test_services.py` | `test_process_sentiment` — `assertIn(sentiment, ["positive","negative","neutral"])` | REMOVED | `process_sentiment` does not exist, and the assertion has no oracle: it passes for any implementation. |
+| E17 | `test_services.py` | `test_calculate_engagement_rate` — `0 <= rate <= 1` | REMOVED | `AnalyticsService.calculate_engagement_rate` does not exist, and the assertion has no oracle. |
+| E18 | `test_services.py` | `test_generate_report` — empty body | REMOVED | No report-generation function exists in `app/services/analytics_service.py`, which exposes `get_tweet_analytics` and `get_user_analytics` only. |
+| E19 | `test_tasks.py` | `test_process_tweet` — patched `backend.tasks.save_tweet_to_db` | REWRITTEN | `tests/unit/test_tasks_tweet_processor.py`. `process_tweet` maps to `TweetStreamListener.on_status`; `save_tweet_to_db` maps to `app.db.firestore.add_tweet`. The suite drives a parametrised popularity matrix and asserts both the return value and `add_tweet.call_count`. |
+| E20 | `test_tasks.py` | `test_generate_response` — patched `get_tweet_from_db`, `generate_ai_response`, `save_response_to_db` | REWRITTEN | `tests/unit/test_tasks_response_generator.py`. `get_tweet_from_db` → `app.db.firestore.get_tweet`; `generate_ai_response` → `app.services.llm_service.generate_response`; `save_response_to_db` has **no production equivalent** — `add_response` is imported by `response_generator` but defined nowhere, and is supplied as a conftest shim (§F F5, §G G8). |
+| E21 | `test_tasks.py` | `test_process_tweet_error_handling` — expects an exception to propagate | REWRITTEN | `test_tasks_tweet_processor.py` preserves the error-disposition intent, asserting what production actually does: a status clearing the popularity gate raises a pydantic `ValidationError` with eight field errors, and `add_tweet` is never called on any path. |
+| E22 | `test_tasks.py` | `test_generate_response_error_handling` — expects an exception to propagate | REWRITTEN | `test_tasks_response_generator.py`: a falsy `get_tweet` raises `ValueError("Tweet with id … not found")`, and a dict result raises `TypeError: object dict can't be used in 'await' expression` because `firestore.get_tweet` is synchronous. |
+| E23 | `test_tasks.py` | `test_process_tweet_with_media` — empty body | SKIPPED | `pytest.mark.skip` naming the unimplemented feature: no media handling exists anywhere in `app/`. |
+| E24 | `test_tasks.py` | `test_generate_response_rate_limiting` — empty body | SKIPPED | `pytest.mark.skip` naming the unimplemented feature: no rate-limiting logic exists anywhere in `app/`. |
+| E25 | `test_tasks.py` | `test_process_tweet_deduplication` — empty body | SKIPPED | `pytest.mark.skip` naming the unimplemented feature: no deduplication logic exists anywhere in `app/`. |
+
+### §E.2 Replacement suite → the legacy functions it absorbs
+
+| Replacement | Absorbs | Also covers, with no legacy antecedent |
+|-------------|---------|----------------------------------------|
+| `tests/integration/test_http_tweets.py` | E2 | `GET /tweets` happy path through `dependency_overrides`; `POST /tweets/{id}/responses`; the unreachable-404 assertion in both `pytest.raises` and `status_code == 500` form |
+| `tests/integration/test_route_surface.py` | the 404 half of E4–E6, E7–E10 | the absence of `API_V1_STR` prefixing on every implemented route |
+| `tests/unit/test_services_llm.py` | E15 | the `AttributeError` a real `Tweet` produces, the swallowed-failure fallback string, and the `IndexError` an empty `choices` list produces outside the `try` |
+| `tests/unit/test_services_analytics.py` | E7, E8 | empty-result-set `KeyError`s, the interpolated `BETWEEN` clause, an inverted date range, and exception propagation |
+| `tests/unit/test_services_twitter.py` | E13, E14 | `TwitterStreamListener` behaviour and the `NameError` that makes `start_twitter_stream` dead code |
+| `tests/unit/test_tasks_tweet_processor.py` | E19, E21 | the exact `stream.filter(track=…)` kwargs with `tweepy` patched, and `DOUBT_RATING_THRESHOLD` as a constant with no gate behind it |
+| `tests/unit/test_tasks_response_generator.py` | E20, E22 | the `process_pending_responses` keyword `TypeError` |
+| `tests/unit/test_api_dependencies.py` | E11 | both 401 paths, the discarded original exception, and the unused `get_db` import |
+
+## §F Test artifact → the construct it covers
+
+Every file in this milestone's scope. "Production construct" names what the artifact exercises or unblocks;
+an artifact that covers infrastructure rather than a production symbol says so.
+
+| # | Artifact | Covers |
+|---|----------|--------|
+| F1 | `backend/pytest.ini` | Single `app.*` import root (`pythonpath = .`), `testpaths`, `asyncio_mode`, strict markers, the two warning filters, JUnit XML, and the correlated log formats |
+| F2 | `backend/requirements-dev.txt` | The pinned runtime and test stack the suite executes against |
+| F3 | `backend/tests/__init__.py`, `unit/__init__.py`, `integration/__init__.py` | Package markers; `backend/app/` deliberately stays a PEP 420 namespace tree |
+| F4 | `backend/tests/conftest.py` — module prologue | `app/core/config.py`'s module-scope `Settings()` and the eight fields it declares without a default; `app/core/security.py`'s missing `Optional` import; ambient `google.auth.default` resolution |
+| F5 | `backend/tests/conftest.py` — shim fixtures | The five symbols production imports but never defines: `Optional`, `verify_token` (`app/api/dependencies.py`), `TwitterService` and `LLMService` (`app/api/routes/tweets.py`, `app/tasks/tweet_processor.py`), `add_response` (`app/tasks/response_generator.py`) |
+| F6 | `backend/tests/conftest.py` — `block_network_access`, `neutralize_google_credentials` | Infrastructure: the demonstrated live-egress risk in `app/db/firestore.py` and the blocking `stream.filter` in both stream starters |
+| F7 | `backend/tests/conftest.py` — `firestore_client`, `bigquery_settings` | `app/db/firestore.get_db`; `app/db/bigquery`'s class-attribute read of `Settings.GOOGLE_CLOUD_PROJECT`, which nothing else can unlock |
+| F8 | `backend/tests/conftest.py` — `frozen_clock` | `app/core/security.create_access_token`'s hardcoded 15-minute default |
+| F9 | `backend/tests/conftest.py` — correlation section | Infrastructure: per-test `test_id`/`correlation_id` on every log record |
+| F10 | `backend/tests/factories.py` | The `Tweet` schema's ten fields, the analytics row shape both queries read, and the tweepy status duck type `on_status` consumes |
+| F11 | `backend/tests/integration/conftest.py` | `app/main.py`'s wiring and lifecycle registration; the `dependency_overrides` identity contract on `app.db.firestore.get_db` |
+| F12 | `backend/tests/unit/test_core_config.py` | `app/core/config.py`: both threshold constants, the eight required fields, the pydantic class-access `AttributeError`, and the four authorized testability fields |
+| F13 | `backend/tests/unit/test_core_security.py` | `app/core/security.py`: bcrypt round trip, `UnknownHashError`, and every JWT expiry branch under a frozen clock |
+| F14 | `backend/tests/unit/test_api_dependencies.py` | `app/api/dependencies.py`: `oauth2_scheme` and both 401 paths of `get_current_user` |
+| F15 | `backend/app/api/routes/tweets.py` | Authorized production touch #1: the three existing endpoints, parameters reordered (`DECISION-LOG.md` D50–D51) |
+| F16 | `backend/app/api/routes/{users,analytics,config}.py` | Authorized production touch #1: the module names `app/main.py` imports; each declares a bare router and no endpoint |
+| F17 | `backend/app/core/config.py` | Authorized production touch #2: the four undeclared fields read at runtime (D52) |
+| F18 | `frontend/package.json` | The Jest toolchain and the five imported-but-undeclared runtime packages |
+| F19 | `frontend/jest.config.js` | Infrastructure: the dual transform, the six `moduleNameMapper` substitutions, the coverage denominator and gate, and the JUnit reporter |
+| F20 | `frontend/jest.transform.extensionless.js` | The four extension-less component **files** under `frontend/src/components/` |
+| F21 | `frontend/src/test-utils/setup-jest.ts` | Infrastructure: jest-dom matchers and the whole msw lifecycle, including all three per-test resets |
+| F22 | `frontend/src/test-utils/msw-server.ts` | Infrastructure: the single `setupServer` instance per test file |
+| F23 | `frontend/src/test-utils/handlers.ts` | The four routes `frontend/src/` requests, in both an isolation and a current-behaviour layer; §A–§D of this document |
+| F24 | `frontend/src/test-utils/render.tsx` | `src/store/tweetSlice.ts` and `src/store/configSlice.ts` default reducers, and the router context the components need |
+| F25 | `frontend/src/test-utils/factories.ts` | The two zod schemas, which validate it in turn |
+| F26 | `frontend/src/test-utils/stubs/analyticsService.ts` | `@/services/analyticsService`, imported by `src/components/Analytics` and non-existent |
+| F27 | `frontend/src/test-utils/stubs/configService.ts` | `@/services/configService`, imported by `src/components/Configuration` and non-existent |
+| F28 | `frontend/src/test-utils/stubs/configSchema.ts` | `../schema/configSchema`, imported by `src/store/configSlice.ts` and non-existent |
+| F29 | `e2e/package.json` | The pinned Playwright, Vite and plugin-react versions, and every documented E2E command |
+| F30 | `e2e/harness-origin.ts` | Infrastructure: the one clone-specific origin both the server and the runner read |
+| F31 | `e2e/playwright.config.ts` | Infrastructure: spec discovery, the owned `webServer`, artifact retention and both reporters |
+| F32 | `e2e/vite.harness.config.ts` | The four extension-less component files (virtual ids), the three non-existent specifiers (stubs), the three undeclared exports (compat), the three bare specifiers (aliases), and the default API responses |
+| F33 | `e2e/harness/index.html` | The HTML entry the repository does not have |
+| F34 | `e2e/harness/main.tsx` | The four routed components over a **valid** store; deliberately not `src/app.tsx` |
+| F35 | `e2e/harness/stubs/analyticsService.ts` | `@/services/analyticsService` for the harness, holding `TrendCharts` on its caught-failure path |
+| F36 | `e2e/harness/stubs/configService.ts` | `@/services/configService` for the harness |
+| F37 | `e2e/harness/stubs/configSchema.ts` | `../schema/configSchema` for the harness |
+| F38 | `e2e/fixtures/trends.json` | The trend series payload the analytics route requests |
+| F39 | `.gitignore` | Infrastructure: every artifact the four suites produce |
+| F40 | `docs/testing/DECISION-LOG.md` | Rule 1: the rationale behind every contestable choice |
+| F41 | `docs/testing/TRACEABILITY-MATRIX.md` | Rule 1: this document, including the 25-function migration in §E |
+
+## §G Coverage ceiling → the assertion that stands in for it
+
+Branches no test can execute without changing production. Each is asserted as current behaviour rather
+than chased; `DECISION-LOG.md` §7 records how the gates are scoped around them.
+
+| # | Ceiling | Why it cannot be executed | What is asserted instead |
+|---|---------|---------------------------|--------------------------|
+| G1 | `frontend/src/app.tsx` cannot be mounted | Imports the invalid store, imports a never-exported `setupInterceptors`, and default-imports a named-only export | Excluded from `collectCoverageFrom`; the E2E harness declares its own route table instead |
+| G2 | Three of the four `src/pages/*.tsx` modules cannot mount | `useAppDispatch`/`useAppSelector` are imported from `src/store/index.ts`, which exports neither | A test per page, three of them skipped with a reason naming the missing hook |
+| G3 | The tweet-rendering branch of both list components | `TweetCard` is imported by `Dashboard` and by `TweetManagement` **from itself**, and defined nowhere | The empty-collection render, plus the `Element type is invalid … got: undefined` failure confirmed in a real browser and recorded here |
+| G4 | Chart construction in `src/components/Analytics` | The tree-shakeable `{ Chart }` is imported and `Chart.register` is never called, so construction throws in any environment with a canvas | The caught-failure path: heading and canvas render, the rejection is logged, the component stays mounted |
+| G5 | The 404 branch of `GET /tweets/{tweet_id}` | `Tweet.id` is read on a pydantic model that declares no `id`, so it raises first | HTTP 500 via `raise_server_exceptions=False`, and the raised `AttributeError` via `pytest.raises` |
+| G6 | A 422 for an invalid request body | No implemented endpoint accepts a request body | Recorded as a gap; the 422 that *is* reachable comes from query coercion on `GET /tweets` |
+| G7 | The `DOUBT_RATING_THRESHOLD` gate | The constant is referenced by no production code anywhere | The constant's value, plus this record that no gate consumes it |
+| G8 | `start_twitter_stream` past its first `tweepy` reference, and `add_response` | The module imports only `StreamListener`, `OAuthHandler` and `API`, so `tweepy.Stream` raises `NameError`; `add_response` is imported by `response_generator` but defined nowhere | The `NameError` itself, and a conftest shim for `add_response` recorded as a divergence |
+
+
+## §H Harness guarantee → the artifact that enforces it
+
+§A–§D map the mock to the application. This section maps the properties the suites *rest on* — no real
+credential, no real host, no shared state, no unpinned dependency — to the file that enforces each one and to
+the observation that showed it working. Every row is traversable in both directions: from a guarantee to its
+artifact, and from each artifact to the guarantee it exists for.
+
+| # | Guarantee | Artifact that enforces it | How it was verified | Reasoning |
+|---|-----------|---------------------------|---------------------|-----------|
+| E1 | Every version the backend manifest pins is the version actually installed | `backend/requirements-dev.txt` (pins) and `backend/tests/test_dependency_closure.py` (a parametrised assertion per `==` pin, plus a guard that the pin list is non-empty) | 24 pins asserted against `importlib.metadata.version`, all matching; `pip check` clean. Negatively validated: rewriting one pin to a version other than the installed one failed the gate with a message naming the distribution, the pin and the installed version | D16, D17 |
+| E2 | No ambient credential or setting reaches the code under test; the `Settings` singleton holds synthetic values | `backend/tests/conftest.py` module prologue (unconditional assignment of the eight required fields, removal of every defaulted and undeclared name) and the session-scoped `verify_settings_singletons` | A run with ambient `SECRET_KEY`, `POPULARITY_THRESHOLD=5` and `NOTION_API_KEY` exported passed 53 tests and reported no leak. Negatively validated: restoring `os.environ.setdefault` with an ambient `SECRET_KEY` made every test in `test_core_security.py` error through the singleton assertion | D20 |
+| E3 | The pytest process is left exactly as it was found — no seeded variable, no credential path, no injected builtin survives | `backend/tests/conftest.py` `pytest_unconfigure`: environment snapshot restored, the Google credential patch stopped, `builtins.Optional` deleted when it was originally absent | The ambient-environment run above observed the managed variables back at their pre-run values and `builtins.Optional` absent afterwards | D20, ISO-02 |
+| E4 | No backend test reaches the network — including during collection, inside a fixture, and after a fixture has been released | `backend/tests/conftest.py` `_EgressGuard`, installed as the last step of the module prologue and released only in `pytest_unconfigure`: DNS resolvers, `connect` / `connect_ex` / `sendto`, `create_connection`, the gRPC channel factories, the Windows proactor connect paths, and network-capable child processes while a test runs | 32 probes. `app.db.firestore.add_tweet({})` refused; a literal-IP async connect refused with no lookup involved; a collection-time `socket.create_connection(('firestore.googleapis.com', 443))` refused with `UnmockedNetworkAccessError`; loopback still available, so `TestClient` works | D21 |
+| E5 | A production symbol that does not exist can never authorize a request or silently succeed | `backend/tests/conftest.py` `MISSING_SYMBOLS` fail-closed sentinels for `verify_token`, `TwitterService`, `LLMService` and `add_response`, written into the defining module and every loaded consumer and restored over any per-test replacement | `tests/unit/test_api_dependencies.py::test_get_current_user_is_fail_closed_without_a_patch` asserts `MissingProductionSymbolError` with no patch installed; the two 401 assertions still hold with the shim patched explicitly | D22 |
+| E6 | No integration test inherits another's dependency overrides, and no `TestClient` outlives its test | `backend/tests/integration/conftest.py`: `client` and `client_no_raise` as yield fixtures that `close()`, and an autouse fixture clearing `app.dependency_overrides` before and after every test | A probe installing an override directly — not through the opt-in fixture — confirmed it does not reach the next test | D23 |
+| E7 | No frontend request escapes to a real host, including one issued while a test module is still being evaluated | `frontend/src/test-utils/setup-jest.ts` (`server.listen({ onUnhandledRequest })` at setup-module scope, `assertNoIsolationViolations()` then state reset in a global `afterEach`) and `frontend/src/test-utils/handlers.ts` (frozen `ALLOWED_REQUEST_ORIGINS`, no mutator, ledger entries for an out-of-scope origin) | 10 Jest probes, including one proving an import-time request is intercepted and one proving allow-list state cannot leak between tests. Negatively validated: moving `listen()` back into `beforeAll` made the module-scope probe report `ESCAPED AxiosError: Network Error` | D19, D24 |
+| E8 | The frontend dependency the manifest pins is the one the installed graph resolves | `frontend/package.json` (`react-router-dom` at 6.22.3) | `npm ls react-router-dom` resolves `react-router-dom@6.22.3` with no unmet or mismatched peer | D25 |
+| E9 | The e2e browser cannot reach a non-harness origin, from a page, a popup or a worker | `e2e/playwright.config.ts` `launchOptions.args` (host-resolver denial plus a closed proxy) and `e2e/tests/harness-fixtures.ts` `noEgress` (context-wide abort with teardown attribution) | An in-page `fetch('https://api.openai.com/v1/models')` was blocked; a `window.open` popup to the same URL landed on `chrome-error://chromewebdata/` with the URL recorded and named in the failing test's output | D30 |
+| E10 | No Service Worker exists to make requests interception cannot see | `e2e/playwright.config.ts` `use.serviceWorkers: 'block'` | `navigator.serviceWorker.register(...)` returns `undefined`, `getRegistrations()` is empty, `controller` is `null`, and the blocking warning is emitted — Playwright implements the option by replacing `register` with a resolving stub (`playwright-core` `browserContext.js` line 110) | D30 |
+| E11 | The harness dev server serves only the harness module graph, and refuses alternate Windows spellings of a path | `e2e/vite.harness.config.ts` `harnessFilesystemGuard` (raw and fully decoded screening for NTFS ADS syntax and 8.3 short names on every request path, allowed-root and deny-pattern checks on the resolved path) with `server.fs.strict`, `allow`, `deny`, `host: '127.0.0.1'` and `strictPort` | 13 cases, no failures: every legitimate `/@fs/` module 200 and every ADS, single-colon, percent-encoded, short-name, outside-root and `/__open-in-editor` attempt 403. Against the pre-fix guard, `/.env::$DATA` and `/.env::$DATA?raw` returned 200 with contents; both are 403 now. All four harness routes render | D26, D31 |
+| E12 | The harness process and the browser both come from pinned local artifacts, and the server under test is always the one this configuration started | `e2e/playwright.config.ts` (`webServer.command` naming `node ./node_modules/vite/bin/vite.js`, `reuseExistingServer: false`, optional `PLAYWRIGHT_CHROMIUM_EXECUTABLE`) and `e2e/package.json` (every script a local binary; `browsers:verify` a dry run) | The harness starts as `VITE v4.5.14` on `127.0.0.1:4173` with no `npx` involved; `npm run browsers:verify` exits 0 without fetching and reports the pre-verified `chromium-1117` install location | D27, D28, D29 |

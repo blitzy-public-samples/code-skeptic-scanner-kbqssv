@@ -19,20 +19,25 @@ const SYNTHETIC_EXTENSION = '.tsx';
 
 const CACHE_KEY_SUFFIX = ':extensionless';
 
-/* Compiler options passed inline to ts-jest; no tsconfig file is read. */
+/*
+ * Compiler options passed inline to ts-jest; no tsconfig file is read.
+ * `isolatedModules` is a TypeScript compiler option here rather than a ts-jest
+ * transform option, matching `frontend/tsconfig.json`. The remaining entries
+ * mirror the primary transform in `frontend/jest.config.js`.
+ */
 const TSCONFIG = {
   jsx: 'react-jsx',
   module: 'commonjs',
   esModuleInterop: true,
   allowJs: true,
   target: 'ES2020',
+  isolatedModules: true,
 };
 
 /* One inner transformer, shared by every call in this worker. */
 const inner = new TsJestTransformer({
   tsconfig: TSCONFIG,
   diagnostics: false,
-  isolatedModules: true,
 });
 
 if (typeof inner.process !== 'function' || typeof inner.getCacheKey !== 'function') {

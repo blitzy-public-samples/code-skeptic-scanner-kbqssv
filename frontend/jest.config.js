@@ -7,13 +7,18 @@
  *
  * @see frontend/TESTING.md - the dual-transformer arrangement, and every `moduleNameMapper`
  *   substitution together with the importer each one serves.
- * @see docs/testing/DECISION-LOG.md - the single source of truth for why each setting below is
- *   what it is, including the options and shims deliberately not used.
+ * @see docs/testing/DECISION-LOG.md - section 3, the single source of truth for why each setting
+ *   below is what it is, including the options and shims deliberately not used.
  */
 
 'use strict';
 
-/* Inline ts-jest compiler options; mirrored in `frontend/jest.transform.extensionless.js`. */
+/*
+ * Inline ts-jest compiler options; mirrored in
+ * `frontend/jest.transform.extensionless.js`, which adds `isolatedModules`.
+ * No tsconfig file is read: `frontend/tsconfig.json` references a
+ * `tsconfig.node.json` that does not exist.
+ */
 const TSCONFIG = {
   jsx: 'react-jsx',
   module: 'commonjs',
@@ -23,14 +28,16 @@ const TSCONFIG = {
 };
 
 module.exports = {
-  preset: 'ts-jest',
-
   testEnvironment: 'jsdom',
 
   /* Registers the jest-dom matchers and the msw request-interception lifecycle. */
   setupFilesAfterEnv: ['<rootDir>/src/test-utils/setup-jest.ts'],
 
-  /* Two transformers: the extension-less component modules, then every .ts/.tsx/.js/.jsx file. */
+  /*
+   * Two transformers, and only two: the extension-less component modules, then
+   * every .ts/.tsx/.js/.jsx file. No `preset` is declared, so nothing merges a
+   * further ts-jest entry in behind these.
+   */
   transform: {
     'src[\\\\/]components[\\\\/](Dashboard|TweetManagement|Analytics|Configuration)$':
       '<rootDir>/jest.transform.extensionless.js',
@@ -90,7 +97,22 @@ module.exports = {
   /* Coverage output formats. `json` emits coverage/coverage-final.json. */
   coverageReporters: ['text-summary', 'lcov', 'json', 'json-summary', 'cobertura'],
 
-  /* Console output, then JUnit XML keyed by file path. */
+  /*
+   * Console output, then JUnit XML keyed by file path.
+   *
+   * The reporting path a result is traced along: `<testcase classname>` is the test file and
+   * `<testcase name>` is the full test name. `src/test-utils/handlers.ts` stamps that same
+   * file-and-name pair, separators normalised to `/`, on every entry of its intercepted-request log
+   * and on every contract-violation line - so a recorded request, a console line and a `<testcase>`
+   * are all attributable to one test.
+   *
+   * `reportTestSuiteErrors` is what puts a suite that fails to load - an import error, a transform
+   * failure - into the XML; without it such a file contributes no `<testcase>` at all and reads
+   * downstream as absent rather than broken. `addFileAttribute` adds the `file` attribute CI
+   * annotators read. `includeConsoleOutput` carries the correlated console lines into `<system-out>`
+   * whenever Jest buffers them, which is any run it does not switch to verbose - it does so
+   * automatically for a single test file, and then streams the lines to stdout instead.
+   */
   reporters: [
     'default',
     [
@@ -102,6 +124,9 @@ module.exports = {
         classNameTemplate: '{filepath}',
         titleTemplate: '{title}',
         ancestorSeparator: ' > ',
+        addFileAttribute: 'true',
+        reportTestSuiteErrors: 'true',
+        includeConsoleOutput: 'true',
       },
     ],
   ],

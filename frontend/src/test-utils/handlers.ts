@@ -1,15 +1,18 @@
 /**
- * msw request handlers for the frontend Jest suite, in two separately named layers. This module registers
- * handlers only - it constructs no server and makes no lifecycle call. See `frontend/TESTING.md` for how a
- * suite consumes it, `docs/testing/DECISION-LOG.md` for why it is shaped this way, and
- * `docs/testing/TRACEABILITY-MATRIX.md` for the per-route caller-to-backend mapping.
+ * msw request handlers for the frontend Jest suite, in two separately named layers.
+ *
+ * This module registers handlers only. It constructs no server, makes no lifecycle call and registers no
+ * Jest hook: `src/test-utils/setup-jest.ts` owns the lifecycle and resets every piece of mutable state
+ * declared here - the handler array, the origin allow-list and the request log - after each test.
+ *
+ * See `frontend/TESTING.md` for how a suite consumes it, `docs/testing/DECISION-LOG.md` section 1 for why it
+ * is shaped this way, and `docs/testing/TRACEABILITY-MATRIX.md` for the per-route caller-to-backend mapping.
  *
  * ## Layer 1 - {@link frontendIsolationHandlers}, exported also as {@link handlers}
  *
- * TEST-ONLY nominal-success responses. They exist so a component or service suite can run without a
- * socket; they are **not** a model of the backend and a suite that only exercises them has covered no
- * integration. The status each of these four routes really answers with today, measured against the
- * assembled FastAPI app:
+ * TEST-ONLY nominal-success responses, so a component or service suite can run without a socket. They are
+ * **not** a model of the backend: a suite that exercises only these has covered no integration. The status
+ * each of these four routes really answers with today, measured against the assembled FastAPI app:
  *
  * | Route                              | Isolation layer | Real current outcome                                    |
  * |------------------------------------|-----------------|---------------------------------------------------------|
@@ -29,12 +32,32 @@
  * records it in the log that {@link recordedRequests} returns, so a suite asserts the exact query, path and
  * body it emitted rather than inferring correctness from a 200.
  *
+ * The allowed-origin set and the request log are this module's only mutable state, and both are discarded
+ * after every test by {@link resetHandlerState}, which `./setup-jest` calls from the single `afterEach` that
+ * owns the whole msw lifecycle. This module registers no Jest hook of its own.
+ *
  * The two layers act on a failed screening differently. In layer 1 a request that deviates from the
- * contract - an unknown or absent query key, a placeholder path parameter, an unexpected body, or an origin
- * outside {@link allowedRequestOrigins} - is answered with {@link CONTRACT_VIOLATION_STATUS} and a body
- * listing the violations, and never with a success status. In layer 2 the violations are recorded and the
- * response is whatever the backend returns for that request, including for a request no caller should
- * emit.
+ * contract - an unknown or absent query key, a placeholder path parameter or an unexpected body - is
+ * answered with {@link CONTRACT_VIOLATION_STATUS} and a body listing the violations, and never with a
+ * success status. In layer 2 the violations are recorded and the response is whatever the backend returns
+ * for that request, including for a request no caller should emit.
+ *
+ * ## Origin confinement, and why a violation is not just a status
+ *
+ * Every pattern below is registered host-agnostically and screened against {@link allowedRequestOrigins},
+ * so a handler matches only a request to `http://localhost` or `http://127.0.0.1` - the origins jsdom
+ * serves the suite from. A request to any other host matches nothing, which is what makes msw's
+ * `onUnhandledRequest: 'error'` fire on it: msw reports it and never performs it, so nothing reaches a
+ * socket. Host-agnostic `*​/tweets` patterns would instead have *matched* that request and answered it,
+ * which is how a base URL pointing at a real host stays invisible.
+ *
+ * A status alone is not enough either way. `services/twitterService.ts`, `services/llmService.ts` and the
+ * `Dashboard` and `TweetManagement` components all catch what they are given, so a rejection - a 599, or
+ * the error msw raises for an unhandled request - can be swallowed before any assertion sees it. Every
+ * violation is therefore also appended to a ledger, and {@link assertNoIsolationViolations} throws on it.
+ * `src/test-utils/setup-jest.ts` calls that from a global `afterEach`, so a swallowed violation fails the
+ * test that caused it rather than passing quietly. There is no mutable origin allow-list to leak between
+ * tests: a suite that needs another origin installs its own handler for it with `server.use(...)`.
  *
  * ## API version
  *
@@ -210,7 +233,13 @@ export interface RouteContract {
   /** Stable identifier, used in the request log and in violation messages. */
   readonly id: string;
   readonly method: 'GET' | 'POST';
-  /** msw path pattern. Host-agnostic: the callers' base URL is the literal string `undefined`. */
+  /**
+   * Route path, beginning with the `*` segment the callers' `undefined` base URL occupies.
+   *
+   * Never registered as written: {@link originScopedPatterns} prefixes it with each entry in
+   * {@link allowedRequestOrigins}, so a request from an origin the running test has not admitted is
+   * other host matches nothing.
+   */
   readonly pattern: string;
   /** Production functions that issue this request. */
   readonly callers: readonly string[];
@@ -359,25 +388,68 @@ export const ROUTE_CONTRACTS: readonly RouteContract[] = Object.freeze([
 ]);
 
 /* ------------------------------------------------------------------------------------------------------ *
- * Origins a handler will answer. jsdom serves the suite from http://localhost, and the callers' base URL is
- * the literal string `undefined`, so every intercepted request is same-origin with the document.
+ * Origins a handler answers. jsdom serves the suite from http://localhost and the callers' base URL is the
+ * literal string `undefined`, so every request a caller emits is same-origin with the document.
  * ------------------------------------------------------------------------------------------------------ */
 
-const DEFAULT_REQUEST_ORIGINS: readonly string[] = Object.freeze(['http://localhost', 'http://127.0.0.1']);
+/**
+ * The only origins any handler in this module is registered for, as `URL.origin` reports them. Loopback
+ * only, and immutable: there is no function that adds to it, because a mutable allow-list is state one test
+ * can widen for every test after it.
+ *
+ * `http://localhost` is jsdom's default document origin; `http://127.0.0.1` is included so a suite that
+ * overrides `testEnvironmentOptions.url` to the numeric form is served by the same handlers.
+ *
+ * A suite that deliberately points at some other origin admits it for the duration of one test with
+ * {@link allowRequestOrigin}. A request from an origin that is not admitted still *matches* a handler -
+ * the patterns are host-agnostic - and is screened out: it is answered with
+ * {@link CONTRACT_VIOLATION_STATUS}, recorded, and appended to the isolation ledger, so
+ * {@link assertNoIsolationViolations} fails the test even when the caller swallows the rejection.
+ */
+const DEFAULT_REQUEST_ORIGINS: readonly string[] = Object.freeze([
+  'http://localhost',
+  'http://127.0.0.1',
+]);
 
+/**
+ * Origins a handler answers right now: the two jsdom origins, plus whatever the running test admitted.
+ *
+ * Mutable, and reset to {@link DEFAULT_REQUEST_ORIGINS} after every test by {@link resetHandlerState},
+ * which `./setup-jest` calls from its single global `afterEach`. Insertion order is preserved, so the two
+ * defaults always come first.
+ */
 const requestOrigins = new Set<string>(DEFAULT_REQUEST_ORIGINS);
 
 /**
- * The origins the handlers currently answer. A request from any other origin is screened out, so a base URL
- * pointing somewhere real surfaces as a failing test rather than as a mocked success.
+ * The origins the handlers answer. A request from any other origin is screened out, so a base URL pointing
+ * somewhere real surfaces as a failing test rather than as a mocked success.
+ *
+ * @returns A frozen snapshot, defaults first.
  */
 export function allowedRequestOrigins(): readonly string[] {
   return Object.freeze([...requestOrigins]);
 }
 
 /**
+ * Host-agnostic msw pattern for one route path.
+ *
+ * `path` keeps its leading `*` segment, which is what the callers' `undefined` base URL occupies:
+ * `fetchTweets` emits `undefined/tweets?...`, which the browser resolves to
+ * `http://localhost/undefined/tweets`. The pattern is registered without an origin prefix so that a request
+ * from *any* origin matches and reaches the screening in {@link screenRequest}, which is what turns a
+ * request from a non-admitted origin into a recorded, ledgered violation rather than an error msw's caller
+ * can swallow.
+ *
+ * @param path - Route path beginning with `*​/`, for example `*​/tweets/:tweetId`.
+ * @returns The single pattern to register for this route.
+ */
+function originScopedPatterns(path: string): readonly string[] {
+  return [path];
+}
+
+/**
  * Adds an origin to {@link allowedRequestOrigins} for a suite that sets `REACT_APP_API_BASE_URL` to an
- * absolute URL on purpose.
+ * absolute URL on purpose. Lasts for the current test only.
  *
  * @param origin - Origin as `URL.origin` reports it, for example `https://api.example.test`.
  */
@@ -385,7 +457,10 @@ export function allowRequestOrigin(origin: string): void {
   requestOrigins.add(origin);
 }
 
-/** Restores {@link allowedRequestOrigins} to the two jsdom origins. */
+/**
+ * Restores {@link allowedRequestOrigins} to the two jsdom origins. Called from the central `afterEach` in
+ * `./setup-jest` through {@link resetHandlerState}; safe to call again.
+ */
 export function resetAllowedRequestOrigins(): void {
   requestOrigins.clear();
   for (const origin of DEFAULT_REQUEST_ORIGINS) {
@@ -421,6 +496,8 @@ export interface RecordedRequest {
   readonly status: number;
   /** Screening messages; empty when the request matched its contract. */
   readonly violations: readonly string[];
+  /** {@link currentTestId} at the moment the request was answered. */
+  readonly testId: string;
 }
 
 const requestLog: RecordedRequest[] = [];
@@ -441,23 +518,180 @@ export function lastRecordedRequest(): RecordedRequest | undefined {
   return requestLog[requestLog.length - 1];
 }
 
-/** Empties the request log. Registered with `afterEach` automatically; safe to call again. */
+/** Empties the request log. Called from `setup-jest.ts` after every test; safe to call again. */
 export function resetRecordedRequests(): void {
   requestLog.length = 0;
 }
 
-/**
- * Registers {@link resetRecordedRequests} with Jest's `afterEach` so the log cannot carry entries from one
- * test into the next. Outside a test run `afterEach` is undefined and nothing is registered.
- */
-function registerRequestLogReset(): void {
-  const hook = (globalThis as { afterEach?: (teardown: () => void) => void }).afterEach;
-  if (typeof hook === 'function') {
-    hook(resetRecordedRequests);
-  }
+/* ------------------------------------------------------------------------------------------------------ *
+ * Test correlation. Every recorded request and every violation log line carries the id of the test that
+ * emitted it, which is the same value jest-junit writes as the `<testcase>` classname and name.
+ * ------------------------------------------------------------------------------------------------------ */
+
+/** Value {@link currentTestId} reports when no test is running, or when Jest exposes no state. */
+export const UNATTRIBUTED_TEST_ID = 'no-test';
+
+/** The Jest globals this module reads, declared so it also loads outside a test run. */
+interface JestExpectState {
+  getState?: () => { currentTestName?: string; testPath?: string } | undefined;
 }
 
-registerRequestLogReset();
+/**
+ * Identifier of the test currently executing, as `<test file> > <full test name>`.
+ *
+ * The file is `<rootDir>`-relative with forward slashes, matching `jest-junit`'s `{filepath}` template, and
+ * the name is Jest's `currentTestName`, matching its `{title}` with `ancestorSeparator`. A request emitted
+ * outside a test - from a module body, or after the test that started it has finished - reports
+ * {@link UNATTRIBUTED_TEST_ID}, which is what makes a leaked request visible as such.
+ */
+export function currentTestId(): string {
+  const jestExpect = (globalThis as { expect?: JestExpectState }).expect;
+  const state = typeof jestExpect?.getState === 'function' ? jestExpect.getState() : undefined;
+  if (state === undefined) {
+    return UNATTRIBUTED_TEST_ID;
+  }
+
+  const name = state.currentTestName ?? '';
+  const path = (state.testPath ?? '').replace(/\\/g, '/');
+  const file = path.slice(path.indexOf('/src/') + 1) || path;
+  if (name === '' && file === '') {
+    return UNATTRIBUTED_TEST_ID;
+  }
+  return file === '' ? name : `${file} > ${name || '(module scope)'}`;
+}
+
+/* ------------------------------------------------------------------------------------------------------ *
+ * Isolation-violation ledger. A rejection status can be caught by the code under test; a throw at teardown
+ * cannot.
+ * ------------------------------------------------------------------------------------------------------ */
+
+/** Why a request breached the isolation boundary. */
+export type IsolationViolationKind =
+  /** Request to an origin no handler is registered for. */
+  | 'origin'
+  /** Request no handler matched at all, reported through msw's `onUnhandledRequest`. */
+  | 'unhandled-request'
+  /** Request the isolation layer screened out against its {@link RouteContract}. */
+  | 'contract';
+
+/** One breach, as {@link assertNoIsolationViolations} reports it. */
+export interface IsolationViolation {
+  readonly kind: IsolationViolationKind;
+  /** {@link RouteContract.id}, or `'(no handler)'` for an unhandled request. */
+  readonly handler: string;
+  readonly method: string;
+  readonly url: string;
+  readonly violations: readonly string[];
+}
+
+const isolationViolations: IsolationViolation[] = [];
+
+/**
+ * Every isolation breach recorded since the last {@link resetIsolationViolations}, oldest first.
+ *
+ * @returns A frozen snapshot; mutating it does not affect the ledger.
+ */
+export function recordedIsolationViolations(): readonly IsolationViolation[] {
+  return Object.freeze([...isolationViolations]);
+}
+
+/** Empties the ledger. `src/test-utils/setup-jest.ts` calls this after every test. */
+export function resetIsolationViolations(): void {
+  isolationViolations.length = 0;
+}
+
+/**
+ * Takes the ledger's contents and empties it, so the breaches it held do not fail the current test.
+ *
+ * For the one case the ledger is not meant to catch: a test that *provokes* a screening on purpose and
+ * asserts on it, rather than one that leaked a request without noticing. Call this after those assertions,
+ * and assert on the returned entries if the ledger itself is the subject.
+ *
+ * Every other test leaves the ledger alone, so {@link assertNoIsolationViolations} stays fail-closed by
+ * default: a breach nobody acknowledged still fails the test that caused it.
+ *
+ * @returns The entries the ledger held, oldest first.
+ */
+export function acknowledgeIsolationViolations(): readonly IsolationViolation[] {
+  const acknowledged = Object.freeze([...isolationViolations]);
+  isolationViolations.length = 0;
+  return acknowledged;
+}
+
+function recordIsolationViolation(violation: IsolationViolation): void {
+  isolationViolations.push(Object.freeze(violation));
+}
+
+/**
+ * Records a request msw matched no handler for.
+ *
+ * Called from the `onUnhandledRequest` callback in `src/test-utils/setup-jest.ts` before it invokes
+ * `print.error()`. msw's own error is raised inside the request lifecycle and can be caught by whatever
+ * issued the request - `getLatestTweets`, `generateTweetResponse` and both list components all swallow what
+ * they are handed - so the ledger entry is what survives to fail the test.
+ *
+ * @param method - HTTP method as msw reports it.
+ * @param url - Absolute request URL.
+ */
+export function recordUnhandledRequest(method: string, url: string): void {
+  recordIsolationViolation({
+    kind: 'unhandled-request',
+    handler: '(no handler)',
+    method,
+    url,
+    violations: Object.freeze([
+      `no handler is registered for ${method} ${url}; the isolation layer answers only ` +
+        `${allowedRequestOrigins().join(' and ')}. Install a handler for this exact URL with ` +
+        'server.use(...) if the request is intended.',
+    ]),
+  });
+}
+
+/**
+ * Throws when any isolation breach was recorded, listing every one.
+ *
+ * `src/test-utils/setup-jest.ts` calls this from a global `afterEach`, which is what makes a breach fail the
+ * test that caused it even when the code under test caught the response. Without it a service that turns a
+ * rejection into `[]` - or a component that logs and continues - reports success for a request that never
+ * should have been made.
+ *
+ * @throws Error naming each breach, its kind and its URL.
+ */
+export function assertNoIsolationViolations(): void {
+  if (isolationViolations.length === 0) {
+    return;
+  }
+
+  const detail = isolationViolations
+    .map(
+      (violation) =>
+        `  [${violation.kind}] ${violation.method} ${violation.url} (${violation.handler})\n` +
+        violation.violations.map((message) => `    - ${message}`).join('\n'),
+    )
+    .join('\n');
+
+  throw new Error(
+    `${isolationViolations.length} request(s) breached test isolation:\n${detail}\n` +
+      'No request may leave the suite. Point the request at the jsdom origin, or register a handler for it.',
+  );
+}
+
+/**
+ * Restores every piece of module state this file holds - the allowed-origin set, the request log and the
+ * isolation ledger - to the state a freshly imported module has. Called from the central `afterEach` in
+ * `./setup-jest`, which is the single owner of this cleanup; this file registers no hook of its own.
+ *
+ * The ledger is reset here too, so one test's breach is never attributed to a later one. `./setup-jest`
+ * asserts on the ledger *before* calling this, so a breach still fails the test that caused it.
+ *
+ * A new piece of module state added to this file belongs here, so that one call site keeps discarding all of
+ * it.
+ */
+export function resetHandlerState(): void {
+  resetAllowedRequestOrigins();
+  resetRecordedRequests();
+  resetIsolationViolations();
+}
 
 /* ------------------------------------------------------------------------------------------------------ *
  * Screening.
@@ -480,6 +714,8 @@ interface ScreenedRequest {
   readonly base: string;
   readonly query: Record<string, string>;
   readonly pathParams: Record<string, string>;
+  /** `false` when the request came from an origin outside {@link allowedRequestOrigins}. */
+  readonly originAllowed: boolean;
   readonly violations: readonly string[];
 }
 
@@ -538,10 +774,14 @@ function bodyViolations(contract: RouteContract, facts: RequestFacts): string[] 
 /**
  * Compares a request against its route contract without answering it.
  *
- * Checks the origin against {@link allowedRequestOrigins}, the query keys against
- * {@link RequestExpectation.queryKeys} in both directions, each named path parameter against
- * {@link PLACEHOLDER_PATH_VALUES}, and the body against {@link RequestExpectation.body}, then applies the
- * route's own {@link RequestExpectation.validateQuery}.
+ * Checks the query keys against {@link RequestExpectation.queryKeys} in both directions, each named path
+ * parameter against {@link PLACEHOLDER_PATH_VALUES}, and the body against
+ * {@link RequestExpectation.body}, then applies the route's own {@link RequestExpectation.validateQuery}.
+ *
+ * The origin is checked too, and reported through {@link ScreenedRequest.originAllowed}. Registration
+ * screens every handler in this module against {@link allowedRequestOrigins}, so this check should
+ * never fire; it is kept as the second line of defence, and as the thing that puts an entry in the ledger
+ * if a handler is ever registered for a pattern this module did not scope.
  */
 function screenRequest(contract: RouteContract, facts: RequestFacts): ScreenedRequest {
   const violations: string[] = [];
@@ -551,7 +791,8 @@ function screenRequest(contract: RouteContract, facts: RequestFacts): ScreenedRe
   }
   const pathParams = namedPathParams(facts.params);
 
-  if (!requestOrigins.has(facts.url.origin)) {
+  const originAllowed = allowedRequestOrigins().includes(facts.url.origin);
+  if (!originAllowed) {
     violations.push(
       `origin "${facts.url.origin}" is not an allowed test origin (${allowedRequestOrigins().join(', ')})`,
     );
@@ -584,15 +825,35 @@ function screenRequest(contract: RouteContract, facts: RequestFacts): ScreenedRe
   return {
     contract,
     facts,
+    // The patterns are host-agnostic, so the leading `*` matches the whole absolute prefix the caller
+    // sent - origin included - which is already the value `base` reports. Prefixing the origin here
+    // would double it.
     base: stringifyParam(facts.params['0']),
     query,
     pathParams,
+    originAllowed,
     violations,
   };
 }
 
-/** Appends a screened request to the log under the status it was answered with. */
+/**
+ * Appends a screened request to the log under the status it was answered with, and records an origin breach
+ * in the ledger.
+ *
+ * Every handler in both layers calls this exactly once per request, which makes it the single place the
+ * origin check can be turned into a failure the code under test cannot swallow.
+ */
 function record(screened: ScreenedRequest, status: number): void {
+  if (!screened.originAllowed) {
+    recordIsolationViolation({
+      kind: 'origin',
+      handler: screened.contract.id,
+      method: screened.facts.method,
+      url: screened.facts.url.href,
+      violations: Object.freeze([...screened.violations]),
+    });
+  }
+
   requestLog.push(
     Object.freeze({
       handler: screened.contract.id,
@@ -608,6 +869,7 @@ function record(screened: ScreenedRequest, status: number): void {
       body: screened.facts.body,
       status,
       violations: Object.freeze([...screened.violations]),
+      testId: currentTestId(),
     }),
   );
 }
@@ -615,9 +877,26 @@ function record(screened: ScreenedRequest, status: number): void {
 /**
  * Records a screened-out request, writes its violations to `console.error` so they surface even when the
  * calling service swallows the rejection, and returns the body to answer it with.
+ *
+ * Layer 1 only. A request that fails its contract here is never intentional - a suite wanting to assert what
+ * the backend does with a non-conforming request installs the matching
+ * {@link currentBackendBehaviorHandlers} entry instead, and that layer records the deviation without adding
+ * a ledger entry. So this also appends to the ledger, which turns the 599 from a status the caller may catch
+ * into a failure of the test that emitted the request.
  */
 function rejectScreenedRequest(screened: ScreenedRequest): ContractViolationBody {
   record(screened, CONTRACT_VIOLATION_STATUS);
+
+  if (screened.originAllowed) {
+    // An origin breach is already in the ledger, recorded by `record` above.
+    recordIsolationViolation({
+      kind: 'contract',
+      handler: screened.contract.id,
+      method: screened.facts.method,
+      url: screened.facts.url.href,
+      violations: Object.freeze([...screened.violations]),
+    });
+  }
 
   const body: ContractViolationBody = Object.freeze({
     detail: CONTRACT_VIOLATION_DETAIL,
@@ -629,6 +908,7 @@ function rejectScreenedRequest(screened: ScreenedRequest): ContractViolationBody
   // eslint-disable-next-line no-console
   console.error(
     `${CONTRACT_VIOLATION_DETAIL} [${screened.contract.id}] ${screened.facts.method} ${screened.facts.url.href}\n` +
+      `  test: ${currentTestId()}\n` +
       screened.violations.map((violation) => `  - ${violation}`).join('\n'),
   );
 
@@ -641,80 +921,89 @@ function rejectScreenedRequest(screened: ScreenedRequest): ContractViolationBody
  * ------------------------------------------------------------------------------------------------------ */
 
 /**
- * Nominal-success handlers, one per route in {@link ROUTE_CONTRACTS}, in that order. Adding a route is one
- * more `RouteContract` and one more `rest.<method>(...)` entry: no entry reads or branches through another.
+ * Nominal-success handlers: one per route in {@link ROUTE_CONTRACTS}, in that order, and one per entry in
+ * {@link allowedRequestOrigins} within each route. Adding a route is one more `RouteContract` and one more
+ * `originScopedPatterns(...).map(...)` entry: no entry reads or branches through another.
  *
  * These responses are fixtures, not backend behaviour. A suite asserting an integration outcome installs
  * the matching entry from {@link currentBackendBehaviorHandlers} instead.
  */
 export const frontendIsolationHandlers: RestHandler[] = [
-  rest.get(TWEETS_CONTRACT.pattern, (req, res, ctx) => {
-    const screened = screenRequest(TWEETS_CONTRACT, {
-      method: req.method,
-      url: req.url,
-      params: req.params,
-      contentType: req.headers.get('content-type'),
-      body: undefined,
-    });
+  ...originScopedPatterns(TWEETS_CONTRACT.pattern).map((pattern) =>
+    rest.get(pattern, (req, res, ctx) => {
+      const screened = screenRequest(TWEETS_CONTRACT, {
+        method: req.method,
+        url: req.url,
+        params: req.params,
+        contentType: req.headers.get('content-type'),
+        body: undefined,
+      });
 
-    if (screened.violations.length > 0) {
-      return res(ctx.status(CONTRACT_VIOLATION_STATUS), ctx.json(rejectScreenedRequest(screened)));
-    }
+      if (screened.violations.length > 0) {
+        return res(ctx.status(CONTRACT_VIOLATION_STATUS), ctx.json(rejectScreenedRequest(screened)));
+      }
 
-    record(screened, 200);
-    return res(ctx.status(200), ctx.json(makeDefaultTweets()));
-  }),
+      record(screened, 200);
+      return res(ctx.status(200), ctx.json(makeDefaultTweets()));
+    }),
+  ),
 
-  rest.get<never, { tweetId: string }>(TWEET_BY_ID_CONTRACT.pattern, (req, res, ctx) => {
-    const screened = screenRequest(TWEET_BY_ID_CONTRACT, {
-      method: req.method,
-      url: req.url,
-      params: req.params,
-      contentType: req.headers.get('content-type'),
-      body: undefined,
-    });
+  ...originScopedPatterns(TWEET_BY_ID_CONTRACT.pattern).map((pattern) =>
+    rest.get<never, { tweetId: string }>(pattern, (req, res, ctx) => {
+      const screened = screenRequest(TWEET_BY_ID_CONTRACT, {
+        method: req.method,
+        url: req.url,
+        params: req.params,
+        contentType: req.headers.get('content-type'),
+        body: undefined,
+      });
 
-    if (screened.violations.length > 0) {
-      return res(ctx.status(CONTRACT_VIOLATION_STATUS), ctx.json(rejectScreenedRequest(screened)));
-    }
+      if (screened.violations.length > 0) {
+        return res(ctx.status(CONTRACT_VIOLATION_STATUS), ctx.json(rejectScreenedRequest(screened)));
+      }
 
-    record(screened, 200);
-    return res(ctx.status(200), ctx.json(makeTweet({ tweet_id: req.params.tweetId })));
-  }),
+      record(screened, 200);
+      return res(ctx.status(200), ctx.json(makeTweet({ tweet_id: req.params.tweetId })));
+    }),
+  ),
 
-  rest.post<string, { tweetId: string }>(TWEET_RESPONSES_CONTRACT.pattern, (req, res, ctx) => {
-    const screened = screenRequest(TWEET_RESPONSES_CONTRACT, {
-      method: req.method,
-      url: req.url,
-      params: req.params,
-      contentType: req.headers.get('content-type'),
-      body: req.body,
-    });
+  ...originScopedPatterns(TWEET_RESPONSES_CONTRACT.pattern).map((pattern) =>
+    rest.post<string, { tweetId: string }>(pattern, (req, res, ctx) => {
+      const screened = screenRequest(TWEET_RESPONSES_CONTRACT, {
+        method: req.method,
+        url: req.url,
+        params: req.params,
+        contentType: req.headers.get('content-type'),
+        body: req.body,
+      });
 
-    if (screened.violations.length > 0) {
-      return res(ctx.status(CONTRACT_VIOLATION_STATUS), ctx.json(rejectScreenedRequest(screened)));
-    }
+      if (screened.violations.length > 0) {
+        return res(ctx.status(CONTRACT_VIOLATION_STATUS), ctx.json(rejectScreenedRequest(screened)));
+      }
 
-    record(screened, 200);
-    return res(ctx.status(200), ctx.json({ response: DEFAULT_TWEET_RESPONSE }));
-  }),
+      record(screened, 200);
+      return res(ctx.status(200), ctx.json({ response: DEFAULT_TWEET_RESPONSE }));
+    }),
+  ),
 
-  rest.post<{ tweetId: string }>(GENERATE_RESPONSE_CONTRACT.pattern, (req, res, ctx) => {
-    const screened = screenRequest(GENERATE_RESPONSE_CONTRACT, {
-      method: req.method,
-      url: req.url,
-      params: req.params,
-      contentType: req.headers.get('content-type'),
-      body: req.body,
-    });
+  ...originScopedPatterns(GENERATE_RESPONSE_CONTRACT.pattern).map((pattern) =>
+    rest.post<{ tweetId: string }>(pattern, (req, res, ctx) => {
+      const screened = screenRequest(GENERATE_RESPONSE_CONTRACT, {
+        method: req.method,
+        url: req.url,
+        params: req.params,
+        contentType: req.headers.get('content-type'),
+        body: req.body,
+      });
 
-    if (screened.violations.length > 0) {
-      return res(ctx.status(CONTRACT_VIOLATION_STATUS), ctx.json(rejectScreenedRequest(screened)));
-    }
+      if (screened.violations.length > 0) {
+        return res(ctx.status(CONTRACT_VIOLATION_STATUS), ctx.json(rejectScreenedRequest(screened)));
+      }
 
-    record(screened, 200);
-    return res(ctx.status(200), ctx.json({ generatedResponse: DEFAULT_GENERATED_RESPONSE }));
-  }),
+      record(screened, 200);
+      return res(ctx.status(200), ctx.json({ generatedResponse: DEFAULT_GENERATED_RESPONSE }));
+    }),
+  ),
 ];
 
 /**
@@ -726,116 +1015,140 @@ export const handlers: RestHandler[] = frontendIsolationHandlers;
 /* ------------------------------------------------------------------------------------------------------ *
  * Layer 2 - current backend behaviour. Each factory reproduces the status, body and content type the
  * assembled application returns today, as measured against that application.
+ *
+ * Each returns one host-agnostic handler, screened against `allowedRequestOrigins()` like layer
+ * 1, so a call site spreads the result: `server.use(...currentBehaviorTweetsHandlers())`.
+ *
+ * Unlike layer 1, a contract deviation here is not a ledger entry. Reproducing what the backend does with a
+ * request no caller should emit - the 422 for `limit=undefined`, for instance - is the whole point of this
+ * layer, so the deviation is recorded in the request log and the backend's own answer is returned.
  * ------------------------------------------------------------------------------------------------------ */
 
 /**
  * `GET /tweets` as the backend answers it: 200 with the tweet list, or 422 when `skip` or `limit` does not
  * coerce to `int`, naming the first failing parameter. `page` is not a declared parameter, so it is read
  * back into the request log and otherwise ignored, exactly as FastAPI ignores it.
+ *
+ * @returns One handler per allowed loopback origin.
  */
-export function currentBehaviorTweetsHandler(): RestHandler {
-  return rest.get(TWEETS_CONTRACT.pattern, (req, res, ctx) => {
-    const screened = screenRequest(TWEETS_CONTRACT, {
-      method: req.method,
-      url: req.url,
-      params: req.params,
-      contentType: req.headers.get('content-type'),
-      body: undefined,
-    });
+export function currentBehaviorTweetsHandlers(): RestHandler[] {
+  return originScopedPatterns(TWEETS_CONTRACT.pattern).map((pattern) =>
+    rest.get(pattern, (req, res, ctx) => {
+      const screened = screenRequest(TWEETS_CONTRACT, {
+        method: req.method,
+        url: req.url,
+        params: req.params,
+        contentType: req.headers.get('content-type'),
+        body: undefined,
+      });
 
-    const failing = BACKEND_TWEETS_INT_PARAMETERS.find(
-      (parameter) => !coercesToInteger(screened.query[parameter]),
-    );
-
-    if (failing !== undefined) {
-      record(screened, BACKEND_UNPROCESSABLE_STATUS);
-      return res(
-        ctx.status(BACKEND_UNPROCESSABLE_STATUS),
-        ctx.json(backendIntegerCoercionErrorBody(failing)),
+      const failing = BACKEND_TWEETS_INT_PARAMETERS.find(
+        (parameter) => !coercesToInteger(screened.query[parameter]),
       );
-    }
 
-    record(screened, 200);
-    return res(ctx.status(200), ctx.json(makeDefaultTweets()));
-  });
+      if (failing !== undefined) {
+        record(screened, BACKEND_UNPROCESSABLE_STATUS);
+        return res(
+          ctx.status(BACKEND_UNPROCESSABLE_STATUS),
+          ctx.json(backendIntegerCoercionErrorBody(failing)),
+        );
+      }
+
+      record(screened, 200);
+      return res(ctx.status(200), ctx.json(makeDefaultTweets()));
+    }),
+  );
 }
 
 /**
  * `GET /tweets/{tweet_id}` as the backend answers it: 500 with the plain-text body `Internal Server Error`
  * for every id, because the handler reads `Tweet.id` before it can reach its 404 branch.
+ *
+ * @returns One handler per allowed loopback origin.
  */
-export function currentBehaviorTweetByIdHandler(): RestHandler {
-  return rest.get<never, { tweetId: string }>(TWEET_BY_ID_CONTRACT.pattern, (req, res, ctx) => {
-    const screened = screenRequest(TWEET_BY_ID_CONTRACT, {
-      method: req.method,
-      url: req.url,
-      params: req.params,
-      contentType: req.headers.get('content-type'),
-      body: undefined,
-    });
+export function currentBehaviorTweetByIdHandlers(): RestHandler[] {
+  return originScopedPatterns(TWEET_BY_ID_CONTRACT.pattern).map((pattern) =>
+    rest.get<never, { tweetId: string }>(pattern, (req, res, ctx) => {
+      const screened = screenRequest(TWEET_BY_ID_CONTRACT, {
+        method: req.method,
+        url: req.url,
+        params: req.params,
+        contentType: req.headers.get('content-type'),
+        body: undefined,
+      });
 
-    record(screened, BACKEND_SERVER_ERROR_STATUS);
-    return res(
-      ctx.status(BACKEND_SERVER_ERROR_STATUS),
-      ctx.set('Content-Type', BACKEND_TEXT_CONTENT_TYPE),
-      ctx.body(BACKEND_SERVER_ERROR_BODY),
-    );
-  });
+      record(screened, BACKEND_SERVER_ERROR_STATUS);
+      return res(
+        ctx.status(BACKEND_SERVER_ERROR_STATUS),
+        ctx.set('Content-Type', BACKEND_TEXT_CONTENT_TYPE),
+        ctx.body(BACKEND_SERVER_ERROR_BODY),
+      );
+    }),
+  );
 }
 
 /**
  * `POST /tweets/{tweet_id}/responses` as the backend answers it: 500 with the plain-text body
  * `Internal Server Error`, from the same `Tweet.id` access.
+ *
+ * @returns One handler per allowed loopback origin.
  */
-export function currentBehaviorTweetResponsesHandler(): RestHandler {
-  return rest.post<string, { tweetId: string }>(TWEET_RESPONSES_CONTRACT.pattern, (req, res, ctx) => {
-    const screened = screenRequest(TWEET_RESPONSES_CONTRACT, {
-      method: req.method,
-      url: req.url,
-      params: req.params,
-      contentType: req.headers.get('content-type'),
-      body: req.body,
-    });
+export function currentBehaviorTweetResponsesHandlers(): RestHandler[] {
+  return originScopedPatterns(TWEET_RESPONSES_CONTRACT.pattern).map((pattern) =>
+    rest.post<string, { tweetId: string }>(pattern, (req, res, ctx) => {
+      const screened = screenRequest(TWEET_RESPONSES_CONTRACT, {
+        method: req.method,
+        url: req.url,
+        params: req.params,
+        contentType: req.headers.get('content-type'),
+        body: req.body,
+      });
 
-    record(screened, BACKEND_SERVER_ERROR_STATUS);
-    return res(
-      ctx.status(BACKEND_SERVER_ERROR_STATUS),
-      ctx.set('Content-Type', BACKEND_TEXT_CONTENT_TYPE),
-      ctx.body(BACKEND_SERVER_ERROR_BODY),
-    );
-  });
+      record(screened, BACKEND_SERVER_ERROR_STATUS);
+      return res(
+        ctx.status(BACKEND_SERVER_ERROR_STATUS),
+        ctx.set('Content-Type', BACKEND_TEXT_CONTENT_TYPE),
+        ctx.body(BACKEND_SERVER_ERROR_BODY),
+      );
+    }),
+  );
 }
 
 /**
  * `POST /generate-response` as the backend answers it: 404 `{"detail":"Not Found"}`, because no router
  * declares that path.
+ *
+ * @returns One handler per allowed loopback origin.
  */
-export function currentBehaviorGenerateResponseHandler(): RestHandler {
-  return rest.post<{ tweetId: string }>(GENERATE_RESPONSE_CONTRACT.pattern, (req, res, ctx) => {
-    const screened = screenRequest(GENERATE_RESPONSE_CONTRACT, {
-      method: req.method,
-      url: req.url,
-      params: req.params,
-      contentType: req.headers.get('content-type'),
-      body: req.body,
-    });
+export function currentBehaviorGenerateResponseHandlers(): RestHandler[] {
+  return originScopedPatterns(GENERATE_RESPONSE_CONTRACT.pattern).map((pattern) =>
+    rest.post<{ tweetId: string }>(pattern, (req, res, ctx) => {
+      const screened = screenRequest(GENERATE_RESPONSE_CONTRACT, {
+        method: req.method,
+        url: req.url,
+        params: req.params,
+        contentType: req.headers.get('content-type'),
+        body: req.body,
+      });
 
-    record(screened, BACKEND_NOT_FOUND_STATUS);
-    return res(ctx.status(BACKEND_NOT_FOUND_STATUS), ctx.json(BACKEND_NOT_FOUND_BODY));
-  });
+      record(screened, BACKEND_NOT_FOUND_STATUS);
+      return res(ctx.status(BACKEND_NOT_FOUND_STATUS), ctx.json(BACKEND_NOT_FOUND_BODY));
+    }),
+  );
 }
 
 /**
  * Every current-behaviour handler, in {@link ROUTE_CONTRACTS} order, for a suite that installs the whole
  * set through `server.use(...)`. Built fresh on each call so no handler instance is shared between tests.
  *
- * @returns The four handlers that reproduce today's 200-or-422, 500, 500 and 404.
+ * @returns The four routes that reproduce today's 200-or-422, 500, 500 and 404, each registered once per
+ *   route, screened against {@link allowedRequestOrigins}.
  */
 export function currentBackendBehaviorHandlers(): RestHandler[] {
   return [
-    currentBehaviorTweetsHandler(),
-    currentBehaviorTweetByIdHandler(),
-    currentBehaviorTweetResponsesHandler(),
-    currentBehaviorGenerateResponseHandler(),
+    ...currentBehaviorTweetsHandlers(),
+    ...currentBehaviorTweetByIdHandlers(),
+    ...currentBehaviorTweetResponsesHandlers(),
+    ...currentBehaviorGenerateResponseHandlers(),
   ];
 }
