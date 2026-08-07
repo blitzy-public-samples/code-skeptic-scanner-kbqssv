@@ -27,6 +27,17 @@ const HARNESS = path.join(HERE, 'harness');
 const STUBS = path.join(HARNESS, 'stubs');
 const CACHE_DIR = path.join(HERE, 'node_modules', '.vite');
 
+/**
+ * Client runtime of the Vite installation that serves the harness, holding
+ * `client.mjs` and `env.mjs`.
+ *
+ * `/@vite/client` opens with `import "/@fs/<this directory>/env.mjs"`. `/main.tsx`,
+ * `/@react-refresh` and the `index.html` preamble each import `/@vite/client`, which
+ * places this directory in the dependency chain of every module script in the
+ * document.
+ */
+const VITE_CLIENT_DIR = path.join(HERE, 'node_modules', 'vite', 'dist', 'client');
+
 /* -------------------------------------------------------------------------- */
 /* Module tables                                                              */
 /* -------------------------------------------------------------------------- */
@@ -133,17 +144,26 @@ const DEDUPED_PACKAGES = [
 /**
  * The only directories this dev server may read over `/@fs/`: the harness itself,
  * which contains `harness/stubs`; the pre-bundle cache, from which the optimised
- * deps are served; and the frontend sources and package tree the aliases resolve
- * to. Vite adds its own client directory by itself, and the cache directory is not
- * auto-allowed.
+ * deps are served; the Vite client runtime, from which the dev client is served;
+ * and the frontend sources and package tree the aliases resolve to.
  *
  * The Vite root is `e2e/harness` and the nearest manifest is `e2e/package.json`,
  * so `server.fs.strict` scopes access to `e2e/` unless the directories holding the
- * graph are named here. Nothing outside these four is part of the harness graph.
+ * graph are named here. `harnessFilesystemGuard` below checks this same list through
+ * `isWithinAllowedRoot`, and it runs ahead of the Vite middleware that exempts the
+ * client runtime.
+ *
+ * Nothing outside these five is part of the harness graph.
  *
  * To serve another directory, add one entry here.
  */
-const ALLOWED_SERVE_ROOTS = [HARNESS, CACHE_DIR, FRONTEND_SRC, FRONTEND_MODULES] as const;
+const ALLOWED_SERVE_ROOTS = [
+  HARNESS,
+  CACHE_DIR,
+  VITE_CLIENT_DIR,
+  FRONTEND_SRC,
+  FRONTEND_MODULES,
+] as const;
 
 /**
  * Sensitive file names refused inside the allowed roots. Replaces Vite's default
@@ -514,7 +534,7 @@ export default defineConfig({
     fs: {
       strict: true,
       // `ALLOWED_SERVE_ROOTS` is the whole set of directories the harness graph
-      // reaches; Vite adds its own client directory itself.
+      // reaches, Vite's own client directory included.
       allow: [...ALLOWED_SERVE_ROOTS],
       deny: [...DENIED_FILE_PATTERNS],
     },

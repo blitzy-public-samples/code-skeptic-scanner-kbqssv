@@ -6,43 +6,44 @@
  * imports at line 3 has no implementation in the repository. The resolver in
  * `e2e/vite.harness.config.ts` redirects it here while that remains true.
  *
- * Resolves with static data and performs no network, timer or clock work, so
- * every call yields the same values on every run.
+ * Reads its data over HTTP from the `/api/trends` endpoint. The endpoint path and
+ * the `start` and `end` query parameter names are the contract the end-to-end
+ * specs intercept, answering from `e2e/fixtures/trends.json`.
  */
 
 /**
  * Structural equivalent of the `DateRange` interface declared at lines 5-8 of
  * `frontend/src/components/Analytics`. That declaration is local to the component
- * module and carries no `export`, so it cannot be imported.
+ * module and carries no `export`.
  */
-export interface DateRange {
+interface DateRange {
   startDate: string;
   endDate: string;
 }
 
 /**
- * Shape returned by {@link getTrendData}. `labels` and `values` are the only two
- * members the component reads: it passes them to Chart.js as the line dataset's
- * labels (line 43) and data (line 47).
- */
-export interface TrendSeries {
-  labels: string[];
-  values: number[];
-}
-
-/**
- * Called as `getTrendData(dateRange)` at line 16 of
- * `frontend/src/components/Analytics` - a single argument carrying the whole
- * range object.
+ * Requests the trend series covering one date range.
  *
- * The argument is deliberately unread so that a spy records the caller's own
- * object exactly as the caller passed it. A fresh result, including fresh nested
- * arrays, is allocated on every call.
+ * Called as `getTrendData(dateRange)` at line 16 of
+ * `frontend/src/components/Analytics` - a single argument carrying the whole range
+ * object. The caller reads `labels` and `values` off the resolved value and hands
+ * them to Chart.js as the line dataset's labels (line 43) and data (line 47).
+ *
+ * @param dateRange - Range whose two members become the `start` and `end` query
+ *   parameters, interpolated verbatim.
+ * @returns The parsed response body, exactly as received.
+ * @throws Error - When the response status falls outside 200-299. The message
+ *   names the request URL and that status.
  */
-export async function getTrendData(dateRange: DateRange): Promise<TrendSeries> {
-  void dateRange;
-  return {
-    labels: ['2024-01-01', '2024-01-02', '2024-01-03'],
-    values: [4, 9, 6],
-  };
-}
+export const getTrendData = async (dateRange: DateRange): Promise<any> => {
+  const url = `/api/trends?start=${dateRange.startDate}&end=${dateRange.endDate}`;
+
+  const response = await fetch(url);
+
+  // Marker: the status is read before the body.
+  if (!response.ok) {
+    throw new Error(`GET ${url} failed with HTTP status ${response.status}`);
+  }
+
+  return await response.json();
+};

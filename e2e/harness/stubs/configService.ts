@@ -1,42 +1,58 @@
 /**
  * Harness stand-in for the module specifier `@/services/configService`.
  *
- * `frontend/src/services/` ships only `api.ts`, `llmService.ts` and
- * `twitterService.ts`, so the specifier that
- * `frontend/src/components/Configuration` imports at line 3 has no implementation
- * in the repository. The resolver in `e2e/vite.harness.config.ts` redirects it
- * here while that remains true.
- *
- * Always resolves, so the component takes its success branch and raises the
- * `alert` at line 20. Performs no network work.
+ * `frontend/src/components/Configuration` imports `updateTwitterAPIConfig` from
+ * this specifier at line 3. `frontend/src/services/` ships only `api.ts`,
+ * `llmService.ts` and `twitterService.ts`, and the resolver in
+ * `e2e/vite.harness.config.ts` redirects the specifier here while no module
+ * exists at `frontend/src/services/configService`.
  */
 
 /**
- * Credential payload the component assembles at lines 14-19 of
- * `frontend/src/components/Configuration` from its four controlled inputs.
+ * Credential payload `frontend/src/components/Configuration` assembles at lines
+ * 14-19 from its four controlled inputs. Every member is required, matching the
+ * four `required` inputs the form declares.
  */
-export interface TwitterAPIConfigPayload {
+interface TwitterAPICredentials {
   apiKey: string;
   apiSecret: string;
   accessToken: string;
   accessTokenSecret: string;
 }
 
-/** Result of a successful {@link updateTwitterAPIConfig} call. */
-export interface ConfigUpdateResult {
-  updated: boolean;
-}
+/** Path the credential payload is posted to, relative to the serving origin. */
+const CONFIG_ENDPOINT = '/api/config/twitter';
 
 /**
- * Called as `updateTwitterAPIConfig({ apiKey, apiSecret, accessToken,
- * accessTokenSecret })` at line 14 of `frontend/src/components/Configuration`.
+ * Posts the credential payload to `/api/config/twitter` as JSON.
  *
- * The argument is deliberately unread so that a spy records the caller's own
- * object exactly as the caller passed it.
+ * Rejects with an `Error` naming the endpoint and the HTTP status whenever the
+ * response status falls outside the 2xx range. Otherwise resolves with the parsed
+ * response body, or with `undefined` when the response carries no body.
+ *
+ * Called as `updateTwitterAPIConfig({ apiKey, apiSecret, accessToken,
+ * accessTokenSecret })` at line 14 of `frontend/src/components/Configuration`,
+ * which reads only whether the returned promise settles or rejects.
  */
-export async function updateTwitterAPIConfig(
-  config: TwitterAPIConfigPayload,
-): Promise<ConfigUpdateResult> {
-  void config;
-  return { updated: true };
-}
+export const updateTwitterAPIConfig = async (
+  credentials: TwitterAPICredentials
+): Promise<unknown> => {
+  const response = await fetch(CONFIG_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(credentials),
+  });
+
+  // Status check, placed ahead of every read of the body.
+  if (!response.ok) {
+    throw new Error(
+      `POST ${CONFIG_ENDPOINT} failed with HTTP status ${response.status}`
+    );
+  }
+
+  // The body is consumed once, as text, and parsed only when non-empty.
+  const body = await response.text();
+  return body === '' ? undefined : JSON.parse(body);
+};
