@@ -1,0 +1,68 @@
+# ---------------------------------------------------------------------------
+# Code Skeptic Scanner - repository ignore rules
+#
+# The repository previously had NO .gitignore at all, so every test artifact
+# (__pycache__, .pytest_cache, coverage reports, node_modules) would have been
+# committed.  The entries below cover the artifacts produced by the backend
+# pytest suite, the frontend Jest suite, the Playwright e2e suite, and the
+# local development virtual environments.
+# ---------------------------------------------------------------------------
+
+# --- Python bytecode / caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Python coverage artifacts ---
+.coverage
+.coverage.*
+coverage.xml
+coverage.json
+coverage.lcov
+htmlcov/
+
+# --- Backend test reports ---
+backend/reports/
+
+# --- Frontend test + coverage artifacts ---
+frontend/coverage/
+frontend/reports/
+
+# --- Node dependency trees ---
+node_modules/
+e2e/node_modules/
+
+# --- Playwright / e2e artifacts ---
+e2e/test-results/
+e2e/playwright-report/
+e2e/reports/
+playwright/.cache/
+
+# --- Browser/desktop evidence captured during verification runs ---
+blitzy/screenshots/
+blitzy/screen_recordings/
+
+# --- Build output ---
+dist/
+build/
+.vite/
+
+# ---------------------------------------------------------------------------
+# Local development environments.
+# `.venv-backend` is the CPython 3.9 virtual environment used to run the
+# backend suite (see backend/requirements-dev.txt).  It lives inside the
+# repository, so it must never be committed.
+# ---------------------------------------------------------------------------
+.venv-backend/
+.venv/
+venv/
+env/
+ENV/
+
+# --- Editor / OS noise ---
+.DS_Store
+Thumbs.db
+*.swp
