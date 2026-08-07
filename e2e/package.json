@@ -1,0 +1,17 @@
+{
+  "name": "code-skeptic-scanner-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "End-to-end Playwright suite for the Code Skeptic Scanner frontend. This package owns its own Vite harness because frontend/ has no HTML entry and no vite.config.ts, so the real app cannot be served.",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report",
+    "install:browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.44.1",
+    "vite": "4.5.14",
+    "@vitejs/plugin-react": "4.0.4"
+  }
+}
