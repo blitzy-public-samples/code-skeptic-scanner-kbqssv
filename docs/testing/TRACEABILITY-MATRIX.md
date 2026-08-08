@@ -1,8 +1,75 @@
-?# Testing Traceability Matrix
+# Testing Traceability Matrix
 
 Bidirectional mapping between the constructs the test suite covers and the implementations that cover them.
 Every row is traversable in both directions: from a production construct to the test artifact that exercises
 it, and from each test artifact back to the construct it stands for.
+
+This is the artifact Rule 1 (Explainability) requires for a migration or refactor. **The migration trigger is
+unambiguously met**: three test modules sitting on three mutually exclusive import roots — `app.main`,
+`services.*` and `backend.tasks` — become a pytest unit-and-integration tree under a single `app.*` root, and
+all three originals are deleted. It also discharges the requirements' separate obligation to produce a
+disposition table for the legacy suite: one artifact serves both, the disposition table being a projected view
+of §E rather than a second document. That consolidation is conflict **C5**, logged in
+[`./DECISION-LOG.md`](./DECISION-LOG.md) §21.
+
+## Why this document has to stand on its own
+
+`backend/tests/test_api.py`, `backend/tests/test_services.py` and `backend/tests/test_tasks.py` are **deleted by
+this same change set**. Each deletion is conditioned on this matrix accounting for all 25 legacy functions
+bidirectionally, with no gaps, before the removal lands. **This document is that account.** After the
+migration the three sources no longer exist in the working tree, so §E is written to be recoverable on its
+own: every function is named with the line it occupied, what it asserted, and where its intent went. A reader
+who has never seen the deleted files should need nothing else. Git history remains the byte-level record;
+this is the semantic one.
+
+Division of labour with the other Rule 1 artifact: this matrix records **what maps to what** and **what the
+disposition is**. Every "why" — why delete rather than repair, why a divergence was recorded rather than
+fixed, why a stub became a skip — belongs to [`./DECISION-LOG.md`](./DECISION-LOG.md), which Rule 1 makes the
+single source of truth for rationale. Divergences are *named* here as facts and argued there. The coverage and
+test-health metric contract is [`./DASHBOARD-TEMPLATE.md`](./DASHBOARD-TEMPLATE.md)'s and is not restated
+here. Setup, commands and fixture how-tos belong to the Rule 3 onboarding documents —
+`backend/tests/README.md`, `frontend/TESTING.md`, `e2e/README.md` and the additive Testing section of the root
+[`README.md`](../../README.md) — and appear nowhere in this file.
+
+One overlap is deliberate. `backend/tests/README.md` also carries the 7 / 3 / 15 disposition, as a summary, so
+that a reader working inside the backend suite can see the shape of the migration without leaving it — that is
+redundancy for recoverability, not duplication. **This document is the authoritative, per-function version: if
+the two ever disagree, this one is definitive** and the summary is the thing to correct.
+
+## Legacy suite at a glance
+
+Per-module counts and dispositions for the three deleted modules. §E carries the per-function detail.
+
+| Legacy module | Lines | Functions | Rewritten | Skipped | Removed |
+|---------------|-------|-----------|-----------|---------|---------|
+| `backend/tests/test_api.py` | 86 | 12 | 2 | 0 | 10 |
+| `backend/tests/test_services.py` | 62 | 6 | 1 | 0 | 5 |
+| `backend/tests/test_tasks.py` | 68 | 7 | 4 | 3 | 0 |
+| **Total** | **216** | **25** | **7** | **3** | **15** |
+
+The totals are checkable without recounting a single row: functions **12 + 6 + 7 = 25**, and dispositions
+**7 rewritten + 3 skipped + 15 removed = 25**. Both sums close on the same 25, which is what "100% coverage,
+no gaps" means for Direction A.
+
+Every figure is measured, not estimated. The line counts are `wc -l` on the three files at commit `252bfff`
+(86 + 62 + 68 = 216) and the function counts are occurrences of `def test_` in the same three blobs
+(12 + 6 + 7 = 25). All three files end without a trailing newline, so each holds one more physical line than
+its `wc -l` count — worth knowing only because it explains why 216 and 219 can both be said truthfully of the
+same three files. `216` and `25` are the two figures `blitzy-deck/executive-summary.html` projects as KPIs;
+they are exact here and must stay exact there.
+
+## Why all 25 failed
+
+**Every one of the 25 functions failed at collection, not at assertion, so the net executed assertion count
+across the whole legacy suite was zero.** No coverage figure was ever suppressed by a wrong expectation; there
+was simply nothing running. The three modules failed three different ways:
+
+- `test_api.py` imported `app.main` (L3) — nearly correct, except that `app/main.py` imports its routers from
+  `app.api.routes`, which was a single extension-less **file** rather than a package, and that file did not
+  compile either. The module compounded it with a module-level `client = TestClient(app)` at L5, so the
+  failure landed at import time and the module could not even be collected.
+- `test_services.py` imported a root `services` (L3-5) that does not exist anywhere in the repository.
+- `test_tasks.py` imported a root `backend` (L3) that does not exist anywhere in the repository.
 
 ## Document coverage
 
@@ -12,17 +79,24 @@ it, and from each test artifact back to the construct it stands for.
 | §B | msw handler → caller and route | Every handler exported by `frontend/src/test-utils/handlers.ts` | 7 |
 | §C | Backend route → frontend callers | Every route the backend implements or is called at, plus the prefix every emitted request carries and no route declares | 6 |
 | §D | Divergence → the suite obliged to assert it | Every mismatch §A records, plus the two behaviours the security-gate remediation added | 16 |
-| §E | Legacy test → its replacement, and replacement → legacy test | All 25 functions of the three deleted legacy modules, in both directions | 25 + 3 |
-| §F | Test artifact → the construct it covers | Every file of the new suite, and the production construct or infrastructure obligation behind it | 75 |
+| §E | **Direction A** — legacy test → its replacement, and replacement → legacy test | All 25 functions of the three deleted legacy modules, in both directions, with the line each occupied; plus the import and patch-target remap, the conventions carried forward, and the divergences the migration surfaced | 25 + 8 + 13 + 5 + 7 |
+| §F | **Direction B** — test artifact → the construct it covers | Every file of the new suite, and the production construct or infrastructure obligation behind it | 89 |
 | §G | Coverage ceiling → the assertion that stands in for it | Every branch no test can execute without changing production | 8 |
 | §H | Harness guarantee → the artifact that enforces it | Every determinism, credential, egress and isolation guarantee the three suites rest on, and the file that implements it | 15 |
+| §I | Production module → the artifact that covers it | The closing census: all 14 backend and all 19 frontend test-target modules, none orphaned, plus the twentieth frontend file and the two authorized touches | 34 |
 
 Coverage of the mapped set is complete: all four routes registered in `ROUTE_CONTRACTS` and every exported
 handler set appear in both directions; every divergence in §A has a row in §D; all 25 legacy test
 functions appear in §E with a disposition, and §E's reverse table maps each replacement suite back to the
-legacy functions it absorbs; and every file listed as in scope for this milestone appears in §F. The
-reasoning behind each choice is in `docs/testing/DECISION-LOG.md`. Every guarantee in §H names the artifact that enforces it and the evidence it was verified with. This document records what is true, not
-why it was chosen.
+legacy functions it absorbs; every file listed as in scope for this milestone appears in §F; and §I closes the
+loop by naming a covering artifact for every production module. The reasoning behind each choice is in
+[`./DECISION-LOG.md`](./DECISION-LOG.md). Every guarantee in §H names the artifact that enforces it and the
+evidence it was verified with. This document records what is true, not why it was chosen.
+
+**Bidirectionality, stated plainly.** Rule 1 requires two directions and one alone would fail it. §E.1 is
+Direction A: legacy construct → target implementation or explicit disposition. §F is Direction B: new test
+artifact → the production construct it covers. §E.2 and §I are the return legs that make each direction
+checkable from the other end.
 
 ## How the outcomes in this document were obtained
 
@@ -167,59 +241,206 @@ the missing behaviour is out of scope. Each is therefore an assertion obligation
 | X15 | a tweet id carrying path syntax silently retargets the request: `fetchTweetById('tweet 1/../7')` interpolates the id verbatim, and the URL parser then removes the preceding segment, so the network receives `/undefined/tweets/7` and the caller is answered with whatever that path returns | `services/api.ts` line 14 interpolates the id with neither validation nor `encodeURIComponent` | the API service suite asserts three observation points - the pre-adapter string against a mocked `axios`; the normalised pathname over the real adapter, where the `200` and the returned record are the isolation fixture's rather than the backend's; and the same call under a configured base, where the retargeted path is `/tweets/7`, a path the backend routes, so the substitution selects a real route. The id is not encoded or repaired on production's behalf (D149) |
 | X16 | `REACT_APP_API_BASE_URL` is unset and interpolated without a fallback, so every request the application emits carries the literal path prefix `/undefined` — a prefix no router declares. The whole client surface is therefore unrouted and answers `404 {"detail":"Not Found"}`, before any query value is coerced and before `Depends(get_db)` resolves | `services/api.ts` line 5 vs `app/main.py`, which mounts its populated router at the root with no prefix | the backend route-surface suite asserts the `404`, the body and the JSON content type for all four emitted paths, that the status is unchanged by a well-formed or malformed query string, and that no declared route lives under the prefix; the frontend handler-contract suite asserts the same values through B5; and each of the three service suites asserts the `404` its own subject receives. Every route's own behaviour is asserted separately under a configured base, and no suite presents a configured-base outcome as what the application does today |
 
-## §E Legacy suite migration
+## §E Direction A — legacy suite migration
 
 The three legacy modules — `backend/tests/test_api.py` (86 lines), `test_services.py` (62) and
-`test_tasks.py` (68) — held 25 test functions, six with empty bodies, and all three failed at collection:
-`test_api.py` imported `app.main` (unresolvable until the routes package existed) and additionally could not
-be parsed, `test_services.py` imported a root `services`, and `test_tasks.py` imported a root `backend`. Net
-executed assertions: zero. All three are deleted; every function is dispositioned below. The reasoning is
-`DECISION-LOG.md` §6.
+`test_tasks.py` (68) — held 25 test functions, six with empty bodies, and all three failed at collection for
+the three separate reasons given above. Net executed assertions: zero. All three are deleted; every function
+is dispositioned below. The reasoning is [`./DECISION-LOG.md`](./DECISION-LOG.md) §6 — D60 for deleting rather
+than repairing in place, D61 for collapsing the three roots to one, D62 for turning the empty stubs into
+reasoned skips and dropping the oracle-free assertions.
 
-**Disposition counts: 7 rewritten, 3 skipped with a reason, 15 removed with a reason.**
+**Disposition counts: 7 rewritten, 3 skipped with a reason, 15 removed with a reason.** Per module, that is
+`test_api.py` 2/0/10, `test_services.py` 1/0/5 and `test_tasks.py` 4/3/0.
+
+Line references are to the deleted files as they stood at commit `252bfff`. They are the only coordinates a
+future reader has for content that is no longer in the tree, so each was verified against the source blob
+rather than recalled.
 
 ### §E.1 Legacy function → its replacement
 
-| # | Legacy module | Legacy function | Disposition | Replacement, or the reason there is none |
-|---|---------------|-----------------|-------------|------------------------------------------|
-| E1 | `test_api.py` | `test_create_tweet` — `POST /tweets/` expecting 201 | REMOVED | No `POST /tweets/` exists; the implemented write-shaped route is `POST /tweets/{tweet_id}/responses`, and no endpoint accepts a request body. Creating one would be implementing a missing product feature. |
-| E2 | `test_api.py` | `test_get_tweet` — `GET /tweets/1` expecting 200 with `content` | REWRITTEN | `tests/integration/test_http_tweets.py`, which asserts what the route really does: it reads `Tweet.id` on a pydantic model that declares none, so it raises and answers **500**, and its 404 branch is unreachable (§D X5, X6; §G G5). |
-| E3 | `test_api.py` | `test_delete_tweet` — `DELETE /tweets/1` expecting 204 | REMOVED | No `DELETE` route exists on any path. |
-| E4 | `test_api.py` | `test_create_user` — `POST /users/` expecting 201 | REMOVED | `users.py` declares a bare `APIRouter()` with no endpoint; the path answers 404, asserted once in `tests/integration/test_route_surface.py`. |
-| E5 | `test_api.py` | `test_get_user` — `GET /users/1` expecting 200 | REMOVED | Same as E4. |
-| E6 | `test_api.py` | `test_update_user` — `PUT /users/1` expecting 200 | REMOVED | Same as E4. |
-| E7 | `test_api.py` | `test_get_tweet_analytics` — `GET /analytics/tweets` expecting `total_tweets` | REWRITTEN | The route does not exist (404, asserted in `test_route_surface.py`), but the intent — aggregate tweet analytics — is covered at the layer that implements it: `tests/unit/test_services_analytics.py` asserts `get_tweet_analytics`'s `total_tweets`, `avg_daily_tweets`, `avg_retweets`, `avg_favorites` and `daily_breakdown` against controlled `run_query` rows. |
-| E8 | `test_api.py` | `test_get_user_analytics` — `GET /analytics/users` expecting `total_users` | REWRITTEN | Route absent as in E7; the intent is covered by `test_services_analytics.py` against `get_user_analytics`, which returns `total_active_users` — the legacy key `total_users` was wrong independently of the missing route. |
-| E9 | `test_api.py` | `test_get_config` — `GET /config` expecting `max_tweet_length` | REMOVED | `config.py` declares a bare `APIRouter()`; the path answers 404 (asserted in `test_route_surface.py`), and no `max_tweet_length` setting exists anywhere. |
-| E10 | `test_api.py` | `test_update_config` — `PUT /config` expecting 200 | REMOVED | Same as E9. The design documents specify `PATCH` rather than `PUT`, so the legacy method was also wrong; both are moot. |
-| E11 | `test_api.py` | `test_unauthorized_access` — expecting 401 from `POST /tweets/` | REMOVED | No route is protected: no dependency in `app/api/routes/` requires authentication, and no token endpoint exists. The 401 paths that *do* exist are in `app/api/dependencies.py` and are asserted directly by `tests/unit/test_api_dependencies.py`. |
-| E12 | `test_api.py` | `test_authorized_access` — empty body | REMOVED | Empty, and its subject (an authentication mechanism) is unimplemented. Not converted to a skip because E11 already records the absence of route-level auth. |
-| E13 | `test_services.py` | `test_fetch_tweets` — empty body, `TwitterService.fetch_tweets` | REMOVED | Neither `TwitterService` nor `fetch_tweets` exists. `app/services/twitter_service.py` exposes `TwitterStreamListener` and `start_twitter_stream` only, both covered by `tests/unit/test_services_twitter.py`. |
-| E14 | `test_services.py` | `test_process_tweets` — `TwitterService.process_tweets` | REMOVED | Same subject as E13; no such class or method. |
-| E15 | `test_services.py` | `test_generate_response` — patched `services.llm_service.openai.Completion.create` | REWRITTEN | `tests/unit/test_services_llm.py`, keeping the mocking idiom with a corrected target: the module does `from openai import Completion`, so the patch target is `app.services.llm_service.Completion.create`. Covers all five verified outcomes of `generate_response`. |
-| E16 | `test_services.py` | `test_process_sentiment` — `assertIn(sentiment, ["positive","negative","neutral"])` | REMOVED | `process_sentiment` does not exist, and the assertion has no oracle: it passes for any implementation. |
-| E17 | `test_services.py` | `test_calculate_engagement_rate` — `0 <= rate <= 1` | REMOVED | `AnalyticsService.calculate_engagement_rate` does not exist, and the assertion has no oracle. |
-| E18 | `test_services.py` | `test_generate_report` — empty body | REMOVED | No report-generation function exists in `app/services/analytics_service.py`, which exposes `get_tweet_analytics` and `get_user_analytics` only. |
-| E19 | `test_tasks.py` | `test_process_tweet` — patched `backend.tasks.save_tweet_to_db` | REWRITTEN | `tests/unit/test_tasks_tweet_processor.py`. `process_tweet` maps to `TweetStreamListener.on_status`; `save_tweet_to_db` maps to `app.db.firestore.add_tweet`. The suite drives a parametrised popularity matrix and asserts both the return value and `add_tweet.call_count`. |
-| E20 | `test_tasks.py` | `test_generate_response` — patched `get_tweet_from_db`, `generate_ai_response`, `save_response_to_db` | REWRITTEN | `tests/unit/test_tasks_response_generator.py`. `get_tweet_from_db` → `app.db.firestore.get_tweet`; `generate_ai_response` → `app.services.llm_service.generate_response`; `save_response_to_db` has **no production equivalent** — `add_response` is imported by `response_generator` but defined nowhere, and is supplied as a conftest shim (§F F5, §G G8). |
-| E21 | `test_tasks.py` | `test_process_tweet_error_handling` — expects an exception to propagate | REWRITTEN | `test_tasks_tweet_processor.py` preserves the error-disposition intent, asserting what production actually does: a status clearing the popularity gate raises a pydantic `ValidationError` with eight field errors, and `add_tweet` is never called on any path. |
-| E22 | `test_tasks.py` | `test_generate_response_error_handling` — expects an exception to propagate | REWRITTEN | `test_tasks_response_generator.py`: a falsy `get_tweet` raises `ValueError("Tweet with id … not found")`, and a dict result raises `TypeError: object dict can't be used in 'await' expression` because `firestore.get_tweet` is synchronous. |
-| E23 | `test_tasks.py` | `test_process_tweet_with_media` — empty body | SKIPPED | `pytest.mark.skip` naming the unimplemented feature: no media handling exists anywhere in `app/`. |
-| E24 | `test_tasks.py` | `test_generate_response_rate_limiting` — empty body | SKIPPED | `pytest.mark.skip` naming the unimplemented feature: no rate-limiting logic exists anywhere in `app/`. |
-| E25 | `test_tasks.py` | `test_process_tweet_deduplication` — empty body | SKIPPED | `pytest.mark.skip` naming the unimplemented feature: no deduplication logic exists anywhere in `app/`. |
+One table per legacy module, each preceded by what that module held beyond its test functions — the imports,
+the fixtures, the class scaffolding and the annotations — because none of it survives in the tree either and
+some of it is why the module failed.
+
+#### What `test_api.py` contained beyond its test functions
+
+L1-2 imported `unittest` and `TestClient`; **L3 `from app.main import app`**; **L5 `client = TestClient(app)`
+at module scope** — one client shared by all twelve methods, never reset; L7 `class TestAPI(unittest.TestCase)`;
+L8-14 a `setUp` and a `tearDown` whose bodies were both `pass`, each carrying a comment about test data that
+was never set up; L73-74 a `# HUMAN ASSISTANCE NEEDED` block noting the two auth tests might need adjustment
+to whatever authentication the API turned out to use; L86-87 an `if __name__ == "__main__": unittest.main()`
+guard. The module asserted against **ten distinct routes**, of which one is implemented.
+
+#### `test_api.py` — 12 functions (2 rewritten, 10 removed)
+
+| # | Legacy function (line) | What it asserted | Disposition | Replacement, or the reason there is none |
+|---|------------------------|------------------|-------------|------------------------------------------|
+| E1 | `test_create_tweet` (L17) | `POST /tweets/` with body `{"content": "Test tweet"}` → 201, and an `id` key in the reply (L18-20) | REMOVED | No `POST /tweets/` exists; the implemented write-shaped route is `POST /tweets/{tweet_id}/responses`, and no endpoint accepts a request body. Creating one would be implementing a missing product feature. |
+| E2 | `test_get_tweet` (L22) | `GET /tweets/1` → 200, with a `content` key in the reply (L24-26) | **REWRITTEN** | `tests/integration/test_http_tweets.py`, which asserts what the route really does: it reads `Tweet.id` on a pydantic model that declares none, so it raises and answers **500**, and its 404 branch is unreachable (§D X5, X6; §G G5). |
+| E3 | `test_delete_tweet` (L28) | `DELETE /tweets/1` → 204 (L30-31) | REMOVED | No `DELETE` route exists on any path. This function was also the suite's order-dependence: `unittest.TestCase` methods run alphabetically, so `test_delete_tweet` executed **before** `test_get_tweet` and deleted the very record the latter read, against the single module-level client at L5. |
+| E4 | `test_create_user` (L34) | `POST /users/` with `{"username": "testuser", "email": …}` → 201, and an `id` key (L35-37) | REMOVED | `users.py` declares a bare `APIRouter()` with no endpoint; the path answers 404, asserted once in `tests/integration/test_route_surface.py`. Adding the endpoint is forbidden. |
+| E5 | `test_get_user` (L39) | `GET /users/1` → 200, with a `username` key (L41-43) | REMOVED | Same as E4. |
+| E6 | `test_update_user` (L45) | `PUT /users/1` with `{"username": "updateduser"}` → 200, echoing the new username (L47-49) | REMOVED | Same as E4. |
+| E7 | `test_get_tweet_analytics` (L52) | `GET /analytics/tweets` → 200, with a `total_tweets` key (L53-55) | **REWRITTEN AS INTENT** | The route does not exist (404, asserted in `test_route_surface.py`), but the intent — aggregate tweet analytics — is covered at the layer that implements it: `tests/unit/test_services_analytics.py` asserts `get_tweet_analytics`'s `total_tweets`, `avg_daily_tweets`, `avg_retweets`, `avg_favorites` and `daily_breakdown` against controlled `run_query` rows. The key `total_tweets` was right; only the route was wrong. |
+| E8 | `test_get_user_analytics` (L57) | `GET /analytics/users` → 200, with a **`total_users`** key (L58-60) | REMOVED | No `/analytics/users` route exists, and the assertion was **wrong twice over**: `analytics_service.get_user_analytics` returns `total_active_users`, never `total_users`, so the key would have failed even had the route been built. The route's absence is asserted by `test_route_surface.py`; the real return shape is asserted by `tests/unit/test_services_analytics.py`, which also asserts the absence of `total_users`. Recorded as a divergence in §E.5. |
+| E9 | `test_get_config` (L63) | `GET /config` → 200, with a `max_tweet_length` key (L64-66) | REMOVED | `config.py` declares a bare `APIRouter()`; the path answers 404 (asserted in `test_route_surface.py`), and no `max_tweet_length` setting exists anywhere in `app/core/config.py`. |
+| E10 | `test_update_config` (L68) | **`PUT /config`** (L69) with `{"max_tweet_length": 280}` → 200, echoing 280 (L70-71) | REMOVED | Same as E9. The design documents specify `PATCH` rather than `PUT`, so the legacy method was also wrong; both are moot because no config router exists. Recorded as a divergence in §E.5. |
+| E11 | `test_unauthorized_access` (L76) | `POST /tweets/` without credentials → 401 (L78-79) | REMOVED | No route is protected: no dependency in `app/api/routes/` requires authentication, and no token endpoint exists. The 401 paths that *do* exist are in `app/api/dependencies.py` and are asserted directly by `tests/unit/test_api_dependencies.py`. |
+| E12 | `test_authorized_access` (L81) | Nothing — the body was `pass` (L84), under the L73-74 note that it needed the real auth mechanism first | REMOVED | Empty, and its subject (an authentication mechanism) is unimplemented. Not converted to a skip because E11 already records the absence of route-level auth, and a second skip would record the same absence twice. |
+
+The non-existence of `/users/1`, `/analytics/tweets` and `/config` is **preserved as assertions rather than
+discarded**. E4-E10 are removed as *tests of those routes*, but the 404 each path answers became the documented
+route-surface census in `backend/tests/integration/test_route_surface.py`, which additionally asserts that no
+implemented route carries an `API_V1_STR` prefix even though the setting declares `/api/v1`. Nothing about the
+legacy expectations was dropped silently: what was an expectation of success is now an assertion of absence.
+
+#### What `test_services.py` contained beyond its test functions
+
+L1 imported `unittest`; **L2 `from unittest.mock import Mock, patch`**; **L3-5 imported `TwitterService`,
+`LLMService` and `AnalyticsService` from a `services.*` root that does not exist**. Three `TestCase` classes at
+L7, L26 and L43, each with a `setUp` (L8-9, L27-28, L44-45) whose only statement constructed one of those
+nonexistent classes — so every method in the module would have failed in setup even had the import resolved.
+L12-13 and L58-59 carried `# HUMAN ASSISTANCE NEEDED` notes on the two empty tests. L62-63 was the
+`unittest.main()` guard.
+
+**None of the three subject classes exists.** `app/services/twitter_service.py` exposes `TwitterStreamListener`
+and `start_twitter_stream`; `app/services/llm_service.py` exposes the free function `generate_response`;
+`app/services/analytics_service.py` exposes `get_tweet_analytics` and `get_user_analytics`. There is no
+`process_tweets`, no `process_sentiment` and no `calculate_engagement_rate` method anywhere in the repository.
+
+#### `test_services.py` — 6 functions (1 rewritten, 5 removed)
+
+| # | Legacy function (line) | What it asserted | Disposition | Replacement, or the reason there is none |
+|---|------------------------|------------------|-------------|------------------------------------------|
+| E13 | `test_fetch_tweets` (L11) | Nothing — body was `pass` (L14) under a `# HUMAN ASSISTANCE NEEDED` note (L12-13) about mocking Twitter API calls | REMOVED | Neither `TwitterService` nor `fetch_tweets` exists. `app/services/twitter_service.py` exposes `TwitterStreamListener` and `start_twitter_stream` only, both covered by `tests/unit/test_services_twitter.py`. |
+| E14 | `test_process_tweets` (L16) | `TwitterService.process_tweets` over two sample tweets → a 2-element result whose first element carries a `processed_text` key (L22-24) | REMOVED | Same subject as E13. Neither the class, nor the method, nor the `processed_text` field exists. |
+| E15 | `test_generate_response` (L31, decorated L30) | With `services.llm_service.openai.Completion.create` patched to return `Mock(choices=[Mock(text="Generated response")])` (L32), that `LLMService.generate_response("Test prompt")` returns `"Generated response"` and the patch was called once (L34-35) | **REWRITTEN** | `tests/unit/test_services_llm.py`, keeping the mocking idiom with a corrected target: the module's first line is `from openai import Completion`, which binds the name into the **importing** module, so the library path patched at L30 could never have taken effect. The target is `app.services.llm_service.Completion.create`. Covers all five verified outcomes of the free function `generate_response`. |
+| E16 | `test_process_sentiment` (L37) | `assertIn(sentiment, ["positive","negative","neutral"])` (L41) | REMOVED | `process_sentiment` does not exist, and the assertion had **no oracle**: it passes for any implementation whatsoever, including one returning a constant. Dropped rather than migrated (D62). |
+| E17 | `test_calculate_engagement_rate` (L47) | Over a hand-built tweet dict (L48-52), that the result is a `float` and `0 <= rate <= 1` (L54-55) | REMOVED | `AnalyticsService.calculate_engagement_rate` does not exist, and the assertion had **no oracle** for the same reason as E16. |
+| E18 | `test_generate_report` (L57) | Nothing — body was `pass` (L60) under a `# HUMAN ASSISTANCE NEEDED` note (L58-59) about mocking report data | REMOVED | No report-generation function exists in `app/services/analytics_service.py`, which exposes `get_tweet_analytics` and `get_user_analytics` only. |
+
+#### What `test_tasks.py` contained beyond its test functions
+
+L1 `import pytest`; **L2 `from unittest.mock import patch, MagicMock`, where `MagicMock` was imported but never
+used**; **L3 `from backend.tasks import process_tweet, generate_response`** — a root that does not exist, and a
+`process_tweet` that exists under no root at all. **L5-14 held the module's one fixture, `mock_tweet`**,
+returning `{"id": "1234567890", "text": "This is a test tweet", "user": {"screen_name": "test_user",
+"followers_count": 100}}` — the `mock_<entity>` naming convention the new suite keeps. Every test carried
+`@pytest.mark.asyncio`. L52-54 was a three-line `# HUMAN ASSISTANCE NEEDED` block asking for edge cases,
+alternative tweet formats and error scenarios. Unlike the other two modules this one was already pytest-style,
+which is why it is the module whose intent survives most intact.
+
+**All four patch targets in this module are defined nowhere in the repository** — `save_tweet_to_db`,
+`get_tweet_from_db`, `generate_ai_response` and `save_response_to_db`. `process_tweet` likewise does not exist;
+its nearest real counterpart is `TweetStreamListener.on_status`. §E.3 maps each one.
+
+#### `test_tasks.py` — 7 functions (4 rewritten, 3 skipped)
+
+| # | Legacy function (line) | What it asserted | Disposition | Replacement, or the reason there is none |
+|---|------------------------|------------------|-------------|------------------------------------------|
+| E19 | `test_process_tweet` (L17) | With `backend.tasks.save_tweet_to_db` patched (L18), that `await process_tweet(mock_tweet)` calls it exactly once with the whole fixture (L20) | **REWRITTEN** | `tests/unit/test_tasks_tweet_processor.py`. `process_tweet` maps to `TweetStreamListener.on_status`; `save_tweet_to_db` maps to `app.db.firestore.add_tweet`, patched at the importing module's boundary. The suite drives a parametrised popularity matrix and asserts both the return value and `add_tweet.call_count`. |
+| E20 | `test_generate_response` (L23) | With `get_tweet_from_db`, `generate_ai_response` and `save_response_to_db` all patched (L27-29) and the first returning `{"text": "Test tweet"}` (L31), that `await generate_response(tweet_id)` calls each once and saves with `(tweet_id, response)` (L36-38) | **REWRITTEN** | `tests/unit/test_tasks_response_generator.py`. `get_tweet_from_db` → `app.db.firestore.get_tweet`; `generate_ai_response` → `app.services.llm_service.generate_response`; `save_response_to_db` has **no production equivalent** — `add_response` is imported by `response_generator` but defined nowhere, and is supplied as a conftest shim (§F F5, §G G8, §E.5). |
+| E21 | `test_process_tweet_error_handling` (L41) | With `save_tweet_to_db` raising `Exception("Database error")` (L42), that the exception **propagates** out of `await process_tweet({})` (L43-44) | **REWRITTEN** | `test_tasks_tweet_processor.py` preserves the error-**propagation** intent explicitly, asserting what production actually does: a status clearing the popularity gate raises a pydantic `ValidationError` with eight field errors, and `add_tweet` is never called on any path. |
+| E22 | `test_generate_response_error_handling` (L47) | With `get_tweet_from_db` raising `Exception("Database error")` (L48), that it **propagates** out of `await generate_response("1234567890")` (L49-50) | **REWRITTEN** | `test_tasks_response_generator.py`, propagation intent likewise preserved: a falsy `get_tweet` raises `ValueError("Tweet with id … not found")`, and a dict result raises `TypeError: object dict can't be used in 'await' expression` because `firestore.get_tweet` is synchronous. |
+| E23 | `test_process_tweet_with_media` (L57) | Nothing — body was `pass` (L59) | **SKIPPED** | `pytest.mark.skip` with a reason naming the unimplemented feature: no media-handling logic exists anywhere in `app/`. |
+| E24 | `test_generate_response_rate_limiting` (L62) | Nothing — body was `pass` (L64) | **SKIPPED** | `pytest.mark.skip` with a reason naming the unimplemented feature: no rate-limiting logic exists anywhere in `app/`. |
+| E25 | `test_process_tweet_deduplication` (L67) | Nothing — body was `pass` (L69) | **SKIPPED** | `pytest.mark.skip` with a reason naming the unimplemented feature: no deduplication logic exists anywhere in `app/`. |
+
+**Direction A closes at 100% with no gaps.** The three tables above hold 12 + 6 + 7 = **25** rows, one per
+legacy function, each appearing exactly once and each carrying exactly one disposition. Summing the
+dispositions the other way gives 7 rewritten (E2, E7, E15, E19, E20, E21, E22) + 3 skipped (E23, E24, E25) +
+15 removed (E1, E3, E4, E5, E6, E8, E9, E10, E11, E12, E13, E14, E16, E17, E18) = **25**. The two sums closing
+on the same 25 is the demonstration; the summary table at the top of this document is the same arithmetic in
+one view.
 
 ### §E.2 Replacement suite → the legacy functions it absorbs
+
+The return leg of Direction A. A legacy function is "absorbed" when the suite asserts its intent against the
+real surface; the 404 census absorbs the *route-absence* half of the tests whose routes were never built.
 
 | Replacement | Absorbs | Also covers, with no legacy antecedent |
 |-------------|---------|----------------------------------------|
 | `tests/integration/test_http_tweets.py` | E2 | `GET /tweets` happy path through `dependency_overrides`; `POST /tweets/{id}/responses`; the unreachable-404 assertion in both `pytest.raises` and `status_code == 500` form |
-| `tests/integration/test_route_surface.py` | the 404 half of E4–E6, E7–E10 | the absence of `API_V1_STR` prefixing on every implemented route |
+| `tests/integration/test_route_surface.py` | the route-absence half of E4–E6 and E8–E10 | the absence of `API_V1_STR` prefixing on every implemented route, and the `/undefined` prefix census (X16) |
 | `tests/unit/test_services_llm.py` | E15 | the `AttributeError` a real `Tweet` produces, the swallowed-failure fallback string, and the `IndexError` an empty `choices` list produces outside the `try` |
-| `tests/unit/test_services_analytics.py` | E7, E8 | empty-result-set `KeyError`s, the interpolated `BETWEEN` clause, the three date ranges the subject neither validates nor neutralizes — inverted, malformed, and one carrying SQL metacharacters (D144) — and exception propagation |
+| `tests/unit/test_services_analytics.py` | E7; the return-shape half of E8 | `get_user_analytics`'s real `total_active_users` key and the absence of `total_users`; empty-result-set `KeyError`s, the interpolated `BETWEEN` clause, the three date ranges the subject neither validates nor neutralizes — inverted, malformed, and one carrying SQL metacharacters (D144) — and exception propagation |
 | `tests/unit/test_services_twitter.py` | E13, E14 | `TwitterStreamListener` behaviour and the `NameError` that makes `start_twitter_stream` dead code |
 | `tests/unit/test_tasks_tweet_processor.py` | E19, E21 | the exact `stream.filter(track=…)` kwargs with `tweepy` patched, and `DOUBT_RATING_THRESHOLD` as a constant with no gate behind it |
 | `tests/unit/test_tasks_response_generator.py` | E20, E22 | the `process_pending_responses` keyword `TypeError` |
 | `tests/unit/test_api_dependencies.py` | E11 | both 401 paths, the discarded original exception, and the unused `get_db` import |
+
+E23–E25 have no absorbing suite by design: they survive as three skipped tests in
+`tests/unit/test_tasks_tweet_processor.py` and `test_tasks_response_generator.py`, each naming the production
+feature that does not exist. E1, E3, E12, E16, E17 and E18 have no absorbing suite because their subjects do
+not exist and, per §E.1, nothing about them is assertable without building the missing feature.
+
+### §E.3 Import and patch-target remapping
+
+Every specifier the legacy suite used, and what replaced it. This is the migration's audit trail: an unmapped
+specifier would be a gap, and there are none.
+
+| Legacy specifier | Replacement |
+|------------------|-------------|
+| `from app.main import app` (`test_api.py` L3) | Unchanged specifier — but resolvable only after authorized production touch #1 made `app.api.routes` a package. The client is built in a fixture, never at module scope, which is what retires the L5 shared-client hazard. |
+| `from services.twitter_service import TwitterService` (L3) | `import app.services.twitter_service as twitter_service`, exercising the free functions — **the class does not exist**. |
+| `from services.llm_service import LLMService` (L4) | `import app.services.llm_service as llm_service` — **the class does not exist**; the module exposes a free `generate_response`. |
+| `from services.analytics_service import AnalyticsService` (L5) | `import app.services.analytics_service as analytics_service` — **the class does not exist**; the module exposes `get_tweet_analytics` and `get_user_analytics`. |
+| `from backend.tasks import process_tweet, generate_response` (`test_tasks.py` L3) | `import app.tasks.tweet_processor as tweet_processor` and `import app.tasks.response_generator as response_generator`. `process_tweet` exists under no root; it maps to `TweetStreamListener.on_status`. |
+| `patch('services.llm_service.openai.Completion.create')` (L30) | `patch('app.services.llm_service.Completion.create')` — the module does `from openai import Completion`, so the name is bound into the importing module and the library path was never the effective target. |
+| `patch('backend.tasks.save_tweet_to_db')` (L18) | `patch('app.db.firestore.add_tweet')`, or `patch('app.tasks.tweet_processor.add_tweet')` when the assertion is about the importing module's boundary. |
+| `patch('backend.tasks.get_tweet_from_db')` (L27) | `patch('app.db.firestore.get_tweet')`, or `patch('app.tasks.response_generator.get_tweet')` at the importing boundary. |
+| `patch('backend.tasks.generate_ai_response')` (L28) | `patch('app.services.llm_service.generate_response')`. |
+| `patch('backend.tasks.save_response_to_db')` (L29) | **No equivalent.** `add_response` does not exist in `app/db/firestore.py` although `app/tasks/response_generator.py` imports it. Supplied as a fail-closed conftest shim and recorded as a divergence (§E.5, §G G8). |
+
+Patching moved from the library to the *importing module's* boundary throughout, because that is where the name
+the code under test actually resolves is bound. Three frontend specifiers needed the same kind of redirection,
+handled entirely in configuration:
+
+| Frontend specifier (left unchanged in source) | Resolution |
+|-----------------------------------------------|------------|
+| `app/schema/tweet` | `moduleNameMapper` in `frontend/jest.config.js` → `src/schema/tweetSchema.ts` |
+| `app/schema/user` | `moduleNameMapper` → `src/schema/userSchema.ts` |
+| `app/services/api` | `moduleNameMapper` → `src/services/api.ts` |
+
+**No production import statement is modified anywhere.** Every non-resolvable specifier in the frontend source
+is redirected by test configuration rather than edited, and the only production files this change set touches
+are the two authorized touches (§F F15–F17).
+
+**The single import root is enforced structurally, not by convention.** `pythonpath = .` in `backend/pytest.ini`
+plus invoking pytest from `backend/` is what makes `app.*` the only root that resolves. **No test file
+manipulates `sys.path`** — the mechanism that would let a second root creep back in. The rationale and the
+alternatives considered are D61.
+
+### §E.4 Conventions carried forward
+
+The migration is deliberately a continuation rather than a replacement, so the legacy suite's conventions are
+kept even where a different choice was available:
+
+| Convention | How it survives |
+|------------|-----------------|
+| `test_<layer>.py` module names mirroring the `app/` layout | `test_core_config.py`, `test_db_firestore.py`, `test_services_llm.py`, `test_tasks_tweet_processor.py` and the rest — one module per production module |
+| `test_<operation>` and `test_<operation>_<scenario>` function names | Kept throughout; the legacy `test_process_tweet` / `test_process_tweet_error_handling` pairing is the pattern the new suites follow |
+| `mock_<entity>` fixture naming | Exemplified by `mock_tweet` (`test_tasks.py` L5-14) and continued in the shared fixtures |
+| `unittest.mock` (`patch`, `MagicMock`) as the mocking idiom | Kept rather than replaced by `pytest-mock`, which would have added a dependency for no capability gain |
+| pytest function-and-fixture style | Standardised on, which is what the `test_tasks.py` half of the suite already used; the `unittest.TestCase` classes of the other two modules were converted, which is also what removes the alphabetical-ordering hazard (E3) and the shared module-level client (L5) |
+
+### §E.5 Divergences the migration surfaced
+
+Facts only. Each is a mismatch between what the legacy suite asserted and what production does, and none is
+corrected — the two authorized touches cover none of them and implementing the missing behaviour is out of
+scope. The rationale for recording rather than fixing each is in [`./DECISION-LOG.md`](./DECISION-LOG.md) §6 and
+§23; the frontend/backend divergences the *seam* surfaced are separately in §D as X1–X16.
+
+| # | Divergence | Where it was visible |
+|---|------------|----------------------|
+| M1 | `test_get_user_analytics` asserted the key `"total_users"`; `analytics_service.get_user_analytics` returns **`total_active_users`**. Wrong route and wrong key | `test_api.py` L60 vs `analytics_service.py` L73 |
+| M2 | `test_update_config` used `PUT /config`; the design documents specify `PATCH`. Moot either way — no config router exists | `test_api.py` L69 |
+| M3 | `save_response_to_db` had **no production equivalent**: `add_response` does not exist in `app/db/firestore.py` despite being imported by `app/tasks/response_generator.py` | `test_tasks.py` L29 |
+| M4 | `process_tweet` did not exist under any import root; its nearest counterpart is `TweetStreamListener.on_status` | `test_tasks.py` L3 |
+| M5 | `TwitterService`, `LLMService` and `AnalyticsService` did not exist; all three service modules expose free functions only, and no `process_tweets`, `process_sentiment` or `calculate_engagement_rate` exists anywhere | `test_services.py` L3-5, and the three `setUp` bodies at L8-9, L27-28, L44-45 |
+| M6 | The legacy suite asserted against **ten** routes; **one** is implemented. `app/api/routes/tweets.py` carries `GET /tweets`, `GET /tweets/{tweet_id}` and `POST /tweets/{tweet_id}/responses` on a single prefix-less router. There is no `/users`, `/analytics`, `/config`, `/token` or `/health`, and no `API_V1_STR` prefixing despite the setting declaring `/api/v1` | `test_api.py` throughout |
+| M7 | Three legacy stubs described production features that do not exist — media handling, response rate limiting and tweet deduplication — so each became a skip with a reason rather than a deletion | `test_tasks.py` L57, L62, L67 |
 
 ## §F Test artifact → the construct it covers
 
@@ -303,6 +524,20 @@ an artifact that covers infrastructure rather than a production symbol says so.
 | F73 | `frontend/src/test-utils/dependency-closure.test.ts` | Infrastructure: the npm counterpart of `backend/tests/test_dependency_closure.py`. Covers no production symbol - it asserts `frontend/package.json` as a partition of the eleven test devDependencies this work owns (exact pin, the version the plan names, installed at exactly it) and the seventeen declarations it may not change (byte-identical to the frozen baseline specifier, installed at a version that specifier admits), that the partition is exhaustive and disjoint, that `e2e/package.json` declares exact versions throughout, and that `.gitignore` carries no active `package-lock.json` rule |
 | F74 | `frontend/src/test-utils/handlers.test.ts` | Infrastructure: the response contract of `frontend/src/test-utils/handlers.ts`' two layer-2 factories, held to the values measured against the assembled application - the four-route `404` census under the emitted base, `404` regardless of query values, the single and multi-parameter `422` bodies in declaration order, the accepted and refused coercion forms, the unoverridden `500` and overridden `200`, the `/generate-response` `404` under either base, the recorded base per disposition, and that a request under a prefix no layer names is left unmatched, ledgered and never performed |
 | F75 | `frontend/src/test-utils/configured-base.ts` | Infrastructure: the one place a suite re-imports its subject with `REACT_APP_API_BASE_URL` set, so the module-scope read in `src/services/api.ts` line 5 picks it up - the precondition for every configured-base assertion in §A and §D |
+| F76 | `backend/tests/test_dependency_closure.py` | Infrastructure: the pip counterpart of F73. One parametrised assertion per `==` pin in `backend/requirements-dev.txt` against `importlib.metadata.version`, plus a guard that the pin list is non-empty (H1) |
+| F77 | `frontend/src/pages/TweetManagement.test.tsx` | `src/pages/TweetManagement.tsx` — **the one page module that mounts.** Renders under `renderWithProviders`, so the page layer is not wholly unexercised |
+| F78 | `frontend/src/pages/Dashboard.test.tsx` | `src/pages/Dashboard.tsx` — written in full, then **skipped** with a reason naming the cause: `useAppDispatch` is imported from `src/store/index.ts`, which exports no such symbol, so the module throws on mount (§G G2) |
+| F79 | `frontend/src/pages/Analytics.test.tsx` | `src/pages/Analytics.tsx` — written in full, then **skipped**: `useAppSelector` is imported from `src/store/index.ts`, which exports no such symbol (§G G2) |
+| F80 | `frontend/src/pages/Configuration.test.tsx` | `src/pages/Configuration.tsx` — written in full, then **skipped**: `useAppDispatch`, as F78 (§G G2) |
+| F81 | `e2e/tests/dashboard.spec.ts` | Route `/` over `src/components/Dashboard` (`RealTimeFeed`), through the harness route table, with `page.route` interception on the tweet paths the component requests |
+| F82 | `e2e/tests/tweets.spec.ts` | Route `/tweets` over `src/components/TweetManagement` (`TweetList`) — the empty list container, which is what the component renders once `getTweets` fails |
+| F83 | `e2e/tests/analytics.spec.ts` | Route `/analytics` over `src/components/Analytics` (`TrendCharts`) — heading and `canvas#trendChart`, with the chart-construction failure caught and the component still mounted (§G G4) |
+| F84 | `e2e/tests/configuration.spec.ts` | Route `/configuration` over `src/components/Configuration` (`TwitterAPISettings`) — filling the four inputs, submitting, and the dialog |
+| F85 | `e2e/tests/harness-fixtures.ts` | Infrastructure: the shared spec fixtures behind H9 and H13 — the context-wide `noEgress` abort with teardown attribution, and the `unInterceptedApiRequests` ledger that fails a spec which forgot an intercept |
+| F86 | `.github/workflows/ci.yml` | Infrastructure: the test steps and their immediate install prerequisites, repointed at the manifests and working directories that exist, plus the new `e2e` job. The `flake8`, `mypy` and `npm run lint` steps are deliberately untouched and independently broken (§23 of the log) |
+| F87 | `backend/tests/README.md`, `frontend/TESTING.md`, `e2e/README.md`, root `README.md` | Rule 3 (Onboarding & Continued Development): setup, domain context, pitfalls, how to extend, and the suggested-next-tasks list. They carry no rationale, deferring every "why" to the decision log; this matrix carries none of their setup or command content |
+| F88 | `docs/testing/DASHBOARD-TEMPLATE.md` | Rule 2 (Observability): the coverage and test-health metric contract for the test system. Named here for completeness; its metric definitions are not restated in this document |
+| F89 | `blitzy-deck/executive-summary.html` | Rule 4 (Executive Presentation): the leadership summary of this programme. It projects `216` legacy lines and `25` dispositioned functions as KPIs, sourced from the summary table at the top of this file |
 
 ## §G Coverage ceiling → the assertion that stands in for it
 
@@ -345,3 +580,105 @@ artifact, and from each artifact to the guarantee it exists for.
 | H12 | The harness process and the browser both come from pinned local artifacts, no automated path can download a browser, and the server under test is always the one this configuration started | `e2e/playwright.config.ts` (`webServer.command` naming `node ./node_modules/vite/bin/vite.js`, `reuseExistingServer: false`, optional `PLAYWRIGHT_CHROMIUM_EXECUTABLE`) and `e2e/package.json` (every script a local binary; `browsers:verify` a dry run; **no** `install:browsers` script, so no script reaches the downloader CVE-2025-59288 concerns) | The harness starts as `VITE v4.5.14` on `127.0.0.1:4173` with no `npx` involved; `npm run browsers:verify` exits 0 without fetching and reports the pre-verified `chromium-1117` install location; a repository-wide grep finds no remaining invocation of `playwright install` outside prose | D111, D112, D113, D129 |
 | H13 | A spec that fails to intercept an API request its route needs cannot pass | `e2e/vite.harness.config.ts` (`HARNESS_API_SURFACE` answered `503` `harness-api-not-intercepted` with the required `page.route` snippet, never a success default) and `e2e/tests/harness-fixtures.ts` (the same request recorded in `unInterceptedApiRequests` and raised at teardown) | With all three intercepts removed, `/` was answered `503` on `GET /undefined/tweets`, the dev server logged the omission, and the test **failed at teardown naming the URL** — while its heading assertion still passed, which is why the ledger and not the status is what enforces this. With the intercepts installed, all four routes render and both ledgers are empty | D126, D131 |
 | H14 | Every test a run publishes is identified uniquely, and by the same string in the report and in the request ledger | `frontend/jest.config.js` (`jest-junit` template functions: `/`-separated `{filepath}` as `classname` and suite name, ancestor titles plus leaf title as `name`, `ancestorSeparator` the single space Jest joins them with), `frontend/src/test-utils/handlers.ts` (`currentTestId`, stamped on every ledger entry and violation line) and `frontend/src/test-utils/junit-correlation.test.ts` (12 cases holding both to one form) | Over the whole 17-suite run, all 191 `<testcase>` elements carry distinct `classname`+`name` pairs and not one `classname` or suite name contains a backslash; the ledger entry of an intercepted request equals `currentTestId()` exactly. Against the pre-fix templates the same three service suites emitted 7 colliding identities out of 40 cases, and 11 of the 12 contract cases fail | D144, D145 |
+
+## §I Production module → the artifact that covers it
+
+The closing census for Direction B. §F runs from artifact to construct; this runs the other way, module by
+module, so an orphaned production module would be visible as an empty cell. There are none: every one of the
+**14** backend modules and every one of the **19** frontend test-target modules names at least one covering
+artifact, and the two that cannot be covered say so explicitly rather than being quietly omitted.
+
+### §I.1 Backend — 14 modules
+
+Counted as the repository shipped them. `app/api/routes` was a single extension-less file and counts as one
+module; authorized touch #1 split it into four files, so the tree now holds 17 `.py` files where these 14
+modules were.
+
+| # | Production module | Covering artifact |
+|---|-------------------|-------------------|
+| I1 | `app/main.py` | `tests/integration/test_app_lifecycle.py` (F52), `tests/integration/test_route_surface.py` (F51), `tests/integration/conftest.py` (F11) |
+| I2 | `app/api/routes` → `routes/tweets.py` | `tests/integration/test_http_tweets.py` (F50). The module itself is authorized touch #1 (F15) |
+| I3 | `app/api/routes` → `routes/{users,analytics,config}.py` | `tests/integration/test_route_surface.py` (F51) — the 404 census over the three bare routers. The modules are authorized touch #1 (F16) |
+| I4 | `app/api/dependencies.py` | `tests/unit/test_api_dependencies.py` (F14) |
+| I5 | `app/core/config.py` | `tests/unit/test_core_config.py` (F12). The module is authorized touch #2 (F17), and F12 asserts the four added fields |
+| I6 | `app/core/security.py` | `tests/unit/test_core_security.py` (F13), with the `Optional` shim from `conftest.py` (F4, F5) making it importable |
+| I7 | `app/db/firestore.py` | `tests/unit/test_db_firestore.py` (F43) |
+| I8 | `app/db/bigquery.py` | `tests/unit/test_db_bigquery.py` (F44), unlocked only by the `bigquery_settings` stand-in (F7) |
+| I9 | `app/schema/tweet.py` | `tests/unit/test_schema.py` (F42), which also gates `factories.py` (F10) |
+| I10 | `app/schema/user.py` | `tests/unit/test_schema.py` (F42) |
+| I11 | `app/services/twitter_service.py` | `tests/unit/test_services_twitter.py` (F46) |
+| I12 | `app/services/llm_service.py` | `tests/unit/test_services_llm.py` (F45) |
+| I13 | `app/services/analytics_service.py` | `tests/unit/test_services_analytics.py` (F47) |
+| I14 | `app/tasks/tweet_processor.py` | `tests/unit/test_tasks_tweet_processor.py` (F48) |
+| I15 | `app/tasks/response_generator.py` | `tests/unit/test_tasks_response_generator.py` (F49) |
+
+Fifteen rows for fourteen modules, because I2 and I3 are the two halves of the one `routes` module.
+
+### §I.2 Frontend — 19 test-target modules
+
+| # | Production module | Covering artifact |
+|---|-------------------|-------------------|
+| I16 | `src/schema/tweetSchema.ts` | `schema/tweetSchema.test.ts` (F55) |
+| I17 | `src/schema/userSchema.ts` | `schema/userSchema.test.ts` (F56) |
+| I18 | `src/store/tweetSlice.ts` | `store/tweetSlice.test.ts` (F57), and `test-utils/render.tsx` (F24) via its default reducer |
+| I19 | `src/store/configSlice.ts` | `store/configSlice.test.ts` (F58), and F24 |
+| I20 | `src/store/index.ts` | `store/index.test.ts` (F59) — which asserts that the module's invalid reducer does not throw |
+| I21 | `src/services/api.ts` | `services/api.test.ts` (F60) |
+| I22 | `src/services/twitterService.ts` | `services/twitterService.test.ts` (F61) |
+| I23 | `src/services/llmService.ts` | `services/llmService.test.ts` (F62) |
+| I24 | `src/utils/formatUtils.ts` | `utils/formatUtils.test.ts` (F53) |
+| I25 | `src/utils/dateUtils.ts` | `utils/dateUtils.test.ts` (F54) |
+| I26 | `src/components/Dashboard` (extension-less file) | `components/Dashboard.test.tsx` (F63) and `e2e/tests/dashboard.spec.ts` (F81), both reaching it through the transformer (F20) / virtual id (F32) |
+| I27 | `src/components/TweetManagement` (extension-less file) | `components/TweetManagement.test.tsx` (F64) and `e2e/tests/tweets.spec.ts` (F82) |
+| I28 | `src/components/Analytics` (extension-less file) | `components/Analytics.test.tsx` (F65) and `e2e/tests/analytics.spec.ts` (F83) |
+| I29 | `src/components/Configuration` (extension-less file) | `components/Configuration.test.tsx` (F66) and `e2e/tests/configuration.spec.ts` (F84) |
+| I30 | `src/pages/TweetManagement.tsx` | `pages/TweetManagement.test.tsx` (F77) — mounts |
+| I31 | `src/pages/Dashboard.tsx` | `pages/Dashboard.test.tsx` (F78) — written, skipped, reason recorded |
+| I32 | `src/pages/Analytics.tsx` | `pages/Analytics.test.tsx` (F79) — written, skipped, reason recorded |
+| I33 | `src/pages/Configuration.tsx` | `pages/Configuration.test.tsx` (F80) — written, skipped, reason recorded |
+| I34 | `src/app.tsx` | **Reference only — no covering suite is possible.** It imports the invalid store, imports a `setupInterceptors` that `src/services/api.ts` never exports, and default-imports a named-only export, so it cannot be mounted in any environment. Permanently 0% and excluded from `collectCoverageFrom` (D71, §G G1). The E2E harness mirrors its route table in `e2e/harness/main.tsx` (F34) rather than mounting it |
+
+Nineteen modules: I16–I34. The four `src/components/*` entries are the extension-less **files** that give the
+frontend the same defect class `app/api/routes` had, resolved on the test side only.
+
+### §I.3 One further module, outside the named 19
+
+| Production module | Status |
+|-------------------|--------|
+| `src/index.tsx` | Not among the 19 test targets the requirements name, and **untested**. It is the application's entry point and shares `app.tsx`'s blockers — it imports the same never-exported `setupInterceptors` and the same invalid `store` — and additionally calls `ReactDOM.render`, the React 17 API, under React 18. Recorded here so the census is honest about the twentieth file under `frontend/src/`; carried as a suggested next task rather than covered |
+
+### §I.4 The two authorized production touches
+
+Both production changes this work is permitted are covered by the suite that made them necessary, so neither
+lands unasserted:
+
+| Touch | Files | Covered by |
+|-------|-------|------------|
+| #1 — `app/api/routes` becomes a package | `routes/tweets.py`, `routes/users.py`, `routes/analytics.py`, `routes/config.py` | `tests/integration/test_http_tweets.py` (the three endpoints `tweets.py` carries) and `tests/integration/test_route_surface.py` (the assembled route table, and that the three bare routers contribute nothing) |
+| #2 — four `Settings` fields production reads but never declared | `app/core/config.py` | `tests/unit/test_core_config.py`, which asserts each added field and its least-privilege default alongside the pre-existing ones |
+
+Rationale for both, including why the parameter reorder in `tweets.py` is behaviour-preserving, is
+[`./DECISION-LOG.md`](./DECISION-LOG.md) §5 and §22. This matrix records only that they exist and what covers
+them.
+
+---
+
+## Completeness statement
+
+Coverage of this migration is **100% with no gaps**, and the arithmetic above is what demonstrates it rather
+than asserting it:
+
+- **Direction A** — 12 + 6 + 7 = **25** legacy functions, each appearing exactly once in §E.1 with exactly one
+  disposition, and 7 rewritten + 3 skipped + 15 removed = **25** summing the same set the other way. §E.2 maps
+  every replacement suite back to the legacy functions it absorbs. §E.3 maps every legacy import and patch
+  target to its replacement or records that none exists.
+- **Direction B** — §F names a covering artifact or infrastructure obligation for all 89 files in scope, and
+  §I inverts it: all 14 backend modules and all 19 frontend test-target modules name at least one covering
+  artifact, with the single uncoverable module (`src/app.tsx`) and the single module outside the named set
+  (`src/index.tsx`) each stated explicitly instead of omitted.
+
+Both directions are present, which is what Rule 1 requires of a migration; either alone would not satisfy it.
+Every "why" behind these mappings lives in [`./DECISION-LOG.md`](./DECISION-LOG.md), the metric contract in
+[`./DASHBOARD-TEMPLATE.md`](./DASHBOARD-TEMPLATE.md), and the setup and command guidance in the Rule 3
+onboarding documents named in F87. This document records what is true.
+
