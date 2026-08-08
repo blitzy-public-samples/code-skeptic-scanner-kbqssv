@@ -24,7 +24,8 @@ coverage.json
 coverage.lcov
 htmlcov/
 
-# --- Backend test reports ---
+# --- Test report directories, at any depth ---
+reports/
 backend/reports/
 
 # --- Frontend test + coverage artifacts ---
@@ -34,6 +35,9 @@ frontend/reports/
 # --- Node dependency trees ---
 node_modules/
 e2e/node_modules/
+
+# --- npm lockfiles, at any depth ---
+package-lock.json
 
 # --- Playwright / e2e artifacts ---
 e2e/test-results/

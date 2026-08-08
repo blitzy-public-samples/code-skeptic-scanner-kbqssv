@@ -262,6 +262,24 @@ const API_NOT_INTERCEPTED_STATUS = 503;
 /** `error` of every un-intercepted-request body, and the dev-server log prefix. */
 const API_NOT_INTERCEPTED_ERROR = 'harness-api-not-intercepted';
 
+/**
+ * Icon path a browser requests on its own on a top-level navigation, answered
+ * `204 No Content`.
+ *
+ * The harness ships no icon and `e2e/harness/index.html` declares none, so no document
+ * references this path. Left to Vite the request 404s, and a browser logs that at error
+ * level on every load, which puts a false failure in the console and in the Playwright
+ * network record. A `204` is a success status carrying no body, so nothing is logged and
+ * no reference to a nonexistent asset is introduced.
+ *
+ * Matched exactly, as the keys of {@link HARNESS_API_SURFACE} are: a browser only ever
+ * requests this spelling, and any other unknown dotted path still 404s.
+ */
+const FAVICON_PATH = '/favicon.ico';
+
+/** Status {@link FAVICON_PATH} is answered with. */
+const FAVICON_STATUS = 204;
+
 /** URL prefix under which Vite serves a file by absolute path. */
 const FS_URL_PREFIX = '/@fs/';
 
@@ -709,7 +727,8 @@ function harnessFilesystemGuard(): Plugin {
 
 /**
  * Answers every {@link HARNESS_API_SURFACE} request that reached this server with
- * {@link API_NOT_INTERCEPTED_STATUS}, and passes every other request through.
+ * {@link API_NOT_INTERCEPTED_STATUS}, answers {@link FAVICON_PATH} with
+ * {@link FAVICON_STATUS}, and passes every other request through.
  *
  * A request reaches here only when no `page.route` claimed it, so reaching here *is*
  * the missing interception. The response names the request and the interception the
@@ -731,6 +750,14 @@ function harnessApiFailClosed(): Plugin {
       server.middlewares.use((req, res, next) => {
         const method = req.method ?? '';
         const pathname = withoutQuery(req.url ?? '').split('#')[0];
+
+        // Browser-initiated icon probe; the harness ships no icon, so it carries no body.
+        if (pathname === FAVICON_PATH) {
+          res.statusCode = FAVICON_STATUS;
+          res.end();
+          return;
+        }
+
         const remedy = HARNESS_API_SURFACE[`${method} ${pathname}`];
         if (remedy === undefined) {
           next();
