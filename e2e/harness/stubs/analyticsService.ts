@@ -10,7 +10,8 @@
  *
  * Contract this module guarantees to every spec:
  *
- * 1. `getTrendData` checks the response status, then parses the body.
+ * 1. `getTrendData` checks the response status, then parses the body. Either way the
+ *    body is read to completion, so the response is never left with an open stream.
  * 2. A parsed body that is not a {@link TrendSeries} rejects with
  *    {@link TrendSeriesContractError}, which names the member at fault.
  * 3. A parsed body that *is* a {@link TrendSeries} rejects with
@@ -21,6 +22,7 @@
  * than absorbed into the intentional refusal at step 3.
  *
  * @see docs/testing/DECISION-LOG.md - row D127, which refines D44.
+ * @see docs/testing/DECISION-LOG.md - row D143, the non-ok body read.
  * @see docs/testing/TRACEABILITY-MATRIX.md - the unreachable chart branch as an
  *   assertion obligation.
  */
@@ -145,8 +147,9 @@ function describeTrendSeriesViolation(payload: unknown): string | null {
  * @param dateRange - Range whose two members become the `start` and `end` query
  *   parameters, interpolated verbatim.
  * @returns Never resolves.
- * @throws Error - When the response status falls outside 200-299. The message names
- *   the request URL and that status.
+ * @throws Error - When the response status falls outside 200-299. The body is read to
+ *   completion and discarded first, so the message names the request URL and that
+ *   status and carries nothing the body held.
  * @throws TrendSeriesContractError - When the parsed body is not a
  *   {@link TrendSeries}.
  * @throws UnrenderableTrendSeriesError - When it is one.
@@ -157,6 +160,8 @@ export const getTrendData = async (dateRange: DateRange): Promise<TrendSeries> =
   const response = await fetch(url);
 
   if (!response.ok) {
+    // Drains the body and discards it; a read failure here changes nothing that follows.
+    await response.text().catch(() => undefined);
     throw new Error(`GET ${url} failed with HTTP status ${response.status}`);
   }
 
