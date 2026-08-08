@@ -31,11 +31,12 @@ jobs:
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install -r backend/requirements-dev.txt
 
     - name: Install Node.js dependencies
+      working-directory: frontend
       run: |
-        npm ci
+        npm install
 
     - name: Run backend linting and type checking
       run: |
@@ -47,24 +48,63 @@ jobs:
         npm run lint
 
     - name: Run backend tests
+      working-directory: backend
       run: |
-        pytest --cov=./ --cov-report=xml
+        pytest --cov=app/core --cov=app/services --cov=app/tasks --cov=app/db --cov-report=term-missing --cov-report=xml --cov-fail-under=90 --junitxml=reports/junit.xml
 
     - name: Run frontend tests
+      working-directory: frontend
       run: |
-        npm test -- --coverage
+        npm run test:ci
 
     - name: Upload backend coverage to Codecov
       uses: codecov/codecov-action@v1
       with:
-        file: ./coverage.xml
+        file: ./backend/coverage.xml
         flags: backend
 
     - name: Upload frontend coverage to Codecov
       uses: codecov/codecov-action@v1
       with:
-        file: ./coverage/coverage-final.json
+        file: ./frontend/coverage/coverage-final.json
         flags: frontend
+
+  e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up Node.js 16.x
+      uses: actions/setup-node@v2
+      with:
+        node-version: 16.x
+
+    - name: Install frontend dependencies
+      working-directory: frontend
+      run: |
+        npm install
+
+    - name: Install e2e dependencies
+      working-directory: e2e
+      run: |
+        npm install
+
+    - name: Install Playwright browsers
+      working-directory: e2e
+      run: |
+        npx playwright install --with-deps chromium
+
+    - name: Run end-to-end tests
+      run: |
+        npx playwright test --config e2e/playwright.config.ts
+
+    - name: Upload Playwright report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: playwright-report
+        path: e2e/playwright-report/
 
 # HUMAN ASSISTANCE NEEDED
 # Please review the following:
