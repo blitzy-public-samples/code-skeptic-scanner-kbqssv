@@ -14,6 +14,15 @@
 'use strict';
 
 /*
+ * Timezone pin: every suite renders local date parts in UTC. Set here, in the main process, because
+ * the `process.env` a test file sees is a sandboxed copy with no libuv-backed setter - assigning
+ * `TZ` from inside a suite leaves V8's cached zone untouched.
+ *
+ * @see frontend/src/utils/dateUtils.test.ts - the `formatDate` assertions this pin governs.
+ */
+process.env.TZ = 'UTC';
+
+/*
  * Inline ts-jest compiler options - no tsconfig file is read. Mirrored in
  * `frontend/jest.transform.extensionless.js`, which adds `isolatedModules`.
  */
