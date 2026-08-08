@@ -4,9 +4,9 @@ import { generateTweetResponse } from './llmService';
 import {
   BACKEND_NOT_FOUND_STATUS,
   DEFAULT_GENERATED_RESPONSE,
-  currentBehaviorGenerateResponseHandlers,
   lastRecordedRequest,
   recordedRequests,
+  unsetBaseBackendHandlers,
 } from '../test-utils/handlers';
 import { server } from '../test-utils/msw-server';
 
@@ -91,7 +91,10 @@ describe('generateTweetResponse: rejected disposition', () => {
 
   it('replaces a rejection from the real transport the same way, losing the AxiosError', async () => {
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    server.use(...currentBehaviorGenerateResponseHandlers());
+    // 404 for two independent reasons that both hold: the emitted path carries the unrouted `/undefined`
+    // prefix, and `/generate-response` is declared by no router under any base. So this is the one route
+    // whose 404 survives configuring the base URL.
+    server.use(...unsetBaseBackendHandlers());
 
     const caught = await generateTweetResponse(SUBJECT_TWEET_ID).catch((error: unknown) => error);
 

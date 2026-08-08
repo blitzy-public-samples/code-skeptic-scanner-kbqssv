@@ -3,11 +3,18 @@ import axios from 'axios';
 
 import {
   ALLOWED_REQUEST_ORIGINS,
+  BACKEND_NOT_FOUND_BODY,
+  BACKEND_NOT_FOUND_STATUS,
+  BACKEND_SERVER_ERROR_BODY,
+  BACKEND_SERVER_ERROR_STATUS,
+  CONFIGURED_BASE_URL,
   DEFAULT_GENERATED_RESPONSE,
-  currentBehaviorTweetByIdHandlers,
+  configuredBaseBackendHandlers,
   lastRecordedRequest,
   makeDefaultTweetsJson,
+  unsetBaseBackendHandlers,
 } from '../test-utils/handlers';
+import { importWithConfiguredBase } from '../test-utils/configured-base';
 import { server } from '../test-utils/msw-server';
 import { FIXED_TWEET_TIMESTAMP, makeTweet } from '../test-utils/factories';
 
@@ -24,8 +31,15 @@ const DOCUMENT_ORIGIN = 'http://localhost';
 /** Path `fetchTweetById('42')` resolves to once jsdom has applied the document base. */
 const TWEET_DETAIL_PATHNAME = '/undefined/tweets/42';
 
-/** Status the shared current-behaviour tweet-detail handlers answer with. */
-const SERVER_ERROR_STATUS = 500;
+/**
+ * The same call's path once `REACT_APP_API_BASE_URL` is `CONFIGURED_BASE_URL`: the backend's own route path,
+ * with no prefix. The unprefixed form is not a stylistic choice - `app/main.py` includes its router at the
+ * root, so this is the only shape the backend routes.
+ */
+const CONFIGURED_TWEET_DETAIL_PATHNAME = '/tweets/42';
+
+/** Path the collection request lands on under the same configured base. */
+const CONFIGURED_TWEETS_PATHNAME = '/tweets';
 
 /** Restore axios spies; clearMocks resets calls but does not remove spy implementations. */
 afterEach(() => {
@@ -52,7 +66,11 @@ describe('fetchTweets', () => {
     expect(result).toBe(body);
   });
 
-  it('resolves with the intercepted tweet collection when the request crosses the HTTP boundary', async () => {
+  it('resolves with the frontend-isolation fixture when the request crosses the HTTP boundary', async () => {
+    // The 200 below is `../test-utils/handlers`' isolation fixture, not an outcome the backend produces:
+    // this exact request is answered 404 by the assembled application, which the two cases at the end of
+    // this file assert. What is being asserted here is that the resolved value reaches the caller
+    // untransformed.
     const result = await fetchTweets(1, 20);
 
     expect(result).toEqual(makeDefaultTweetsJson());
@@ -77,6 +95,41 @@ describe('fetchTweets', () => {
     jest.spyOn(axios, 'get').mockRejectedValue(boom);
 
     await expect(fetchTweets(1, 10)).rejects.toBe(boom);
+  });
+
+  it('rejects with a 404 for the path it emits today, because that path is not routed', async () => {
+    server.use(...unsetBaseBackendHandlers());
+
+    const caught = await fetchTweets(2, 10).catch((error: unknown) => error);
+
+    expect(caught).toMatchObject({
+      response: { status: BACKEND_NOT_FOUND_STATUS, data: BACKEND_NOT_FOUND_BODY },
+    });
+    expect(lastRecordedRequest()).toMatchObject({
+      pathname: '/undefined/tweets',
+      status: BACKEND_NOT_FOUND_STATUS,
+    });
+  });
+
+  it('rejects with a 500 once the base URL is configured and both query values coerce to int', async () => {
+    server.use(...configuredBaseBackendHandlers());
+    const api = await importWithConfiguredBase(() => import('./api'));
+
+    // `fetchTweets` is the only caller that sends a usable `limit`, so it is the only one whose request gets
+    // past query coercion and reaches the endpoint body - where `db.query` on the Firestore client raises.
+    // `page` is not a declared parameter and is ignored, so it does not affect the outcome.
+    const caught = await api.fetchTweets(2, 10).catch((error: unknown) => error);
+
+    expect(caught).toMatchObject({
+      response: { status: BACKEND_SERVER_ERROR_STATUS, data: BACKEND_SERVER_ERROR_BODY },
+    });
+    expect(lastRecordedRequest()).toMatchObject({
+      base: CONFIGURED_BASE_URL,
+      pathname: CONFIGURED_TWEETS_PATHNAME,
+      query: { page: '2', limit: '10' },
+      status: BACKEND_SERVER_ERROR_STATUS,
+      violations: [],
+    });
   });
 });
 
@@ -117,13 +170,36 @@ describe('fetchTweetById', () => {
     // The id itself is absent in both spellings: as written, and percent-encoded as jsdom would send it.
     expect(recorded?.pathname).not.toContain('tweet 1');
     expect(recorded?.pathname).not.toContain('tweet%201');
-    // The route parameter the backend would bind is `7`, not the identifier the caller asked for.
+    // The last path segment carries `7`, so a route pattern of this shape binds `7` rather than the
+    // identifier the caller asked for. This is msw's binding of the emitted path; the case below drives the
+    // same call at the backend's own path, which is where that binding would be the route's.
     expect(recorded?.pathParams).toEqual({ tweetId: '7' });
+    // The 200 and the returned record are the isolation fixture's, not the backend's: this path carries the
+    // unrouted `/undefined` prefix, so the application answers 404 for it. What production supplies here is
+    // the retargeting - nothing on either side signals it, because `api.ts` neither validates nor encodes
+    // the id.
     expect(recorded?.status).toBe(200);
     expect(recorded?.violations).toEqual([]);
-    // And the caller is handed the record for the retargeted id, with nothing signalling the switch:
-    // `api.ts` neither validates nor encodes the id, and no error is raised on either side.
     expect(result.tweet_id).toBe('7');
+  });
+
+  it('lands the retargeted request on the backend route once the base URL is configured', async () => {
+    server.use(...configuredBaseBackendHandlers());
+    const api = await importWithConfiguredBase(() => import('./api'));
+
+    // The same traversal, now against a base URL the backend routes. The request reaches
+    // `GET /tweets/{tweet_id}` with `7` as the path parameter, and that route answers 500 for every id, so
+    // the retargeting is not hypothetical: it selects a real route and a real record.
+    const caught = await api.fetchTweetById('tweet 1/../7').catch((error: unknown) => error);
+
+    expect(caught).toMatchObject({ response: { status: BACKEND_SERVER_ERROR_STATUS } });
+    expect(lastRecordedRequest()).toMatchObject({
+      base: CONFIGURED_BASE_URL,
+      pathname: '/tweets/7',
+      pathParams: { tweetId: '7' },
+      status: BACKEND_SERVER_ERROR_STATUS,
+      violations: [],
+    });
   });
 
   it('resolves with the response body itself, neither copied nor transformed', async () => {
@@ -150,19 +226,19 @@ describe('fetchTweetById', () => {
     await expect(fetchTweetById('42')).rejects.toBe(boom);
   });
 
-  it('rejects with the axios error carrying the response when the route answers 500', async () => {
-    // The shared origin-scoped factory rather than a wildcard-prefixed pattern of this suite's own:
-    // it registers one handler per entry in `ALLOWED_REQUEST_ORIGINS`, so a request emitted to any
-    // other origin matches nothing, reaches `onUnhandledRequest` and fails the test through the
-    // isolation ledger instead of being answered regardless of where it was addressed.
-    server.use(...currentBehaviorTweetByIdHandlers());
+  it('rejects with a 404 for the path it emits today, because that path is not routed', async () => {
+    // The base URL is unset here, as it is in every suite, so the emitted path carries the `/undefined`
+    // segment. `app/main.py` declares `/tweets/{tweet_id}` and nothing under `/undefined`, so starlette's
+    // router refuses the request before any dependency resolves - this 404 is the router, not the handler's
+    // "Tweet not found" branch, which is unreachable.
+    server.use(...unsetBaseBackendHandlers());
 
     const caught = await fetchTweetById('42').catch((error: unknown) => error);
 
     expect(caught).toBeInstanceOf(Error);
     expect(caught).toMatchObject({
-      message: `Request failed with status code ${SERVER_ERROR_STATUS}`,
-      response: { status: SERVER_ERROR_STATUS },
+      message: `Request failed with status code ${BACKEND_NOT_FOUND_STATUS}`,
+      response: { status: BACKEND_NOT_FOUND_STATUS, data: BACKEND_NOT_FOUND_BODY },
     });
 
     /* The origin and path the handler actually answered, read back from the shared request log. */
@@ -170,8 +246,30 @@ describe('fetchTweetById', () => {
     expect(ALLOWED_REQUEST_ORIGINS).toContain(DOCUMENT_ORIGIN);
     expect(recorded?.origin).toBe(DOCUMENT_ORIGIN);
     expect(recorded?.pathname).toBe(TWEET_DETAIL_PATHNAME);
-    expect(recorded?.status).toBe(SERVER_ERROR_STATUS);
+    expect(recorded?.status).toBe(BACKEND_NOT_FOUND_STATUS);
     expect(recorded?.violations).toEqual([]);
+  });
+
+  it('rejects with a 500 once the base URL is configured and the request reaches the route', async () => {
+    server.use(...configuredBaseBackendHandlers());
+    const api = await importWithConfiguredBase(() => import('./api'));
+
+    const caught = await api.fetchTweetById('42').catch((error: unknown) => error);
+
+    // The route reads `Tweet.id` on a pydantic model that declares no `id`, so it raises for every id and
+    // starlette answers with its plain-text 500 body rather than JSON.
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).toMatchObject({
+      message: `Request failed with status code ${BACKEND_SERVER_ERROR_STATUS}`,
+      response: { status: BACKEND_SERVER_ERROR_STATUS, data: BACKEND_SERVER_ERROR_BODY },
+    });
+
+    expect(lastRecordedRequest()).toMatchObject({
+      base: CONFIGURED_BASE_URL,
+      pathname: CONFIGURED_TWEET_DETAIL_PATHNAME,
+      status: BACKEND_SERVER_ERROR_STATUS,
+      violations: [],
+    });
   });
 });
 

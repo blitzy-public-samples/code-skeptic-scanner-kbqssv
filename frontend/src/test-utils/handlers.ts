@@ -12,24 +12,37 @@
  * ## Layer 1 - {@link frontendIsolationHandlers}, exported also as {@link handlers}
  *
  * TEST-ONLY nominal-success responses, so a component or service suite can run without a socket. They are
- * **not** a model of the backend: a suite that exercises only these has covered no integration.
+ * **not** a model of the backend: a suite that exercises only these has covered no integration, and every
+ * `200` below is a fixture rather than an outcome the backend produces.
  *
- * ## Layer 2 - what the assembled application returns today
+ * ## Layer 2 - what the assembled application returns today, per base URL
  *
- * Two dispositions, because `GET /tweets` answers differently depending on whether the test overrode the
- * database dependency. `app/api/routes/tweets.py` calls `db.query(Tweet)` on whatever `Depends(get_db)`
- * yields, and `app/db/firestore.get_db` yields a Firestore `Client`, which has no `query`.
+ * The base URL comes first, because it decides whether a request is routed at all.
+ * `services/api.ts` line 5 reads `process.env.REACT_APP_API_BASE_URL` with no fallback, so under Jest -
+ * where `src/test-utils/setup-jest.ts` deletes the variable - every request carries the literal path segment
+ * `/undefined` ahead of the route path. `backend/app/main.py` includes one router with endpoints, and it
+ * declares `/tweets`, `/tweets/{tweet_id}` and `/tweets/{tweet_id}/responses` with **no** prefix. So a
+ * request emitted today matches no route, and starlette's router answers it before any dependency resolves
+ * or any query value is coerced.
  *
- * | Route                              | Isolation layer | Unoverridden `get_db`          | Under a SQLAlchemy-shaped override |
- * |------------------------------------|-----------------|--------------------------------|------------------------------------|
- * | `GET /tweets`                      | 200 + 3 tweets  | 500 `Internal Server Error`    | 200; 422 when `limit`/`skip` is not an int |
- * | `GET /tweets/{tweet_id}`           | 200 + 1 tweet   | 500 `Internal Server Error`    | 500 (raises at `Tweet.id`)         |
- * | `POST /tweets/{tweet_id}/responses`| 200 + `response`| 500 `Internal Server Error`    | 500 (raises at `Tweet.id`)         |
- * | `POST /generate-response`          | 200 + `generatedResponse` | 404 `{"detail":"Not Found"}` - no such route | 404, routing fails first |
+ * | Route path                         | Isolation fixture | Emitted today, base unset ({@link UNSET_BASE_PATH_PREFIX}) | Base configured to {@link CONFIGURED_BASE_URL}, unoverridden `get_db` | ... under a SQLAlchemy-shaped `get_db` override |
+ * |------------------------------------|-------------------|------------------------------------------------------------|-----------------------------------------------------------------------|------------------------------------------------|
+ * | `GET /tweets`                      | 200 + 3 tweets    | 404 `{"detail":"Not Found"}`                               | 422 when `skip` or `limit` is not an int, otherwise 500 `Internal Server Error` | 422 on the same values, otherwise 200 + the list |
+ * | `GET /tweets/{tweet_id}`           | 200 + 1 tweet     | 404 `{"detail":"Not Found"}`                               | 500 `Internal Server Error`                                           | 500 (raises at `Tweet.id`)                     |
+ * | `POST /tweets/{tweet_id}/responses`| 200 + `response`  | 404 `{"detail":"Not Found"}`                               | 500 `Internal Server Error`                                           | 500 (raises at `Tweet.id`)                     |
+ * | `POST /generate-response`          | 200 + `generatedResponse` | 404 `{"detail":"Not Found"}`                       | 404 - no router declares the path under any base                      | 404, routing fails first                       |
  *
- * {@link currentBackendBehaviorHandlers} and the `currentBehavior*Handlers` factories reproduce the
- * unoverridden column; {@link dependencyOverriddenTweetsHandlers} reproduces the one cell that differs. A
- * suite installs the set matching the disposition it means to assert. Neither is part of the default array.
+ * {@link unsetBaseBackendHandlers} reproduces the third column and {@link configuredBaseBackendHandlers} the
+ * fourth and fifth, the latter selected by its `dependencyOverridden` option. A suite installs the set
+ * matching the disposition it means to assert; neither is part of the default array. Every value in the table
+ * was measured against the assembled application, and
+ * `backend/tests/integration/test_route_surface.py` and `test_http_tweets.py` assert the same values from the
+ * server side.
+ *
+ * The 422 is **not** conditional on the dependency: fastapi coerces the declared query parameters before it
+ * calls the endpoint, so a request carrying `limit=undefined` is refused whichever object `Depends(get_db)`
+ * yields, and it reports **every** failing parameter in declaration order - `skip` before `limit` - rather
+ * than only the first.
  *
  * ## Request screening and the request log
  *
@@ -40,15 +53,21 @@
  * In layer 1 a request that deviates from its contract - an unknown or absent query key, a placeholder path
  * parameter, an unexpected body - is answered with {@link CONTRACT_VIOLATION_STATUS} and a body listing the
  * violations, never with a success status. In layer 2 the violations are recorded and the response is
- * whatever the backend returns for that request, including for a request no caller should emit.
+ * whatever the backend returns for that request, including for a request no caller should emit: reproducing
+ * that is the point of the layer, so a deviation there is a log entry rather than a ledger entry.
  *
- * ## Origin confinement
+ * ## Origin and path confinement
  *
- * Every handler is registered as an **absolute** pattern, once per entry in {@link ALLOWED_REQUEST_ORIGINS} -
- * `http://localhost` and `http://127.0.0.1`, the origins jsdom serves the suite from. So each layer
- * registers two handlers per route, and a request to any other origin matches **nothing**: it reaches msw's
- * `onUnhandledRequest`, which `src/test-utils/setup-jest.ts` uses to append an `'unhandled-request'` entry to
- * the isolation ledger and then raise, so the request is reported and never performed.
+ * Every handler is registered as an **absolute, fully spelled-out** pattern: an entry of
+ * {@link ALLOWED_REQUEST_ORIGINS} - `http://localhost` and `http://127.0.0.1`, the origins jsdom serves the
+ * suite from - then the base path prefix the layer is about, then the route path. No pattern carries a
+ * leading `*` segment, so nothing absorbs the base prefix and no layer can answer a request whose prefix it
+ * does not name. Each layer therefore registers two handlers per route.
+ *
+ * A request to any other origin, or to the right origin under a prefix no handler names, matches **nothing**:
+ * it reaches msw's `onUnhandledRequest`, which `src/test-utils/setup-jest.ts` uses to append an
+ * `'unhandled-request'` entry to the isolation ledger and then raise, so the request is reported and never
+ * performed. That is what makes a mis-set base URL visible instead of silently successful.
  *
  * The allow-list is a frozen constant with no mutator. A suite that deliberately drives an absolute
  * non-loopback URL registers a handler for that exact URL with `server.use(...)` for the duration of one
@@ -68,7 +87,7 @@
  */
 
 import { rest } from 'msw';
-import type { RestHandler } from 'msw';
+import type { ResponseComposition, RestContext, RestHandler } from 'msw';
 
 import { makeTweet } from './factories';
 
@@ -146,6 +165,40 @@ export function makeDefaultTweetsJson(): SerializedTweet[] {
 }
 
 /* ------------------------------------------------------------------------------------------------------ *
+ * The two base URLs a suite can put `services/api.ts` on, and the path prefix each one produces.
+ * ------------------------------------------------------------------------------------------------------ */
+
+/**
+ * What `${API_BASE_URL}` interpolates to when `REACT_APP_API_BASE_URL` is unset: the four-character string
+ * `undefined`, because `services/api.ts` line 5 reads the variable with no fallback.
+ */
+export const UNSET_BASE_PATH_SEGMENT = 'undefined';
+
+/**
+ * The path prefix that segment becomes once jsdom resolves the relative URL against the document -
+ * `undefined/tweets` becomes `http://localhost/undefined/tweets`.
+ *
+ * No backend router declares a path under it, so this prefix is why every request the application emits today
+ * is answered `404`.
+ */
+export const UNSET_BASE_PATH_PREFIX = `/${UNSET_BASE_PATH_SEGMENT}`;
+
+/**
+ * The value a suite assigns to `REACT_APP_API_BASE_URL` to put the client on the backend's own paths.
+ *
+ * An origin with no path, and a loopback one, for two reasons: the backend mounts its router at the root with
+ * no prefix - `Settings.API_V1_STR` is declared and used by nothing - so any base carrying a path segment
+ * would be unrouted exactly as `/undefined` is; and it keeps the request inside
+ * {@link ALLOWED_REQUEST_ORIGINS}, so the origin confinement above still holds.
+ *
+ * @see frontend/src/test-utils/configured-base.ts - the loader that applies it before importing the subject.
+ */
+export const CONFIGURED_BASE_URL = 'http://localhost';
+
+/** The path prefix {@link CONFIGURED_BASE_URL} produces: none. Requests land on the backend's own paths. */
+export const CONFIGURED_BASE_PATH_PREFIX = '';
+
+/* ------------------------------------------------------------------------------------------------------ *
  * The responses the assembled FastAPI application returns today.
  * ------------------------------------------------------------------------------------------------------ */
 
@@ -167,6 +220,12 @@ export const BACKEND_NOT_FOUND_BODY: { readonly detail: string } = { detail: 'No
 /** Status FastAPI answers with when a declared query parameter fails coercion. */
 export const BACKEND_UNPROCESSABLE_STATUS = 422;
 
+/** pydantic v1's message for a value it cannot coerce to `int`. */
+export const BACKEND_INTEGER_ERROR_MESSAGE = 'value is not a valid integer';
+
+/** pydantic v1's error type for the same failure. */
+export const BACKEND_INTEGER_ERROR_TYPE = 'type_error.integer';
+
 /** One entry of a FastAPI 422 `detail` array. */
 export interface BackendValidationError {
   readonly loc: readonly [string, string];
@@ -175,27 +234,39 @@ export interface BackendValidationError {
 }
 
 /**
- * The 422 body FastAPI returns when an `int` query parameter cannot be coerced, with `loc` naming the
- * parameter that failed.
+ * The 422 body FastAPI returns when one or more declared `int` query parameters cannot be coerced: one
+ * `detail` record per failing parameter, each `loc` naming it.
  *
- * @param parameter - Name of the failing query parameter, `skip` or `limit` on `GET /tweets`.
+ * Takes a list rather than a single name because validation does **not** stop at the first failure - a request
+ * whose `skip` and `limit` are both malformed is answered with two records - and the caller is responsible for
+ * passing them in the order the endpoint declares them, which is the order fastapi reports.
+ *
+ * @param parameters - Names of the failing query parameters, in declaration order.
+ * @see backend/tests/integration/test_http_tweets.py -
+ *   `test_get_tweets_reports_both_invalid_query_values_in_declaration_order`, the server-side assertion of the
+ *   same body.
  */
-export function backendIntegerCoercionErrorBody(parameter: string): {
+export function backendIntegerCoercionErrorBody(parameters: readonly string[]): {
   readonly detail: readonly BackendValidationError[];
 } {
   return {
-    detail: [
-      {
-        loc: ['query', parameter],
-        msg: 'value is not a valid integer',
-        type: 'type_error.integer',
-      },
-    ],
+    detail: parameters.map((parameter) => ({
+      loc: ['query', parameter],
+      msg: BACKEND_INTEGER_ERROR_MESSAGE,
+      type: BACKEND_INTEGER_ERROR_TYPE,
+    })),
   };
 }
 
-/** Query parameters `GET /tweets` declares and coerces to `int`. Anything else it ignores. */
-const BACKEND_TWEETS_INT_PARAMETERS = ['skip', 'limit'] as const;
+/**
+ * Query parameters `GET /tweets` declares and coerces to `int`, in the order
+ * `app/api/routes/tweets.py` line 12 declares them. Anything else - `page`, which every caller sends - it
+ * ignores.
+ *
+ * The order is load-bearing: it is the order the 422 `detail` records arrive in, regardless of the order the
+ * query string presents the parameters in.
+ */
+export const BACKEND_TWEETS_INT_PARAMETERS: readonly string[] = Object.freeze(['skip', 'limit']);
 
 /** A value pydantic v1 coerces to `int`: optional sign, digits, surrounding whitespace tolerated. */
 const INTEGER_VALUE = /^[+-]?\d+$/;
@@ -206,6 +277,17 @@ const INTEGER_VALUE = /^[+-]?\d+$/;
  */
 function coercesToInteger(value: string | undefined): boolean {
   return value === undefined || INTEGER_VALUE.test(value.trim());
+}
+
+/**
+ * The declared `int` parameters of `GET /tweets` that the request's query string does not coerce, in
+ * declaration order - the list {@link backendIntegerCoercionErrorBody} turns into a 422 body, and empty when
+ * the request passes validation.
+ *
+ * @param query - Query parameters as sent, values unparsed.
+ */
+function failingIntegerParameters(query: Readonly<Record<string, string>>): readonly string[] {
+  return BACKEND_TWEETS_INT_PARAMETERS.filter((parameter) => !coercesToInteger(query[parameter]));
 }
 
 /* ------------------------------------------------------------------------------------------------------ *
@@ -236,12 +318,14 @@ export interface RouteContract {
   readonly id: string;
   readonly method: 'GET' | 'POST';
   /**
-   * Route path, beginning with the `*` segment the callers' `undefined` base URL occupies.
+   * The route path alone, exactly as the backend declares it, with msw's `:name` syntax for a path
+   * parameter - `/tweets/:tweetId` for the backend's `/tweets/{tweet_id}`.
    *
-   * Never registered as written: {@link originScopedPatterns} prefixes it with each entry in
-   * {@link ALLOWED_REQUEST_ORIGINS}, so a request from any other origin matches no handler.
+   * Never registered as written: {@link originScopedPatterns} prefixes it with an allowed origin and the base
+   * path prefix of the layer being registered. It carries **no** wildcard segment, so a request under any
+   * other prefix matches no handler at all.
    */
-  readonly pattern: string;
+  readonly path: string;
   /** Production functions that issue this request. */
   readonly callers: readonly string[];
   /** The request those callers emit, as it reaches msw. */
@@ -249,12 +333,18 @@ export interface RouteContract {
   /** The backend route and its declared parameters, or the absence of one. */
   readonly backendContract: string;
   /**
-   * Status and body the assembled application returns today with `app.db.firestore.get_db` left alone,
-   * which is what a request against the real dependency graph gets.
+   * Status and body the assembled application returns for the request the callers emit **today**, under the
+   * unset base URL - so for a path carrying the {@link UNSET_BASE_PATH_PREFIX} segment, which no router
+   * declares.
    */
-  readonly currentBackendOutcome: string;
+  readonly unsetBaseOutcome: string;
   /**
-   * Status and body the same route returns when a test has installed a SQLAlchemy-shaped stand-in through
+   * Status and body the same call gets once `REACT_APP_API_BASE_URL` is {@link CONFIGURED_BASE_URL}, so the
+   * request reaches the backend's own path, with `app.db.firestore.get_db` left alone.
+   */
+  readonly configuredBaseOutcome: string;
+  /**
+   * How {@link configuredBaseOutcome} changes when a test has installed a SQLAlchemy-shaped stand-in through
    * `app.dependency_overrides[get_db]`, or `null` when the override changes nothing.
    */
   readonly dependencyOverriddenOutcome: string | null;
@@ -283,9 +373,9 @@ export const CONTRACT_VIOLATION_DETAIL = 'msw handler request-contract violation
 const TWEETS_QUERY_KEYS = ['page', 'limit'] as const;
 
 const TWEETS_CONTRACT: RouteContract = {
-  id: 'GET */tweets',
+  id: 'GET /tweets',
   method: 'GET',
-  pattern: '*/tweets',
+  path: '/tweets',
   callers: [
     'services/api.ts fetchTweets(page, limit)',
     'services/twitterService.ts getLatestTweets(count)',
@@ -295,18 +385,22 @@ const TWEETS_CONTRACT: RouteContract = {
     'GET undefined/tweets?page=<page>&limit=<limit>; limit is the literal string "undefined" when ' +
     'getLatestTweets supplies only its first argument, and page is too when it supplies none',
   backendContract: 'GET /tweets, query skip:int=0 and limit:int=100, returns List[Tweet]',
-  currentBackendOutcome:
-    '500 with the plain-text body "Internal Server Error": the handler calls db.query(Tweet) on the ' +
-    'Firestore Client that app.db.firestore.get_db yields, which has no query attribute',
+  unsetBaseOutcome:
+    '404 {"detail":"Not Found"}: the emitted path is /undefined/tweets, which no router declares, so ' +
+    'starlette answers before the query is coerced and before Depends(get_db) resolves',
+  configuredBaseOutcome:
+    '422 naming every declared int parameter the query does not coerce, in declaration order (skip before ' +
+    'limit); otherwise 500 with the plain-text body "Internal Server Error", because the handler calls ' +
+    'db.query(Tweet) on the Firestore Client that app.db.firestore.get_db yields, which has no query attribute',
   dependencyOverriddenOutcome:
-    '200 with the tweet list when skip and limit coerce to int; 422 ' +
-    '{"detail":[{"loc":["query","<param>"],"msg":"value is not a valid integer","type":"type_error.integer"}]} ' +
-    'when either does not',
+    'the same 422 for the same values - validation precedes the endpoint either way - and 200 with the tweet ' +
+    'list in place of the 500',
   isolationResponse: '200 with three schema-valid tweets, timestamps serialised to ISO-8601 strings',
   mismatches: [
+    'the emitted path carries the /undefined prefix, so the request is unrouted and answered 404 rather than reaching this route at all',
     'page is not a declared backend parameter and is ignored; skip, which the backend paginates on, is never sent',
-    'the unoverridden backend answers 500 for every request; the isolation layer answers 200',
-    'limit=undefined and page=undefined are answered 422 by the overridden backend and 200 by the isolation layer',
+    'limit=undefined is refused with 422 once the base is configured, whichever object Depends(get_db) yields; the isolation layer answers 200',
+    'the routed request answers 500 until a test replaces the database dependency; the isolation layer answers 200',
   ],
   expectation: {
     queryKeys: TWEETS_QUERY_KEYS,
@@ -321,25 +415,29 @@ const TWEETS_CONTRACT: RouteContract = {
 };
 
 const TWEET_BY_ID_CONTRACT: RouteContract = {
-  id: 'GET */tweets/:tweetId',
+  id: 'GET /tweets/:tweetId',
   method: 'GET',
-  pattern: '*/tweets/:tweetId',
+  path: '/tweets/:tweetId',
   callers: [
     'services/api.ts fetchTweetById(tweetId)',
     'services/twitterService.ts getTweetDetails(tweetId)',
   ],
   emittedRequest: 'GET undefined/tweets/<tweetId>, no query string, no body',
   backendContract: 'GET /tweets/{tweet_id}, returns Tweet, raises HTTPException(404) when absent',
-  currentBackendOutcome:
+  unsetBaseOutcome:
+    '404 {"detail":"Not Found"}, application/json: the emitted path is /undefined/tweets/<tweetId>, which no ' +
+    'router declares. This 404 is the router refusing the path, not the handler reporting a missing tweet',
+  configuredBaseOutcome:
     '500 with the plain-text body "Internal Server Error": db.query on the Firestore Client that ' +
     'app.db.firestore.get_db yields does not exist',
   dependencyOverriddenOutcome:
-    '500 with the same plain-text body: the handler reads Tweet.id, which the pydantic model does not ' +
-    'declare, so it raises before the 404 branch can be reached',
+    '500 with the same plain-text body, for a second reason: the handler reads Tweet.id, which the pydantic ' +
+    'model does not declare, so it raises before the 404 branch can be reached',
   isolationResponse: '200 with one schema-valid tweet whose tweet_id echoes the path parameter',
   mismatches: [
-    'the backend answers 500 for every id; the isolation layer answers 200',
-    'the declared 404 branch is unreachable, so no handler models it',
+    'the emitted path carries the /undefined prefix, so the request is answered 404 by the router and never reaches this route',
+    'once routed the backend answers 500 for every id; the isolation layer answers 200',
+    'the handler-level 404 branch is unreachable, so no handler models it; the 404 under the unset base is a routing failure and must not be read as that branch',
   ],
   expectation: {
     queryKeys: [],
@@ -349,20 +447,21 @@ const TWEET_BY_ID_CONTRACT: RouteContract = {
 };
 
 const TWEET_RESPONSES_CONTRACT: RouteContract = {
-  id: 'POST */tweets/:tweetId/responses',
+  id: 'POST /tweets/:tweetId/responses',
   method: 'POST',
-  pattern: '*/tweets/:tweetId/responses',
+  path: '/tweets/:tweetId/responses',
   callers: [],
   emittedRequest: 'POST undefined/tweets/<tweetId>/responses, no query string, no body',
   backendContract: 'POST /tweets/{tweet_id}/responses, no request body, returns Dict under the key "response"',
-  currentBackendOutcome:
+  unsetBaseOutcome: '404 {"detail":"Not Found"}, application/json, for the same routing reason',
+  configuredBaseOutcome:
     '500 with the plain-text body "Internal Server Error", from the same absent db.query',
   dependencyOverriddenOutcome:
     '500 with the same plain-text body, from the same Tweet.id access',
   isolationResponse: '200 with {"response": DEFAULT_TWEET_RESPONSE}',
   mismatches: [
     'no module under src/ calls this route; it is registered because the backend implements it',
-    'the backend answers 500; the isolation layer answers 200',
+    'once routed the backend answers 500; the isolation layer answers 200',
   ],
   expectation: {
     queryKeys: [],
@@ -372,20 +471,23 @@ const TWEET_RESPONSES_CONTRACT: RouteContract = {
 };
 
 const GENERATE_RESPONSE_CONTRACT: RouteContract = {
-  id: 'POST */generate-response',
+  id: 'POST /generate-response',
   method: 'POST',
-  pattern: '*/generate-response',
+  path: '/generate-response',
   callers: [
     'services/api.ts generateResponse(tweetId)',
     'services/llmService.ts generateTweetResponse(tweetId)',
   ],
   emittedRequest: 'POST undefined/generate-response, application/json body {"tweetId": "<tweetId>"}',
   backendContract: 'none - no router declares this path',
-  currentBackendOutcome: '404 {"detail":"Not Found"}',
+  unsetBaseOutcome: '404 {"detail":"Not Found"}, application/json',
+  configuredBaseOutcome:
+    '404 {"detail":"Not Found"}: the only route on this path is the one that does not exist, so configuring ' +
+    'the base changes nothing',
   dependencyOverriddenOutcome: null,
   isolationResponse: '200 with {"generatedResponse": DEFAULT_GENERATED_RESPONSE}',
   mismatches: [
-    'the path does not exist on the backend; the nearest implemented route is POST /tweets/{tweet_id}/responses',
+    'the path does not exist on the backend under any base; the nearest implemented route is POST /tweets/{tweet_id}/responses',
     'that route takes the id from the path rather than a body, and returns it under "response" rather than "generatedResponse"',
   ],
   expectation: {
@@ -441,18 +543,21 @@ export function allowedRequestOrigins(): readonly string[] {
 }
 
 /**
- * The absolute msw patterns one route path is registered under: the path prefixed with each allowed origin.
+ * The absolute msw patterns one route path is registered under for one base: the origin, then the base path
+ * prefix, then the route path - fully spelled out, with no wildcard segment anywhere.
  *
- * `path` keeps its leading `*` segment, which is what the callers' `undefined` base URL occupies -
- * `fetchTweets` emits `undefined/tweets?...`, which the browser resolves to
- * `http://localhost/undefined/tweets`, and the `*` absorbs the `undefined`. A request whose origin is not in
- * the list matches none of these patterns.
+ * `fetchTweets` emits `undefined/tweets?...` while the base URL is unset, which jsdom resolves to
+ * `http://localhost/undefined/tweets`; that is matched by naming the `/undefined` prefix rather than by
+ * absorbing it. Nothing else matches: a request under a prefix no layer names - a mis-set base URL, or the
+ * backend's own path while the client is still unconfigured - reaches `onUnhandledRequest` and becomes a
+ * ledger entry.
  *
- * @param path - A `pattern` member of {@link ROUTE_CONTRACTS}: a `*` wildcard segment, then the route path.
+ * @param path - The `path` member of a {@link ROUTE_CONTRACTS} entry, for example `/tweets/:tweetId`.
+ * @param basePathPrefix - {@link UNSET_BASE_PATH_PREFIX} or {@link CONFIGURED_BASE_PATH_PREFIX}.
  * @returns One pattern per entry in {@link ALLOWED_REQUEST_ORIGINS}, in that order.
  */
-function originScopedPatterns(path: string): readonly string[] {
-  return ALLOWED_REQUEST_ORIGINS.map((origin) => `${origin}/${path}`);
+function originScopedPatterns(path: string, basePathPrefix: string): readonly string[] {
+  return ALLOWED_REQUEST_ORIGINS.map((origin) => `${origin}${basePathPrefix}${path}`);
 }
 
 /* ------------------------------------------------------------------------------------------------------ *
@@ -467,14 +572,17 @@ export interface RecordedRequest {
   /** Absolute request URL, for example `http://localhost/undefined/tweets?page=2&limit=10`. */
   readonly url: string;
   readonly origin: string;
-  /** What the pattern's leading `*` matched, for example `http://localhost/undefined`. */
+  /**
+   * The absolute prefix the caller's base URL occupied, for example `http://localhost/undefined` while the
+   * base is unset and `http://localhost` once it is configured.
+   */
   readonly base: string;
   readonly pathname: string;
   /** Query string including its leading `?`, or `''` when there is none. */
   readonly search: string;
   /** Query parameters as sent, values unparsed, so `limit` reads back as the string `undefined`. */
   readonly query: Readonly<Record<string, string>>;
-  /** Named path parameters the pattern captured, without the wildcard capture. */
+  /** Named path parameters the pattern captured. */
   readonly pathParams: Readonly<Record<string, string>>;
   readonly contentType: string | null;
   /** Parsed JSON body, the empty string for a bodyless request, `undefined` for a GET. */
@@ -710,10 +818,16 @@ export function resetHandlerState(): void {
 interface RequestFacts {
   readonly method: string;
   readonly url: URL;
-  /** `req.params`, which on a `*`-prefixed pattern also carries the wildcard capture under the key `0`. */
+  /** `req.params`, the named path parameters the pattern captured. */
   readonly params: Readonly<Record<string, unknown>>;
   readonly contentType: string | null;
   readonly body: unknown;
+  /**
+   * The base path prefix the handler answering this request was registered under -
+   * {@link UNSET_BASE_PATH_PREFIX} or {@link CONFIGURED_BASE_PATH_PREFIX}. Recorded as
+   * {@link RecordedRequest.base} together with the origin.
+   */
+  readonly basePathPrefix: string;
 }
 
 /** A screened request: its normalised facts and every way it departs from its contract. */
@@ -736,22 +850,21 @@ function stringifyParam(value: unknown): string {
 }
 
 /**
- * The absolute prefix a caller's base URL occupied, rebuilt from the request origin and what the pattern's
- * leading `*` captured.
+ * The absolute prefix the caller's base URL occupied: the request origin followed by the base path prefix the
+ * answering handler was registered under.
  *
- * With absolute patterns the wildcard captures only the path segment - `undefined` for the callers' unset
- * base URL, `api/v1` for a caller configured with `http://localhost/api/v1` - so the origin is prepended to
- * give the value a suite asserts, for example `http://localhost/undefined`.
+ * Read from the registration rather than parsed back out of the URL, because the handler is registered per
+ * base and therefore already knows which one it is - `http://localhost/undefined` for the unset base URL,
+ * `http://localhost` for {@link CONFIGURED_BASE_URL}.
  *
  * @param origin - `URL.origin` of the request.
- * @param capture - `req.params['0']`, the wildcard capture.
+ * @param basePathPrefix - The prefix the answering pattern named.
  */
-function baseFromCapture(origin: string, capture: unknown): string {
-  const segment = stringifyParam(capture);
-  return segment === '' ? origin : `${origin}/${segment}`;
+function baseFromRegistration(origin: string, basePathPrefix: string): string {
+  return `${origin}${basePathPrefix}`;
 }
 
-/** Named path parameters, with msw's numeric wildcard captures removed. */
+/** Named path parameters, with any positional capture msw may add removed. */
 function namedPathParams(params: Readonly<Record<string, unknown>>): Record<string, string> {
   const named: Record<string, string> = {};
   for (const [key, value] of Object.entries(params)) {
@@ -850,9 +963,9 @@ function screenRequest(contract: RouteContract, facts: RequestFacts): ScreenedRe
   return {
     contract,
     facts,
-    // The patterns are absolute, so the leading `*` captures only the path segment the caller's base URL
-    // occupies; `base` is the whole prefix, so the origin is prepended.
-    base: baseFromCapture(facts.url.origin, facts.params['0']),
+    // Every pattern is absolute and names its base prefix, so the prefix is known from the registration
+    // rather than recovered from the URL.
+    base: baseFromRegistration(facts.url.origin, facts.basePathPrefix),
     query,
     pathParams,
     originAllowed,
@@ -903,10 +1016,10 @@ function record(screened: ScreenedRequest, status: number): void {
  * calling service swallows the rejection, and returns the body to answer it with.
  *
  * Layer 1 only. A request that fails its contract here is never intentional - a suite wanting to assert what
- * the backend does with a non-conforming request installs the matching
- * {@link currentBackendBehaviorHandlers} entry instead, and that layer records the deviation without adding
- * a ledger entry. So this also appends to the ledger, which turns the 599 from a status the caller may catch
- * into a failure of the test that emitted the request.
+ * the backend does with a non-conforming request installs {@link unsetBaseBackendHandlers} or
+ * {@link configuredBaseBackendHandlers} instead, and that layer records the deviation without adding a ledger
+ * entry. So this also appends to the ledger, which turns the 599 from a status the caller may catch into a
+ * failure of the test that emitted the request.
  */
 function rejectScreenedRequest(screened: ScreenedRequest): ContractViolationBody {
   record(screened, CONTRACT_VIOLATION_STATUS);
@@ -950,11 +1063,17 @@ function rejectScreenedRequest(screened: ScreenedRequest): ContractViolationBody
  * collection, `[2..3]` for the tweet detail, `[4..5]` for the tweet responses and `[6..7]` for
  * `generate-response`.
  *
- * These responses are fixtures, not backend behaviour. A suite asserting an integration outcome installs the
- * matching layer-2 factory instead.
+ * All eight are registered under {@link UNSET_BASE_PATH_PREFIX}, which is the prefix every request carries
+ * while `REACT_APP_API_BASE_URL` is unset - the state `src/test-utils/setup-jest.ts` guarantees. A suite that
+ * configures the base URL therefore matches none of these and installs its own handlers, which is deliberate:
+ * these fixtures must not follow a client onto a path they were never measured against.
+ *
+ * These responses are fixtures, not backend behaviour: the assembled application answers **404** for every one
+ * of these paths. A suite asserting an integration outcome installs {@link unsetBaseBackendHandlers} or
+ * {@link configuredBaseBackendHandlers} instead.
  */
 export const frontendIsolationHandlers: RestHandler[] = [
-  ...originScopedPatterns(TWEETS_CONTRACT.pattern).map((pattern) =>
+  ...originScopedPatterns(TWEETS_CONTRACT.path, UNSET_BASE_PATH_PREFIX).map((pattern) =>
     rest.get(pattern, (req, res, ctx) => {
       const screened = screenRequest(TWEETS_CONTRACT, {
         method: req.method,
@@ -962,6 +1081,7 @@ export const frontendIsolationHandlers: RestHandler[] = [
         params: req.params,
         contentType: req.headers.get('content-type'),
         body: undefined,
+        basePathPrefix: UNSET_BASE_PATH_PREFIX,
       });
 
       if (screened.violations.length > 0) {
@@ -973,7 +1093,7 @@ export const frontendIsolationHandlers: RestHandler[] = [
     }),
   ),
 
-  ...originScopedPatterns(TWEET_BY_ID_CONTRACT.pattern).map((pattern) =>
+  ...originScopedPatterns(TWEET_BY_ID_CONTRACT.path, UNSET_BASE_PATH_PREFIX).map((pattern) =>
     rest.get<never, { tweetId: string }>(pattern, (req, res, ctx) => {
       const screened = screenRequest(TWEET_BY_ID_CONTRACT, {
         method: req.method,
@@ -981,6 +1101,7 @@ export const frontendIsolationHandlers: RestHandler[] = [
         params: req.params,
         contentType: req.headers.get('content-type'),
         body: undefined,
+        basePathPrefix: UNSET_BASE_PATH_PREFIX,
       });
 
       if (screened.violations.length > 0) {
@@ -992,7 +1113,7 @@ export const frontendIsolationHandlers: RestHandler[] = [
     }),
   ),
 
-  ...originScopedPatterns(TWEET_RESPONSES_CONTRACT.pattern).map((pattern) =>
+  ...originScopedPatterns(TWEET_RESPONSES_CONTRACT.path, UNSET_BASE_PATH_PREFIX).map((pattern) =>
     rest.post<string, { tweetId: string }>(pattern, (req, res, ctx) => {
       const screened = screenRequest(TWEET_RESPONSES_CONTRACT, {
         method: req.method,
@@ -1000,6 +1121,7 @@ export const frontendIsolationHandlers: RestHandler[] = [
         params: req.params,
         contentType: req.headers.get('content-type'),
         body: req.body,
+        basePathPrefix: UNSET_BASE_PATH_PREFIX,
       });
 
       if (screened.violations.length > 0) {
@@ -1011,7 +1133,7 @@ export const frontendIsolationHandlers: RestHandler[] = [
     }),
   ),
 
-  ...originScopedPatterns(GENERATE_RESPONSE_CONTRACT.pattern).map((pattern) =>
+  ...originScopedPatterns(GENERATE_RESPONSE_CONTRACT.path, UNSET_BASE_PATH_PREFIX).map((pattern) =>
     rest.post<{ tweetId: string }>(pattern, (req, res, ctx) => {
       const screened = screenRequest(GENERATE_RESPONSE_CONTRACT, {
         method: req.method,
@@ -1019,6 +1141,7 @@ export const frontendIsolationHandlers: RestHandler[] = [
         params: req.params,
         contentType: req.headers.get('content-type'),
         body: req.body,
+        basePathPrefix: UNSET_BASE_PATH_PREFIX,
       });
 
       if (screened.violations.length > 0) {
@@ -1038,14 +1161,15 @@ export const frontendIsolationHandlers: RestHandler[] = [
 export const handlers: RestHandler[] = frontendIsolationHandlers;
 
 /* ------------------------------------------------------------------------------------------------------ *
- * Layer 2 - what the assembled application returns today. Each factory reproduces the status, body and
- * content type measured against that application, and each returns one handler per entry in
+ * Layer 2 - what the assembled application returns, one factory per base URL. Each reproduces the status,
+ * body and content type measured against that application, and registers one handler per route per entry in
  * {@link ALLOWED_REQUEST_ORIGINS}, so a call site spreads the result:
- * `server.use(...currentBehaviorTweetsHandlers())`.
+ * `server.use(...unsetBaseBackendHandlers())`.
  *
- * The factories named `currentBehavior*` reproduce the outcome with `app.db.firestore.get_db` left alone.
- * {@link dependencyOverriddenTweetsHandlers} reproduces `GET /tweets` under a SQLAlchemy-shaped
- * `app.dependency_overrides[get_db]`, which is the only route whose status the override changes.
+ * The two factories are alternatives, not additions: a request carries one base URL, so a suite installs the
+ * set matching the base its subject was loaded under. {@link unsetBaseBackendHandlers} is the base every suite
+ * runs under by default; {@link configuredBaseBackendHandlers} requires the subject to have been re-imported
+ * with `REACT_APP_API_BASE_URL` set, which `src/test-utils/configured-base.ts` does.
  *
  * Unlike layer 1, a contract deviation here is not a ledger entry: reproducing what the backend does with a
  * request no caller should emit is the whole point of this layer, so the deviation is recorded in the
@@ -1053,169 +1177,249 @@ export const handlers: RestHandler[] = frontendIsolationHandlers;
  * ------------------------------------------------------------------------------------------------------ */
 
 /**
- * `GET /tweets` as the assembled application answers it with `app.db.firestore.get_db` left alone: 500 with
- * the plain-text body `Internal Server Error`, because the handler calls `db.query(Tweet)` on the Firestore
- * `Client` that dependency yields, which has no `query` attribute.
- *
- * @returns One handler per entry in {@link ALLOWED_REQUEST_ORIGINS}.
+ * Screens a request, records it under {@link BACKEND_NOT_FOUND_STATUS} and answers with the router's own 404 -
+ * `{"detail":"Not Found"}` as JSON, which is what starlette returns for a path it does not route.
  */
-export function currentBehaviorTweetsHandlers(): RestHandler[] {
-  return originScopedPatterns(TWEETS_CONTRACT.pattern).map((pattern) =>
-    rest.get(pattern, (req, res, ctx) => {
-      const screened = screenRequest(TWEETS_CONTRACT, {
-        method: req.method,
-        url: req.url,
-        params: req.params,
-        contentType: req.headers.get('content-type'),
-        body: undefined,
-      });
+function answerRouterNotFound(
+  contract: RouteContract,
+  facts: RequestFacts,
+  res: ResponseComposition,
+  ctx: RestContext,
+) {
+  record(screenRequest(contract, facts), BACKEND_NOT_FOUND_STATUS);
+  return res(ctx.status(BACKEND_NOT_FOUND_STATUS), ctx.json(BACKEND_NOT_FOUND_BODY));
+}
 
-      record(screened, BACKEND_SERVER_ERROR_STATUS);
-      return res(
-        ctx.status(BACKEND_SERVER_ERROR_STATUS),
-        ctx.set('Content-Type', BACKEND_TEXT_CONTENT_TYPE),
-        ctx.body(BACKEND_SERVER_ERROR_BODY),
-      );
-    }),
+/**
+ * Records a screened request under {@link BACKEND_SERVER_ERROR_STATUS} and answers with the response starlette
+ * produces when an endpoint raises: the plain-text body `Internal Server Error`, not JSON.
+ */
+function answerServerError(screened: ScreenedRequest, res: ResponseComposition, ctx: RestContext) {
+  record(screened, BACKEND_SERVER_ERROR_STATUS);
+  return res(
+    ctx.status(BACKEND_SERVER_ERROR_STATUS),
+    ctx.set('Content-Type', BACKEND_TEXT_CONTENT_TYPE),
+    ctx.body(BACKEND_SERVER_ERROR_BODY),
   );
 }
 
 /**
- * `GET /tweets` as the same application answers it once a test has installed a SQLAlchemy-shaped stand-in
- * through `app.dependency_overrides[app.db.firestore.get_db]`: 200 with the tweet list, or 422 when `skip`
- * or `limit` does not coerce to `int`, naming the first failing parameter. `page` is not a declared
- * parameter, so it is read back into the request log and otherwise ignored, exactly as FastAPI ignores it.
+ * Every route as the assembled application answers it for the request the application **emits today**: `404`
+ * with the JSON body `{"detail":"Not Found"}`, for all four, because `services/api.ts` prefixes every path
+ * with the literal `undefined` segment and no router declares anything under it.
  *
- * This is the one route whose status the override changes; the other three answer the same either way. A
- * suite installs this set only when it means to assert the overridden disposition, and
- * {@link currentBackendBehaviorHandlers} deliberately does not include it.
+ * There is one handler per route rather than a single catch-all so that a request whose path is not one of the
+ * four still matches nothing and is ledgered, and so the request log attributes each request to its route
+ * contract.
  *
- * @returns One handler per entry in {@link ALLOWED_REQUEST_ORIGINS}.
+ * Starlette answers this before the query string is coerced and before `Depends(get_db)` resolves, so the
+ * status does not depend on the query values a caller sent or on whether a test overrode the database
+ * dependency. That is why this factory takes no options.
+ *
+ * @returns One handler per route in {@link ROUTE_CONTRACTS}, per entry in {@link ALLOWED_REQUEST_ORIGINS}.
+ * @see backend/tests/integration/test_route_surface.py -
+ *   `test_client_unset_base_path_returns_404`, which asserts the same four paths server-side.
  */
-export function dependencyOverriddenTweetsHandlers(): RestHandler[] {
-  return originScopedPatterns(TWEETS_CONTRACT.pattern).map((pattern) =>
-    rest.get(pattern, (req, res, ctx) => {
-      const screened = screenRequest(TWEETS_CONTRACT, {
-        method: req.method,
-        url: req.url,
-        params: req.params,
-        contentType: req.headers.get('content-type'),
-        body: undefined,
-      });
-
-      const failing = BACKEND_TWEETS_INT_PARAMETERS.find(
-        (parameter) => !coercesToInteger(screened.query[parameter]),
-      );
-
-      if (failing !== undefined) {
-        record(screened, BACKEND_UNPROCESSABLE_STATUS);
-        return res(
-          ctx.status(BACKEND_UNPROCESSABLE_STATUS),
-          ctx.json(backendIntegerCoercionErrorBody(failing)),
-        );
-      }
-
-      record(screened, 200);
-      return res(ctx.status(200), ctx.json(makeDefaultTweets()));
-    }),
-  );
-}
-
-/**
- * `GET /tweets/{tweet_id}` as the application answers it: 500 with the plain-text body
- * `Internal Server Error` for every id, either way - unoverridden the absent `db.query` raises, and under an
- * override the handler reads `Tweet.id`, which the pydantic model does not declare, before it can reach its
- * 404 branch.
- *
- * @returns One handler per entry in {@link ALLOWED_REQUEST_ORIGINS}.
- */
-export function currentBehaviorTweetByIdHandlers(): RestHandler[] {
-  return originScopedPatterns(TWEET_BY_ID_CONTRACT.pattern).map((pattern) =>
-    rest.get<never, { tweetId: string }>(pattern, (req, res, ctx) => {
-      const screened = screenRequest(TWEET_BY_ID_CONTRACT, {
-        method: req.method,
-        url: req.url,
-        params: req.params,
-        contentType: req.headers.get('content-type'),
-        body: undefined,
-      });
-
-      record(screened, BACKEND_SERVER_ERROR_STATUS);
-      return res(
-        ctx.status(BACKEND_SERVER_ERROR_STATUS),
-        ctx.set('Content-Type', BACKEND_TEXT_CONTENT_TYPE),
-        ctx.body(BACKEND_SERVER_ERROR_BODY),
-      );
-    }),
-  );
-}
-
-/**
- * `POST /tweets/{tweet_id}/responses` as the application answers it: 500 with the plain-text body
- * `Internal Server Error`, either way, for the same two reasons as the tweet-detail route.
- *
- * @returns One handler per entry in {@link ALLOWED_REQUEST_ORIGINS}.
- */
-export function currentBehaviorTweetResponsesHandlers(): RestHandler[] {
-  return originScopedPatterns(TWEET_RESPONSES_CONTRACT.pattern).map((pattern) =>
-    rest.post<string, { tweetId: string }>(pattern, (req, res, ctx) => {
-      const screened = screenRequest(TWEET_RESPONSES_CONTRACT, {
-        method: req.method,
-        url: req.url,
-        params: req.params,
-        contentType: req.headers.get('content-type'),
-        body: req.body,
-      });
-
-      record(screened, BACKEND_SERVER_ERROR_STATUS);
-      return res(
-        ctx.status(BACKEND_SERVER_ERROR_STATUS),
-        ctx.set('Content-Type', BACKEND_TEXT_CONTENT_TYPE),
-        ctx.body(BACKEND_SERVER_ERROR_BODY),
-      );
-    }),
-  );
-}
-
-/**
- * `POST /generate-response` as the application answers it: 404 `{"detail":"Not Found"}`, because no router
- * declares that path. Routing fails before any dependency resolves, so an override changes nothing.
- *
- * @returns One handler per entry in {@link ALLOWED_REQUEST_ORIGINS}.
- */
-export function currentBehaviorGenerateResponseHandlers(): RestHandler[] {
-  return originScopedPatterns(GENERATE_RESPONSE_CONTRACT.pattern).map((pattern) =>
-    rest.post<{ tweetId: string }>(pattern, (req, res, ctx) => {
-      const screened = screenRequest(GENERATE_RESPONSE_CONTRACT, {
-        method: req.method,
-        url: req.url,
-        params: req.params,
-        contentType: req.headers.get('content-type'),
-        body: req.body,
-      });
-
-      record(screened, BACKEND_NOT_FOUND_STATUS);
-      return res(ctx.status(BACKEND_NOT_FOUND_STATUS), ctx.json(BACKEND_NOT_FOUND_BODY));
-    }),
-  );
-}
-
-/**
- * Every unoverridden current-behaviour handler, in {@link ROUTE_CONTRACTS} order, for a suite that installs
- * the whole set through `server.use(...)`. Built fresh on each call so no handler instance is shared between
- * tests.
- *
- * {@link dependencyOverriddenTweetsHandlers} is deliberately not included: it is the alternative
- * disposition of one route, not an addition to this set, and a suite that wants it installs it explicitly.
- *
- * @returns The four routes that reproduce today's 500, 500, 500 and 404, each registered once per entry in
- *   {@link ALLOWED_REQUEST_ORIGINS}.
- */
-export function currentBackendBehaviorHandlers(): RestHandler[] {
+export function unsetBaseBackendHandlers(): RestHandler[] {
   return [
-    ...currentBehaviorTweetsHandlers(),
-    ...currentBehaviorTweetByIdHandlers(),
-    ...currentBehaviorTweetResponsesHandlers(),
-    ...currentBehaviorGenerateResponseHandlers(),
+    ...originScopedPatterns(TWEETS_CONTRACT.path, UNSET_BASE_PATH_PREFIX).map((pattern) =>
+      rest.get(pattern, (req, res, ctx) =>
+        answerRouterNotFound(
+          TWEETS_CONTRACT,
+          {
+            method: req.method,
+            url: req.url,
+            params: req.params,
+            contentType: req.headers.get('content-type'),
+            body: undefined,
+            basePathPrefix: UNSET_BASE_PATH_PREFIX,
+          },
+          res,
+          ctx,
+        ),
+      ),
+    ),
+
+    ...originScopedPatterns(TWEET_BY_ID_CONTRACT.path, UNSET_BASE_PATH_PREFIX).map((pattern) =>
+      rest.get<never, { tweetId: string }>(pattern, (req, res, ctx) =>
+        answerRouterNotFound(
+          TWEET_BY_ID_CONTRACT,
+          {
+            method: req.method,
+            url: req.url,
+            params: req.params,
+            contentType: req.headers.get('content-type'),
+            body: undefined,
+            basePathPrefix: UNSET_BASE_PATH_PREFIX,
+          },
+          res,
+          ctx,
+        ),
+      ),
+    ),
+
+    ...originScopedPatterns(TWEET_RESPONSES_CONTRACT.path, UNSET_BASE_PATH_PREFIX).map((pattern) =>
+      rest.post<string, { tweetId: string }>(pattern, (req, res, ctx) =>
+        answerRouterNotFound(
+          TWEET_RESPONSES_CONTRACT,
+          {
+            method: req.method,
+            url: req.url,
+            params: req.params,
+            contentType: req.headers.get('content-type'),
+            body: req.body,
+            basePathPrefix: UNSET_BASE_PATH_PREFIX,
+          },
+          res,
+          ctx,
+        ),
+      ),
+    ),
+
+    ...originScopedPatterns(GENERATE_RESPONSE_CONTRACT.path, UNSET_BASE_PATH_PREFIX).map((pattern) =>
+      rest.post<{ tweetId: string }>(pattern, (req, res, ctx) =>
+        answerRouterNotFound(
+          GENERATE_RESPONSE_CONTRACT,
+          {
+            method: req.method,
+            url: req.url,
+            params: req.params,
+            contentType: req.headers.get('content-type'),
+            body: req.body,
+            basePathPrefix: UNSET_BASE_PATH_PREFIX,
+          },
+          res,
+          ctx,
+        ),
+      ),
+    ),
+  ];
+}
+
+/** How {@link configuredBaseBackendHandlers} resolves `Depends(get_db)`. */
+export interface ConfiguredBaseBackendOptions {
+  /**
+   * `true` to answer as the application does once a test has installed a SQLAlchemy-shaped stand-in through
+   * `app.dependency_overrides[app.db.firestore.get_db]`, which is the only way `GET /tweets` reaches `200`.
+   *
+   * Defaults to `false`: the dependency yields the Firestore `Client` it yields in the assembled application,
+   * which has no `query` attribute, so every endpoint that opens a query raises.
+   */
+  readonly dependencyOverridden?: boolean;
+}
+
+/**
+ * Every route as the assembled application answers it once `REACT_APP_API_BASE_URL` is
+ * {@link CONFIGURED_BASE_URL}, so the request reaches the backend's own path.
+ *
+ * The three stages a request passes through are reproduced in the order fastapi applies them, because the
+ * stage that answers decides the status:
+ *
+ * 1. **Routing.** The path is one the backend declares, so routing succeeds - that is the difference from
+ *    {@link unsetBaseBackendHandlers} - except for `POST /generate-response`, which no router declares under
+ *    any base and which is therefore still `404`.
+ * 2. **Query coercion.** `GET /tweets` declares `skip: int = 0` and `limit: int = 100`. Every declared
+ *    parameter the query does not coerce is reported, in the order line 12 declares them, as `422` with one
+ *    `detail` record each. This happens **before** the endpoint body runs and before the injected database is
+ *    touched, so it is independent of `dependencyOverridden`. `page`, which every caller sends and the backend
+ *    does not declare, is ignored at this stage exactly as fastapi ignores it.
+ * 3. **Endpoint execution.** Only now does the injected object matter: unoverridden it has no `query`, so the
+ *    endpoint raises and starlette answers `500` with the plain-text body `Internal Server Error`; overridden,
+ *    `GET /tweets` answers `200` with the list, while both tweet-detail routes still answer `500` because they
+ *    read `Tweet.id`, which the pydantic model does not declare.
+ *
+ * @param options - See {@link ConfiguredBaseBackendOptions}.
+ * @returns One handler per route in {@link ROUTE_CONTRACTS}, per entry in {@link ALLOWED_REQUEST_ORIGINS}.
+ * @see backend/tests/integration/test_http_tweets.py - the server-side assertions of every status and body
+ *   this factory returns.
+ */
+export function configuredBaseBackendHandlers(
+  options: ConfiguredBaseBackendOptions = {},
+): RestHandler[] {
+  const dependencyOverridden = options.dependencyOverridden === true;
+
+  return [
+    ...originScopedPatterns(TWEETS_CONTRACT.path, CONFIGURED_BASE_PATH_PREFIX).map((pattern) =>
+      rest.get(pattern, (req, res, ctx) => {
+        const screened = screenRequest(TWEETS_CONTRACT, {
+          method: req.method,
+          url: req.url,
+          params: req.params,
+          contentType: req.headers.get('content-type'),
+          body: undefined,
+          basePathPrefix: CONFIGURED_BASE_PATH_PREFIX,
+        });
+
+        /* Stage 2: every parameter that fails coercion, in declaration order. */
+        const failing = failingIntegerParameters(screened.query);
+        if (failing.length > 0) {
+          record(screened, BACKEND_UNPROCESSABLE_STATUS);
+          return res(
+            ctx.status(BACKEND_UNPROCESSABLE_STATUS),
+            ctx.json(backendIntegerCoercionErrorBody(failing)),
+          );
+        }
+
+        /* Stage 3. */
+        if (!dependencyOverridden) {
+          return answerServerError(screened, res, ctx);
+        }
+
+        record(screened, 200);
+        return res(ctx.status(200), ctx.json(makeDefaultTweets()));
+      }),
+    ),
+
+    ...originScopedPatterns(TWEET_BY_ID_CONTRACT.path, CONFIGURED_BASE_PATH_PREFIX).map((pattern) =>
+      rest.get<never, { tweetId: string }>(pattern, (req, res, ctx) =>
+        answerServerError(
+          screenRequest(TWEET_BY_ID_CONTRACT, {
+            method: req.method,
+            url: req.url,
+            params: req.params,
+            contentType: req.headers.get('content-type'),
+            body: undefined,
+            basePathPrefix: CONFIGURED_BASE_PATH_PREFIX,
+          }),
+          res,
+          ctx,
+        ),
+      ),
+    ),
+
+    ...originScopedPatterns(TWEET_RESPONSES_CONTRACT.path, CONFIGURED_BASE_PATH_PREFIX).map((pattern) =>
+      rest.post<string, { tweetId: string }>(pattern, (req, res, ctx) =>
+        answerServerError(
+          screenRequest(TWEET_RESPONSES_CONTRACT, {
+            method: req.method,
+            url: req.url,
+            params: req.params,
+            contentType: req.headers.get('content-type'),
+            body: req.body,
+            basePathPrefix: CONFIGURED_BASE_PATH_PREFIX,
+          }),
+          res,
+          ctx,
+        ),
+      ),
+    ),
+
+    ...originScopedPatterns(GENERATE_RESPONSE_CONTRACT.path, CONFIGURED_BASE_PATH_PREFIX).map((pattern) =>
+      rest.post<{ tweetId: string }>(pattern, (req, res, ctx) =>
+        answerRouterNotFound(
+          GENERATE_RESPONSE_CONTRACT,
+          {
+            method: req.method,
+            url: req.url,
+            params: req.params,
+            contentType: req.headers.get('content-type'),
+            body: req.body,
+            basePathPrefix: CONFIGURED_BASE_PATH_PREFIX,
+          },
+          res,
+          ctx,
+        ),
+      ),
+    ),
   ];
 }

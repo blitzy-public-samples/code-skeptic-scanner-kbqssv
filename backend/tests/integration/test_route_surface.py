@@ -49,6 +49,35 @@ UNROUTED_SAMPLE_PATH = "/users/1"
 SWAGGER_UI_PATH = "/docs"
 BARE_ROUTER_MODULE_NAMES = ("users", "analytics", "config")
 TWEETS_ROUTER_ROUTE_COUNT = 3
+JSON_CONTENT_TYPE = "application/json"
+
+# The path prefix `frontend/src/services/api.ts` produces while
+# `REACT_APP_API_BASE_URL` is unset: it interpolates the variable with no
+# fallback, so the base URL is the literal string `undefined`.
+UNSET_BASE_PREFIX = "/undefined"
+UNSET_BASE_TWEETS_COLLECTION_PATH = UNSET_BASE_PREFIX + TWEETS_COLLECTION_PATH
+CLIENT_UNSET_BASE_OPERATIONS = (
+    pytest.param("GET", UNSET_BASE_TWEETS_COLLECTION_PATH, id="get-unset-base-tweets"),
+    pytest.param(
+        "GET", UNSET_BASE_PREFIX + TWEET_DETAIL_REQUEST_PATH, id="get-unset-base-tweet-detail"
+    ),
+    pytest.param(
+        "POST",
+        UNSET_BASE_PREFIX + TWEET_DETAIL_REQUEST_PATH + "/responses",
+        id="post-unset-base-tweet-responses",
+    ),
+    pytest.param(
+        "POST", UNSET_BASE_PREFIX + "/generate-response", id="post-unset-base-generate-response"
+    ),
+)
+CLIENT_UNSET_BASE_QUERY_STRINGS = (
+    pytest.param("", id="no-query"),
+    pytest.param("?page=2&limit=10", id="fetchTweets-well-formed"),
+    pytest.param("?page=5&limit=undefined", id="getLatestTweets-uncoercible-limit"),
+    pytest.param("?page=undefined&limit=undefined", id="dashboard-both-uncoercible"),
+)
+
+
 ABSENT_OPERATIONS = (
     pytest.param("POST", "/users/", id="post-users-collection"),
     pytest.param("GET", "/users/1", id="get-users-by-id"),
@@ -235,6 +264,68 @@ def test_api_v1_prefixed_path_returns_404(client):
     response = client.get(prefixed_path)
 
     assert response.status_code == NOT_FOUND_STATUS
+
+
+@pytest.mark.parametrize(("method", "path"), CLIENT_UNSET_BASE_OPERATIONS)
+def test_client_unset_base_path_returns_404(client, method, path):
+    """Every path the frontend emits today is unrouted, and answers ``404``.
+
+    ``frontend/src/services/api.ts`` line 5 reads ``REACT_APP_API_BASE_URL``
+    with no fallback, so with the variable unset every URL it builds begins with
+    the literal four-character string ``undefined`` -- ``undefined/tweets``,
+    which a browser resolves to the path ``/undefined/tweets``.  No router
+    declares anything under that segment, so starlette's router refuses the
+    request and the whole client surface reaches nothing.
+
+    The body is asserted as well as the status, because the two ``404``\\ s on
+    this surface are not the same fact: this one is the router refusing a path,
+    while the ``HTTPException(404, "Tweet not found")`` written into
+    ``app/api/routes/tweets.py`` is a handler branch that is unreachable (see
+    ``test_http_tweets.py``).  Only the router's own
+    ``{"detail":"Not Found"}`` appears here.
+
+    This is the server-side oracle for the frontend msw layer:
+    ``frontend/src/test-utils/handlers.ts`` ``unsetBaseBackendHandlers()``
+    answers exactly this status, body and content type, and
+    ``frontend/src/test-utils/handlers.test.ts`` asserts it does.
+    """
+    response = client.request(method, path)
+
+    assert response.status_code == NOT_FOUND_STATUS
+    assert response.json() == ROUTER_NOT_FOUND_BODY
+    assert response.headers["content-type"] == JSON_CONTENT_TYPE
+
+
+@pytest.mark.parametrize("query", CLIENT_UNSET_BASE_QUERY_STRINGS)
+def test_client_unset_base_path_returns_404_whatever_the_query(client, query):
+    """Routing decides the outcome before any query value is coerced.
+
+    The collection request the frontend emits carries ``page``, which the route
+    does not declare, and -- from ``twitterService.getLatestTweets`` and from
+    ``components/Dashboard`` -- a ``limit`` of the literal string ``undefined``,
+    which could not be coerced to ``int``.  Neither matters at this path: the
+    ``404`` is identical for a well-formed query and a malformed one, which is
+    what makes the routing failure, not the validation failure, the current
+    behaviour of the assembled application.
+
+    The ``422`` those same query values do produce is reachable only once the
+    path is one the router declares; ``test_http_tweets.py`` asserts it there.
+    """
+    response = client.get(UNSET_BASE_TWEETS_COLLECTION_PATH + query)
+
+    assert response.status_code == NOT_FOUND_STATUS
+    assert response.json() == ROUTER_NOT_FOUND_BODY
+
+
+def test_no_route_carries_the_unset_base_prefix(integration_app):
+    """No declared route lives under the prefix the client's unset base URL produces."""
+    prefixed = sorted(
+        route.path
+        for route in integration_app.routes
+        if route.path.startswith(UNSET_BASE_PREFIX)
+    )
+
+    assert prefixed == []
 
 
 def test_route_table_contains_only_tweets_paths_and_fastapi_builtins(
