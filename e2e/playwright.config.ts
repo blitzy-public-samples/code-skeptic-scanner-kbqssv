@@ -1,31 +1,28 @@
 /**
  * Playwright runner configuration for the Code Skeptic Scanner end-to-end layer.
  *
- * Runs the specs under `e2e/tests` against the self-contained Vite harness
- * declared by `e2e/vite.harness.config.ts`, which the `webServer` block below
- * starts on a loopback origin before the first spec and stops after the last one.
- * That harness server is the only process started here: no backend runs, no
- * credential is read, and each spec supplies its own `page.route` interception.
+ * Runs the specs under `e2e/tests` against the self-contained Vite harness declared
+ * by `e2e/vite.harness.config.ts`, which the `webServer` block below starts on a
+ * loopback origin before the first spec and stops after the last one. That harness
+ * server is the only process started here: no backend runs, no credential is read,
+ * and each spec supplies its own `page.route` interception.
  *
- * The runner is owned by `e2e/package.json`, which pins `@playwright/test` at
- * 1.44.1, so every invocation has to resolve the binary through that package.
- * These do, and each resolves to the same absolute paths because every path in
- * this file comes from `__dirname` rather than the working directory:
+ * Host, port and origin come from `./harness-origin`, which the Vite config and
+ * `e2e/tests/harness-fixtures.ts` read as well, so nothing here computes an origin of
+ * its own.
+ *
+ * The runner is owned by `e2e/package.json`, which pins `@playwright/test` at 1.44.1.
+ * Every invocation must resolve the binary through that package, and every path in
+ * this file comes from `__dirname` rather than the working directory, so all four of
+ * these resolve identically:
  *
  *   cd e2e && npx playwright test                 inside this package
  *   npm --prefix e2e test                         from the repository root
- *   npm run test:e2e                              from `frontend/`, which
- *                                                 delegates with `--prefix ../e2e`
- *   npx playwright test                           in CI, with the step's
- *                                                 `working-directory: e2e`
+ *   npm run test:e2e                              from `frontend/`
+ *   npx playwright test                           in CI, `working-directory: e2e`
  *
- * `npx playwright test --config e2e/playwright.config.ts` from the repository
- * root is NOT one of them: npm's `npx` searches the working directory and its
- * ancestors for `node_modules/.bin`, never a child package's, so at the root it
- * finds no project-owned runner and falls back to whatever `npx` has cached or
- * can fetch from the registry - a floating version rather than the pinned one,
- * and a network dependency on a machine with a cold cache. Use one of the four
- * commands above in documentation, scripts and CI.
+ * `npx playwright test --config e2e/playwright.config.ts` from the repository root is
+ * NOT one of them: it resolves no project-owned runner. Use one of the four above.
  *
  * Configured output paths, all three matched by the repository `.gitignore`:
  *
@@ -33,24 +30,26 @@
  *   e2e/reports/e2e-junit.xml          JUnit XML result stream
  *   e2e/test-results/                  traces, failure screenshots, video
  *
- * Prerequisite, and package-owned for the same reason: the browser download,
- * `npm run install:browsers` inside `e2e/` or `npm --prefix e2e run
- * install:browsers` from the repository root. See `e2e/README.md`.
+ * Prerequisite: a Chromium build already present in Playwright's cache, or one named
+ * by `PLAYWRIGHT_CHROMIUM_EXECUTABLE`. `npm --prefix e2e run browsers:verify` reports
+ * what the runner needs without fetching anything. See `e2e/README.md`.
+ *
+ * @see docs/testing/DECISION-LOG.md - section 4 and rows D111, D114, D128, D129.
  */
 
 import path from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
 
-import { HARNESS_ORIGIN, HARNESS_PORT } from './harness-origin';
+import { HARNESS_HOST, HARNESS_ORIGIN, HARNESS_PORT } from './harness-origin';
 
 /* -------------------------------------------------------------------------- */
 /* Paths                                                                      */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Base for every path in this file; nothing below reads `process.cwd()`, so the
- * directory a run is launched from changes nothing. `e2e/package.json` declares
- * no `"type"` field, so this module loads as CommonJS and `__dirname` is defined.
+ * Base for every path in this file; nothing below reads `process.cwd()`.
+ * `e2e/package.json` declares no `"type"` field, so this module loads as CommonJS
+ * and `__dirname` is defined.
  */
 const HERE = __dirname;
 
@@ -67,20 +66,13 @@ const JUNIT_OUTPUT_FILE = path.join(HERE, 'reports', 'e2e-junit.xml');
 /**
  * Dev-server command, run with `cwd` set to this directory.
  *
- * The pinned local binary is invoked directly rather than through `npx`. `npx` is
- * online-capable: when the local executable is missing it resolves the package
- * from the registry and runs whatever it downloads, which is a silent
- * substitution of an unpinned, unverified `vite` for the pinned one. Naming
- * `node_modules/vite/bin/vite.js` fails closed instead — an absent dependency is
- * a `MODULE_NOT_FOUND`, not a download.
+ * Names the pinned local binary rather than going through `npx`, which resolves from
+ * the registry when the local executable is missing. The port is passed explicitly
+ * even though the config resolves the same value from `./harness-origin`, so a
+ * collision is diagnosable from the process command line, and `--strictPort` fails
+ * the start rather than moving to another port.
  *
- * `e2e/vite.harness.config.ts` configures the dev server only and declares no
- * `build` options.
- *
- * The port is passed explicitly even though `e2e/vite.harness.config.ts` resolves the
- * same value from the same `./harness-origin` module: it puts the port on the process
- * command line, where a collision is diagnosable. `--strictPort` fails the start on a
- * collision rather than moving to another port.
+ * @see docs/testing/DECISION-LOG.md - row D123.
  */
 const HARNESS_COMMAND =
   `node ./node_modules/vite/bin/vite.js --config vite.harness.config.ts` +
@@ -88,41 +80,39 @@ const HARNESS_COMMAND =
 
 const HARNESS_START_TIMEOUT_MS = 120_000;
 
+/** Closed loopback port every request that is not bypassed is routed at. */
+const CLOSED_PROXY_ORIGIN = 'http://127.0.0.1:1';
+
 /**
- * Chromium switches that deny network egress at the browser, not at the page.
+ * Chromium switches that deny network egress below the route layer, so a Service
+ * Worker request, a popup's first request and a spec that installed no route are all
+ * covered.
  *
- * `page.route` and `browserContext.route` are the documented interception points,
- * but Playwright records that page routes do not see a Service Worker's requests
- * or a popup's very first request, and a spec that forgets to install one sees
- * nothing at all. These switches sit below every one of those cases:
+ * Invariants:
  *
- * - `--host-resolver-rules` fails every DNS lookup except the literal loopback
- *   address, so no hostname resolves;
- * - `--proxy-server` points every remaining request at a closed loopback port,
- *   which covers a request to a literal external IP that needs no lookup, while
- *   `--proxy-bypass-list` keeps the harness itself direct.
+ * - no hostname resolves except {@link HARNESS_HOST};
+ * - every request that is not bypassed is routed at {@link CLOSED_PROXY_ORIGIN};
+ * - exactly one origin is bypassed, `HARNESS_HOST:HARNESS_PORT`. `<-loopback>`
+ *   subtracts Chromium's implicit bypass of all loopback and link-local addresses,
+ *   without which every other service on this host would stay directly reachable.
  *
- * The harness is served from `127.0.0.1:4173`, so nothing the suite legitimately
- * needs is affected.
+ * @see docs/testing/DECISION-LOG.md - rows D114 and D128.
  */
 const NO_EGRESS_BROWSER_ARGS = [
-  '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1',
-  '--proxy-server=http://127.0.0.1:1',
-  '--proxy-bypass-list=127.0.0.1;localhost',
+  `--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE ${HARNESS_HOST}`,
+  `--proxy-server=${CLOSED_PROXY_ORIGIN}`,
+  `--proxy-bypass-list=<-loopback>;${HARNESS_HOST}:${HARNESS_PORT}`,
 ];
 
 /**
  * Optional path to a pre-verified Chromium executable.
  *
- * The pinned `@playwright/test` 1.44.1 is affected by CVE-2025-59288: its browser
- * downloader does not verify the TLS certificate chain of the host it fetches
- * from. The remedy taken here is the advisory's other one — provision from
- * artifacts that were verified out of band, never from a download during a test
- * run. `npm run browsers:verify` reports what the runner needs without fetching
- * anything, and this variable pins the binary explicitly where an operator wants
- * to be certain which one is used. Left unset, Playwright uses its own verified
- * cache. Upgrading to `>=1.55.1` would require Node >= 18, which the AAP's CI
- * matrix does not run; see `docs/testing/DECISION-LOG.md`.
+ * Left unset, Playwright uses the build already in its own cache. No automated path
+ * in this package downloads a browser: the pinned `@playwright/test` 1.44.1 is
+ * affected by CVE-2025-59288, whose remedy taken here is to provision only from
+ * artifacts verified out of band.
+ *
+ * @see docs/testing/DECISION-LOG.md - rows D111 and D129.
  */
 const CHROMIUM_EXECUTABLE = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE;
 
@@ -172,30 +162,27 @@ export default defineConfig({
   use: {
     baseURL: HARNESS_ORIGIN,
 
-    // Evidence captured across the browser/API boundary, for every failing test on
-    // its first attempt, locally as well as under CI. The trace records each
-    // intercepted request with its timing and carries the test title, which is what
-    // ties `e2e/test-results/` back to a `<testcase>` in the JUnit stream.
+    // Evidence across the browser/API boundary, for every failing test on its first
+    // attempt, locally as well as under CI. The trace records each intercepted
+    // request with its timing and carries the test title, which ties
+    // `e2e/test-results/` back to a `<testcase>` in the JUnit stream.
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
 
-    // Fixed viewport, clock offset and locale, so rendered output and any
-    // date-formatted text do not vary with the host running the suite.
+    // Fixed viewport, timezone and locale, so rendered output and any date-formatted
+    // text do not vary with the host running the suite.
     viewport: { width: 1280, height: 720 },
     timezoneId: 'UTC',
     locale: 'en-US',
 
-    // No Service Worker may register. Playwright documents that `page.route` does
-    // not intercept a Service Worker's requests, so a worker is a route the
-    // suite cannot see; the harness registers none, so blocking them removes the
-    // hole at no cost.
+    // No Service Worker may register: `page.route` does not intercept a worker's
+    // requests, and the harness registers none.
     serviceWorkers: 'block',
 
     // Browser-level egress denial, below every route handler; see
-    // NO_EGRESS_BROWSER_ARGS. `e2e/tests/harness-fixtures.ts` adds the
-    // context-wide abort rule on top, so a request is refused by the browser and
-    // attributed by the fixture.
+    // NO_EGRESS_BROWSER_ARGS. `e2e/tests/harness-fixtures.ts` adds the mandatory
+    // context-wide rule on top, which is what attributes a refusal to a test.
     launchOptions: {
       args: NO_EGRESS_BROWSER_ARGS,
       ...(CHROMIUM_EXECUTABLE === undefined ? {} : { executablePath: CHROMIUM_EXECUTABLE }),
@@ -214,26 +201,25 @@ export default defineConfig({
     command: HARNESS_COMMAND,
     cwd: HERE,
 
-    // Binds the port this file polls, whatever CLONE_INDEX the child process
-    // would otherwise have read.
+    // Binds the port this file polls, whatever CLONE_INDEX the child process would
+    // otherwise have read.
     env: { E2E_PORT: String(HARNESS_PORT) },
 
     // Polled until it answers, which gates the first spec.
     url: `${HARNESS_ORIGIN}/`,
 
-    // Never reuse. `reuseExistingServer` decides only whether *something* already
-    // answers on the port; it cannot tell the harness from an unrelated process,
-    // a stale harness started from a different checkout, or a server another user
-    // on the host put there. Every one of those would be accepted as the subject
-    // under test, and a spec's assertions would then describe content this
-    // configuration did not produce. Owning the server on every run costs a
-    // sub-second start — `strictPort: true` in the harness config means a port
-    // collision fails the run instead of silently moving elsewhere.
+    // Never reuse: `reuseExistingServer` cannot tell this harness from a stale one,
+    // an unrelated local server, or another user's process on a shared host, and each
+    // of those would silently become the subject under test. With `strictPort: true`
+    // in the harness config a held port fails the run instead of moving elsewhere.
+    //
+    // @see docs/testing/DECISION-LOG.md - row D112.
     reuseExistingServer: false,
     timeout: HARNESS_START_TIMEOUT_MS,
 
-    // The dev-server log is the harness's health signal; piping both streams puts
-    // it in the run's output.
+    // The dev-server log is the harness's health signal, and it carries the
+    // `harness-api-not-intercepted` lines; piping both streams puts them in the run's
+    // output.
     stdout: 'pipe',
     stderr: 'pipe',
   },

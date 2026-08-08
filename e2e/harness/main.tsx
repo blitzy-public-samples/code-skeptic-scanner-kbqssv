@@ -3,9 +3,9 @@
  * `e2e/harness/index.html` as `/main.tsx`.
  *
  * Mounts the four routed component modules of `frontend/src/components` into the
- * `#root` element, under a Redux store built from the two `frontend/src/store`
- * slice reducers and a `BrowserRouter`. `e2e/vite.harness.config.ts` supplies
- * module resolution, and the default API responses, for every specifier below.
+ * `#root` element, inside the document's single `<main>` landmark, under a Redux store
+ * built from the two `frontend/src/store` slice reducers and a `BrowserRouter`.
+ * `e2e/vite.harness.config.ts` supplies module resolution for every specifier below.
  *
  * Two of the four routes render a shell only, and a spec that supplies data able to
  * fill them in unmounts the route instead. Both are marked at their `<Route>` entry.
@@ -13,7 +13,8 @@
  * Adding a route takes one `<Route>` entry in the block at the bottom of this
  * file; `e2e/README.md` covers the harness end to end.
  *
- * @see docs/testing/DECISION-LOG.md - section 4, the route-table and store decisions.
+ * @see docs/testing/DECISION-LOG.md - section 4, the route-table and store decisions,
+ *   and row D132 for the landmark.
  */
 
 import { createRoot } from 'react-dom/client';
@@ -57,19 +58,24 @@ if (rootElement === null) {
 createRoot(rootElement).render(
   <Provider store={store}>
     <BrowserRouter>
-      <Routes>
-        {/* Feed shell. Renders its heading and nothing else: every member of a
-            non-empty tweet collection is rendered by the undefined `TweetCard`, an
-            invalid element type that unmounts the route. The harness answers the
-            collection request with `[]`. */}
-        <Route path="/" element={<RealTimeFeed />} />
-        <Route path="/tweets" element={<TweetList filters={EMPTY_FILTERS} />} />
-        {/* Chart shell. Renders its heading and canvas: `harness/stubs/analyticsService.ts`
-            always rejects, which holds the component on its caught-failure path and
-            keeps it from constructing an unregistered `Chart`. */}
-        <Route path="/analytics" element={<TrendCharts dateRange={ANALYTICS_DATE_RANGE} />} />
-        <Route path="/configuration" element={<TwitterAPISettings />} />
-      </Routes>
+      {/* The one landmark of the document, so every routed component is inside named
+          page structure rather than a bare `div`. It carries no styling and no
+          chrome, so nothing here alters what a spec sees of the component itself. */}
+      <main>
+        <Routes>
+          {/* Feed shell. Renders its heading and nothing else: every member of a
+              non-empty tweet collection is rendered by the undefined `TweetCard`, an
+              invalid element type that unmounts the route. A spec fulfils the
+              collection request with `[]`. */}
+          <Route path="/" element={<RealTimeFeed />} />
+          <Route path="/tweets" element={<TweetList filters={EMPTY_FILTERS} />} />
+          {/* Chart shell. Renders its heading and canvas: `harness/stubs/analyticsService.ts`
+              always rejects, which holds the component on its caught-failure path and
+              keeps it from constructing an unregistered `Chart`. */}
+          <Route path="/analytics" element={<TrendCharts dateRange={ANALYTICS_DATE_RANGE} />} />
+          <Route path="/configuration" element={<TwitterAPISettings />} />
+        </Routes>
+      </main>
     </BrowserRouter>
   </Provider>,
 );

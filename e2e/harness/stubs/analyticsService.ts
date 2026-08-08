@@ -1,28 +1,26 @@
 /**
  * Harness stand-in for the specifier `@/services/analyticsService`, which
  * `frontend/src/components/Analytics` imports and `frontend/src/services/` does not
- * provide. `e2e/vite.harness.config.ts` redirects that specifier here.
+ * provide. `e2e/vite.harness.config.ts` redirects that specifier here while that
+ * remains true.
  *
- * `frontend/src/services/` ships only `api.ts`, `llmService.ts` and
- * `twitterService.ts`, so the specifier that `frontend/src/components/Analytics`
- * imports at line 3 has no implementation in the repository. The resolver in
- * `e2e/vite.harness.config.ts` redirects it here while that remains true.
+ * Reads its data over HTTP from {@link TRENDS_ENDPOINT}. That path and the `start`
+ * and `end` query parameter names are the contract the end-to-end specs intercept,
+ * fulfilling from `e2e/fixtures/trends.json`.
  *
- * Reads its data over HTTP from the `/api/trends` endpoint. The endpoint path and
- * the `start` and `end` query parameter names are the contract the end-to-end
- * specs intercept, answering from `e2e/fixtures/trends.json`.
+ * Contract this module guarantees to every spec:
  *
- * Contract this module guarantees to every spec: `getTrendData` ALWAYS rejects,
- * and it rejects only after the response status has been checked and the body
- * parsed. `frontend/src/components/Analytics` catches that rejection at lines
- * 18-20, leaves its `chartData` state `null`, and therefore never reaches
- * `renderCharts`, so the `/analytics` route renders `<h2>Trend Charts</h2>` and
- * `<canvas id="trendChart">` for every payload a spec supplies. Handing the
- * component a renderable series instead makes it construct a `Chart` from the
- * tree-shakeable `{ Chart }` export with nothing registered, which throws out of
- * a `useEffect` and unmounts the whole route.
+ * 1. `getTrendData` checks the response status, then parses the body.
+ * 2. A parsed body that is not a {@link TrendSeries} rejects with
+ *    {@link TrendSeriesContractError}, which names the member at fault.
+ * 3. A parsed body that *is* a {@link TrendSeries} rejects with
+ *    {@link UnrenderableTrendSeriesError}.
  *
- * @see docs/testing/DECISION-LOG.md - section 4, this refusal and the alternatives to it.
+ * So it always rejects, but the three rejections are distinguishable: a fixture
+ * that has drifted from the declared shape is reported as a contract failure rather
+ * than absorbed into the intentional refusal at step 3.
+ *
+ * @see docs/testing/DECISION-LOG.md - row D127, which refines D44.
  * @see docs/testing/TRACEABILITY-MATRIX.md - the unreachable chart branch as an
  *   assertion obligation.
  */
@@ -32,58 +30,82 @@ interface DateRange {
   endDate: string;
 }
 
-/** Shape `frontend/src/components/Analytics` reads off a resolved trend series. */
-interface TrendSeries {
-  labels: unknown;
-  values: unknown;
-}
-
 /**
- * Rejection `getTrendData` always produces once the fixture has been fetched and
- * parsed. Named so a spec, or a page-error listener, can attribute the console
- * line the component logs.
- */
-export class UnrenderableTrendSeriesError extends Error {
-  /** Request URL the series was read from. */
-  readonly url: string;
-
-  /** Number of labels the fixture carried, or `-1` when it carried no array. */
-  readonly labelCount: number;
-
-  constructor(url: string, series: TrendSeries) {
-    const labelCount = Array.isArray(series.labels) ? series.labels.length : -1;
-    super(
-      `GET ${url} returned a trend series of ${labelCount} labels, which the harness ` +
-        'does not forward: @/components/Analytics constructs a Chart from the ' +
-        'tree-shakeable { Chart } export without calling Chart.register, so a renderable ' +
-        'series throws out of its useEffect and unmounts the route. The route is asserted ' +
-        'on its caught-failure path instead.',
-    );
-    this.name = 'UnrenderableTrendSeriesError';
-    this.url = url;
-    this.labelCount = labelCount;
-  }
-}
-
-/**
- * Series shape the caller reads: `frontend/src/components/Analytics` passes
- * `labels` to Chart.js as the dataset labels at line 43 and `values` as its data
- * at line 47. It is also the shape of `e2e/fixtures/trends.json`.
+ * Series shape the caller reads: `frontend/src/components/Analytics` passes `labels`
+ * to Chart.js as the dataset labels at line 43 and `values` as its data at line 47.
+ * It is also the shape of `e2e/fixtures/trends.json`.
  */
 export interface TrendSeries {
   labels: string[];
   values: number[];
 }
 
-/** Endpoint the specs intercept. */
+/** Endpoint the specs intercept, and the only place this path is written. */
 const TRENDS_ENDPOINT = '/api/trends';
+
+/**
+ * Rejection produced when the fetched body is not a {@link TrendSeries}.
+ *
+ * Distinct from {@link UnrenderableTrendSeriesError}: this one means the payload a
+ * spec supplied, or `e2e/fixtures/trends.json` itself, does not match the declared
+ * shape, so no conclusion about the component can be drawn from the run.
+ */
+export class TrendSeriesContractError extends Error {
+  /** Request URL the body was read from. */
+  readonly url: string;
+
+  /** The single member at fault, as {@link describeTrendSeriesViolation} reports it. */
+  readonly violation: string;
+
+  constructor(url: string, violation: string) {
+    super(
+      `GET ${url} returned a body that is not a trend series: ${violation}. ` +
+        'The payload a spec fulfils this route with, or e2e/fixtures/trends.json, ' +
+        'must carry a "labels" array of string and a "values" array of finite number.',
+    );
+    this.name = 'TrendSeriesContractError';
+    this.url = url;
+    this.violation = violation;
+  }
+}
+
+/**
+ * Rejection produced for a well-formed {@link TrendSeries}.
+ *
+ * Named so a spec, or a page-error listener, can attribute the console line the
+ * component logs. `frontend/src/components/Analytics` catches it at lines 18-20,
+ * leaves its `chartData` state `null` and never reaches `renderCharts`, so the
+ * `/analytics` route renders `<h2>Trend Charts</h2>` and `<canvas id="trendChart">`.
+ */
+export class UnrenderableTrendSeriesError extends Error {
+  /** Request URL the series was read from. */
+  readonly url: string;
+
+  /** Number of labels the series carried. */
+  readonly labelCount: number;
+
+  constructor(url: string, series: TrendSeries) {
+    super(
+      `GET ${url} returned a trend series of ${series.labels.length} labels, which the ` +
+        'harness does not forward: @/components/Analytics constructs a Chart from the ' +
+        'tree-shakeable { Chart } export without calling Chart.register, so a renderable ' +
+        'series throws out of its useEffect and unmounts the route. The route is asserted ' +
+        'on its caught-failure path instead.',
+    );
+    this.name = 'UnrenderableTrendSeriesError';
+    this.url = url;
+    this.labelCount = series.labels.length;
+  }
+}
 
 /**
  * Reports why `payload` is not a {@link TrendSeries}, or `null` when it is one.
  *
- * Both members must be present, must be arrays, and must hold only `string` and
- * only finite `number` respectively, so a fixture that drifts from the declared
- * shape is named rather than passed on as `any`.
+ * Both members must be present, must be arrays, and must hold only `string` and only
+ * finite `number` respectively.
+ *
+ * @param payload - Parsed response body.
+ * @returns The first violation found, naming the member and the value, or `null`.
  */
 function describeTrendSeriesViolation(payload: unknown): string | null {
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -123,13 +145,14 @@ function describeTrendSeriesViolation(payload: unknown): string | null {
  * @param dateRange - Range whose two members become the `start` and `end` query
  *   parameters, interpolated verbatim.
  * @returns Never resolves.
- * @throws Error - When the response status falls outside 200-299. The message
- *   names the request URL and that status.
- * @throws UnrenderableTrendSeriesError - Once the body has been parsed, on every
- *   successful response.
+ * @throws Error - When the response status falls outside 200-299. The message names
+ *   the request URL and that status.
+ * @throws TrendSeriesContractError - When the parsed body is not a
+ *   {@link TrendSeries}.
+ * @throws UnrenderableTrendSeriesError - When it is one.
  */
 export const getTrendData = async (dateRange: DateRange): Promise<TrendSeries> => {
-  const url = `/api/trends?start=${dateRange.startDate}&end=${dateRange.endDate}`;
+  const url = `${TRENDS_ENDPOINT}?start=${dateRange.startDate}&end=${dateRange.endDate}`;
 
   const response = await fetch(url);
 
@@ -137,9 +160,12 @@ export const getTrendData = async (dateRange: DateRange): Promise<TrendSeries> =
     throw new Error(`GET ${url} failed with HTTP status ${response.status}`);
   }
 
-  // The body is parsed, so a malformed fixture surfaces as a parse failure here
-  // rather than being masked by the refusal below.
-  const series = (await response.json()) as TrendSeries;
+  const payload: unknown = await response.json();
 
-  throw new UnrenderableTrendSeriesError(url, series);
+  const violation = describeTrendSeriesViolation(payload);
+  if (violation !== null) {
+    throw new TrendSeriesContractError(url, violation);
+  }
+
+  throw new UnrenderableTrendSeriesError(url, payload as TrendSeries);
 };

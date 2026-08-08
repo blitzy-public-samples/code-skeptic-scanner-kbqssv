@@ -2,29 +2,34 @@
  * msw request handlers for the frontend Jest suite, in two separately named layers.
  *
  * This module registers handlers only. It constructs no server, makes no lifecycle call and registers no
- * Jest hook: `src/test-utils/setup-jest.ts` owns the lifecycle and resets every piece of mutable state
- * declared here - the handler array, the origin allow-list and the request log - after each test.
+ * Jest hook: `src/test-utils/setup-jest.ts` owns the lifecycle and resets this module's mutable state - the
+ * request log and the isolation ledger - after each test.
  *
- * See `frontend/TESTING.md` for how a suite consumes it, `docs/testing/DECISION-LOG.md` section 1 for why it
- * is shaped this way, and `docs/testing/TRACEABILITY-MATRIX.md` for the per-route caller-to-backend mapping.
+ * See `frontend/TESTING.md` for how a suite consumes it, `docs/testing/DECISION-LOG.md` rows D1-D16, D103,
+ * D136 and D137 for why it is shaped this way, and `docs/testing/TRACEABILITY-MATRIX.md` for the per-route
+ * caller-to-backend mapping.
  *
  * ## Layer 1 - {@link frontendIsolationHandlers}, exported also as {@link handlers}
  *
  * TEST-ONLY nominal-success responses, so a component or service suite can run without a socket. They are
- * **not** a model of the backend: a suite that exercises only these has covered no integration. The status
- * each of these four routes really answers with today, measured against the assembled FastAPI app:
+ * **not** a model of the backend: a suite that exercises only these has covered no integration.
  *
- * | Route                              | Isolation layer | Real current outcome                                    |
- * |------------------------------------|-----------------|---------------------------------------------------------|
- * | `GET /tweets`                      | 200 + 3 tweets  | 200, but `page` is ignored; 422 when `limit` is not an int |
- * | `GET /tweets/{tweet_id}`           | 200 + 1 tweet   | 500 `Internal Server Error` (raises at `Tweet.id`)      |
- * | `POST /tweets/{tweet_id}/responses`| 200 + `response`| 500 `Internal Server Error` (raises at `Tweet.id`)      |
- * | `POST /generate-response`          | 200 + `generatedResponse` | 404 `{"detail":"Not Found"}` - no such route   |
+ * ## Layer 2 - what the assembled application returns today
  *
- * ## Layer 2 - {@link currentBackendBehaviorHandlers} and the `currentBehavior*Handler` factories
+ * Two dispositions, because `GET /tweets` answers differently depending on whether the test overrode the
+ * database dependency. `app/api/routes/tweets.py` calls `db.query(Tweet)` on whatever `Depends(get_db)`
+ * yields, and `app/db/firestore.get_db` yields a Firestore `Client`, which has no `query`.
  *
- * The right-hand column above, reproduced byte for byte. A suite installs one through `server.use(...)` to
- * assert what the backend does today. These are never part of the default array.
+ * | Route                              | Isolation layer | Unoverridden `get_db`          | Under a SQLAlchemy-shaped override |
+ * |------------------------------------|-----------------|--------------------------------|------------------------------------|
+ * | `GET /tweets`                      | 200 + 3 tweets  | 500 `Internal Server Error`    | 200; 422 when `limit`/`skip` is not an int |
+ * | `GET /tweets/{tweet_id}`           | 200 + 1 tweet   | 500 `Internal Server Error`    | 500 (raises at `Tweet.id`)         |
+ * | `POST /tweets/{tweet_id}/responses`| 200 + `response`| 500 `Internal Server Error`    | 500 (raises at `Tweet.id`)         |
+ * | `POST /generate-response`          | 200 + `generatedResponse` | 404 `{"detail":"Not Found"}` - no such route | 404, routing fails first |
+ *
+ * {@link currentBackendBehaviorHandlers} and the `currentBehavior*Handlers` factories reproduce the
+ * unoverridden column; {@link dependencyOverriddenTweetsHandlers} reproduces the one cell that differs. A
+ * suite installs the set matching the disposition it means to assert. Neither is part of the default array.
  *
  * ## Request screening and the request log
  *
@@ -32,32 +37,29 @@
  * records it in the log that {@link recordedRequests} returns, so a suite asserts the exact query, path and
  * body it emitted rather than inferring correctness from a 200.
  *
- * The allowed-origin set and the request log are this module's only mutable state, and both are discarded
- * after every test by {@link resetHandlerState}, which `./setup-jest` calls from the single `afterEach` that
- * owns the whole msw lifecycle. This module registers no Jest hook of its own.
+ * In layer 1 a request that deviates from its contract - an unknown or absent query key, a placeholder path
+ * parameter, an unexpected body - is answered with {@link CONTRACT_VIOLATION_STATUS} and a body listing the
+ * violations, never with a success status. In layer 2 the violations are recorded and the response is
+ * whatever the backend returns for that request, including for a request no caller should emit.
  *
- * The two layers act on a failed screening differently. In layer 1 a request that deviates from the
- * contract - an unknown or absent query key, a placeholder path parameter or an unexpected body - is
- * answered with {@link CONTRACT_VIOLATION_STATUS} and a body listing the violations, and never with a
- * success status. In layer 2 the violations are recorded and the response is whatever the backend returns
- * for that request, including for a request no caller should emit.
+ * ## Origin confinement
  *
- * ## Origin confinement, and why a violation is not just a status
+ * Every handler is registered as an **absolute** pattern, once per entry in {@link ALLOWED_REQUEST_ORIGINS} -
+ * `http://localhost` and `http://127.0.0.1`, the origins jsdom serves the suite from. So each layer
+ * registers two handlers per route, and a request to any other origin matches **nothing**: it reaches msw's
+ * `onUnhandledRequest`, which `src/test-utils/setup-jest.ts` uses to append an `'unhandled-request'` entry to
+ * the isolation ledger and then raise, so the request is reported and never performed.
  *
- * Every pattern below is registered host-agnostically and screened against {@link allowedRequestOrigins},
- * so a handler matches only a request to `http://localhost` or `http://127.0.0.1` - the origins jsdom
- * serves the suite from. A request to any other host matches nothing, which is what makes msw's
- * `onUnhandledRequest: 'error'` fire on it: msw reports it and never performs it, so nothing reaches a
- * socket. Host-agnostic `*​/tweets` patterns would instead have *matched* that request and answered it,
- * which is how a base URL pointing at a real host stays invisible.
+ * The allow-list is a frozen constant with no mutator. A suite that deliberately drives an absolute
+ * non-loopback URL registers a handler for that exact URL with `server.use(...)` for the duration of one
+ * test.
  *
- * A status alone is not enough either way. `services/twitterService.ts`, `services/llmService.ts` and the
- * `Dashboard` and `TweetManagement` components all catch what they are given, so a rejection - a 599, or
- * the error msw raises for an unhandled request - can be swallowed before any assertion sees it. Every
- * violation is therefore also appended to a ledger, and {@link assertNoIsolationViolations} throws on it.
- * `src/test-utils/setup-jest.ts` calls that from a global `afterEach`, so a swallowed violation fails the
- * test that caused it rather than passing quietly. There is no mutable origin allow-list to leak between
- * tests: a suite that needs another origin installs its own handler for it with `server.use(...)`.
+ * A status alone would not be enough. `services/twitterService.ts` and `services/llmService.ts` log and
+ * rethrow a *replacement* error, `components/TweetManagement` catches and logs, and
+ * `components/Dashboard` catches nothing at all and leaves an unhandled rejection - so an error raised
+ * inside the request lifecycle can be lost before any assertion sees it. Every violation is therefore also
+ * appended to a ledger, and {@link assertNoIsolationViolations} throws on it from the global `afterEach` in
+ * `src/test-utils/setup-jest.ts`, which fails the test that caused it.
  *
  * ## API version
  *
@@ -237,8 +239,7 @@ export interface RouteContract {
    * Route path, beginning with the `*` segment the callers' `undefined` base URL occupies.
    *
    * Never registered as written: {@link originScopedPatterns} prefixes it with each entry in
-   * {@link allowedRequestOrigins}, so a request from an origin the running test has not admitted is
-   * other host matches nothing.
+   * {@link ALLOWED_REQUEST_ORIGINS}, so a request from any other origin matches no handler.
    */
   readonly pattern: string;
   /** Production functions that issue this request. */
@@ -247,8 +248,16 @@ export interface RouteContract {
   readonly emittedRequest: string;
   /** The backend route and its declared parameters, or the absence of one. */
   readonly backendContract: string;
-  /** Status and body the assembled application returns today. */
+  /**
+   * Status and body the assembled application returns today with `app.db.firestore.get_db` left alone,
+   * which is what a request against the real dependency graph gets.
+   */
   readonly currentBackendOutcome: string;
+  /**
+   * Status and body the same route returns when a test has installed a SQLAlchemy-shaped stand-in through
+   * `app.dependency_overrides[get_db]`, or `null` when the override changes nothing.
+   */
+  readonly dependencyOverriddenOutcome: string | null;
   /** What {@link frontendIsolationHandlers} answers, which is test-only. */
   readonly isolationResponse: string;
   /** Every way the emitted request or the isolation response differs from the backend contract. */
@@ -287,13 +296,17 @@ const TWEETS_CONTRACT: RouteContract = {
     'getLatestTweets supplies only its first argument, and page is too when it supplies none',
   backendContract: 'GET /tweets, query skip:int=0 and limit:int=100, returns List[Tweet]',
   currentBackendOutcome:
+    '500 with the plain-text body "Internal Server Error": the handler calls db.query(Tweet) on the ' +
+    'Firestore Client that app.db.firestore.get_db yields, which has no query attribute',
+  dependencyOverriddenOutcome:
     '200 with the tweet list when skip and limit coerce to int; 422 ' +
     '{"detail":[{"loc":["query","<param>"],"msg":"value is not a valid integer","type":"type_error.integer"}]} ' +
     'when either does not',
   isolationResponse: '200 with three schema-valid tweets, timestamps serialised to ISO-8601 strings',
   mismatches: [
     'page is not a declared backend parameter and is ignored; skip, which the backend paginates on, is never sent',
-    'limit=undefined and page=undefined are answered 422 by the backend and 200 by the isolation layer',
+    'the unoverridden backend answers 500 for every request; the isolation layer answers 200',
+    'limit=undefined and page=undefined are answered 422 by the overridden backend and 200 by the isolation layer',
   ],
   expectation: {
     queryKeys: TWEETS_QUERY_KEYS,
@@ -318,8 +331,11 @@ const TWEET_BY_ID_CONTRACT: RouteContract = {
   emittedRequest: 'GET undefined/tweets/<tweetId>, no query string, no body',
   backendContract: 'GET /tweets/{tweet_id}, returns Tweet, raises HTTPException(404) when absent',
   currentBackendOutcome:
-    '500 with the plain-text body "Internal Server Error": the handler reads Tweet.id, which the pydantic ' +
-    'model does not declare, so it raises before the 404 branch can be reached',
+    '500 with the plain-text body "Internal Server Error": db.query on the Firestore Client that ' +
+    'app.db.firestore.get_db yields does not exist',
+  dependencyOverriddenOutcome:
+    '500 with the same plain-text body: the handler reads Tweet.id, which the pydantic model does not ' +
+    'declare, so it raises before the 404 branch can be reached',
   isolationResponse: '200 with one schema-valid tweet whose tweet_id echoes the path parameter',
   mismatches: [
     'the backend answers 500 for every id; the isolation layer answers 200',
@@ -340,7 +356,9 @@ const TWEET_RESPONSES_CONTRACT: RouteContract = {
   emittedRequest: 'POST undefined/tweets/<tweetId>/responses, no query string, no body',
   backendContract: 'POST /tweets/{tweet_id}/responses, no request body, returns Dict under the key "response"',
   currentBackendOutcome:
-    '500 with the plain-text body "Internal Server Error", from the same Tweet.id access',
+    '500 with the plain-text body "Internal Server Error", from the same absent db.query',
+  dependencyOverriddenOutcome:
+    '500 with the same plain-text body, from the same Tweet.id access',
   isolationResponse: '200 with {"response": DEFAULT_TWEET_RESPONSE}',
   mismatches: [
     'no module under src/ calls this route; it is registered because the backend implements it',
@@ -364,6 +382,7 @@ const GENERATE_RESPONSE_CONTRACT: RouteContract = {
   emittedRequest: 'POST undefined/generate-response, application/json body {"tweetId": "<tweetId>"}',
   backendContract: 'none - no router declares this path',
   currentBackendOutcome: '404 {"detail":"Not Found"}',
+  dependencyOverriddenOutcome: null,
   isolationResponse: '200 with {"generatedResponse": DEFAULT_GENERATED_RESPONSE}',
   mismatches: [
     'the path does not exist on the backend; the nearest implemented route is POST /tweets/{tweet_id}/responses',
@@ -393,79 +412,47 @@ export const ROUTE_CONTRACTS: readonly RouteContract[] = Object.freeze([
  * ------------------------------------------------------------------------------------------------------ */
 
 /**
- * The only origins any handler in this module is registered for, as `URL.origin` reports them. Loopback
- * only, and immutable: there is no function that adds to it, because a mutable allow-list is state one test
- * can widen for every test after it.
+ * The only origins any handler in this module is registered for, as `URL.origin` reports them.
+ *
+ * Loopback only, and frozen: there is deliberately no mutator, because a process-global allow-list one test
+ * can widen is order-dependent state of exactly the kind this layer exists to eliminate.
  *
  * `http://localhost` is jsdom's default document origin; `http://127.0.0.1` is included so a suite that
  * overrides `testEnvironmentOptions.url` to the numeric form is served by the same handlers.
  *
- * A suite that deliberately points at some other origin admits it for the duration of one test with
- * {@link allowRequestOrigin}. A request from an origin that is not admitted still *matches* a handler -
- * the patterns are host-agnostic - and is screened out: it is answered with
- * {@link CONTRACT_VIOLATION_STATUS}, recorded, and appended to the isolation ledger, so
- * {@link assertNoIsolationViolations} fails the test even when the caller swallows the rejection.
+ * A suite that deliberately drives some other origin registers a handler for that exact URL with
+ * `server.use(...)`; without one the request matches nothing, reaches `onUnhandledRequest` and becomes a
+ * ledger entry that {@link assertNoIsolationViolations} raises on.
+ *
+ * @see docs/testing/DECISION-LOG.md - rows D103 and D136.
  */
-const DEFAULT_REQUEST_ORIGINS: readonly string[] = Object.freeze([
+export const ALLOWED_REQUEST_ORIGINS: readonly string[] = Object.freeze([
   'http://localhost',
   'http://127.0.0.1',
 ]);
 
 /**
- * Origins a handler answers right now: the two jsdom origins, plus whatever the running test admitted.
+ * The origins the handlers answer.
  *
- * Mutable, and reset to {@link DEFAULT_REQUEST_ORIGINS} after every test by {@link resetHandlerState},
- * which `./setup-jest` calls from its single global `afterEach`. Insertion order is preserved, so the two
- * defaults always come first.
- */
-const requestOrigins = new Set<string>(DEFAULT_REQUEST_ORIGINS);
-
-/**
- * The origins the handlers answer. A request from any other origin is screened out, so a base URL pointing
- * somewhere real surfaces as a failing test rather than as a mocked success.
- *
- * @returns A frozen snapshot, defaults first.
+ * @returns {@link ALLOWED_REQUEST_ORIGINS}, which is already frozen.
  */
 export function allowedRequestOrigins(): readonly string[] {
-  return Object.freeze([...requestOrigins]);
+  return ALLOWED_REQUEST_ORIGINS;
 }
 
 /**
- * Host-agnostic msw pattern for one route path.
+ * The absolute msw patterns one route path is registered under: the path prefixed with each allowed origin.
  *
- * `path` keeps its leading `*` segment, which is what the callers' `undefined` base URL occupies:
+ * `path` keeps its leading `*` segment, which is what the callers' `undefined` base URL occupies -
  * `fetchTweets` emits `undefined/tweets?...`, which the browser resolves to
- * `http://localhost/undefined/tweets`. The pattern is registered without an origin prefix so that a request
- * from *any* origin matches and reaches the screening in {@link screenRequest}, which is what turns a
- * request from a non-admitted origin into a recorded, ledgered violation rather than an error msw's caller
- * can swallow.
+ * `http://localhost/undefined/tweets`, and the `*` absorbs the `undefined`. A request whose origin is not in
+ * the list matches none of these patterns.
  *
- * @param path - Route path beginning with `*​/`, for example `*​/tweets/:tweetId`.
- * @returns The single pattern to register for this route.
+ * @param path - A `pattern` member of {@link ROUTE_CONTRACTS}: a `*` wildcard segment, then the route path.
+ * @returns One pattern per entry in {@link ALLOWED_REQUEST_ORIGINS}, in that order.
  */
 function originScopedPatterns(path: string): readonly string[] {
-  return [path];
-}
-
-/**
- * Adds an origin to {@link allowedRequestOrigins} for a suite that sets `REACT_APP_API_BASE_URL` to an
- * absolute URL on purpose. Lasts for the current test only.
- *
- * @param origin - Origin as `URL.origin` reports it, for example `https://api.example.test`.
- */
-export function allowRequestOrigin(origin: string): void {
-  requestOrigins.add(origin);
-}
-
-/**
- * Restores {@link allowedRequestOrigins} to the two jsdom origins. Called from the central `afterEach` in
- * `./setup-jest` through {@link resetHandlerState}; safe to call again.
- */
-export function resetAllowedRequestOrigins(): void {
-  requestOrigins.clear();
-  for (const origin of DEFAULT_REQUEST_ORIGINS) {
-    requestOrigins.add(origin);
-  }
+  return ALLOWED_REQUEST_ORIGINS.map((origin) => `${origin}/${path}`);
 }
 
 /* ------------------------------------------------------------------------------------------------------ *
@@ -677,18 +664,18 @@ export function assertNoIsolationViolations(): void {
 }
 
 /**
- * Restores every piece of module state this file holds - the allowed-origin set, the request log and the
- * isolation ledger - to the state a freshly imported module has. Called from the central `afterEach` in
- * `./setup-jest`, which is the single owner of this cleanup; this file registers no hook of its own.
+ * Restores every piece of module state this file holds - the request log and the isolation ledger - to the
+ * state a freshly imported module has. Called from the central `afterEach` in `./setup-jest`, which is the
+ * single owner of this cleanup; this file registers no hook of its own. There is no origin state to reset:
+ * {@link ALLOWED_REQUEST_ORIGINS} is a frozen constant.
  *
- * The ledger is reset here too, so one test's breach is never attributed to a later one. `./setup-jest`
- * asserts on the ledger *before* calling this, so a breach still fails the test that caused it.
+ * `./setup-jest` asserts on the ledger *before* calling this, so a breach still fails the test that caused
+ * it, and resetting the ledger here keeps one test's breach from being attributed to a later one.
  *
  * A new piece of module state added to this file belongs here, so that one call site keeps discarding all of
  * it.
  */
 export function resetHandlerState(): void {
-  resetAllowedRequestOrigins();
   resetRecordedRequests();
   resetIsolationViolations();
 }
@@ -724,6 +711,22 @@ const PLACEHOLDER_PATH_VALUES = ['', 'undefined', 'null', 'NaN'];
 
 function stringifyParam(value: unknown): string {
   return Array.isArray(value) ? value.join(',') : String(value ?? '');
+}
+
+/**
+ * The absolute prefix a caller's base URL occupied, rebuilt from the request origin and what the pattern's
+ * leading `*` captured.
+ *
+ * With absolute patterns the wildcard captures only the path segment - `undefined` for the callers' unset
+ * base URL, `api/v1` for a caller configured with `http://localhost/api/v1` - so the origin is prepended to
+ * give the value a suite asserts, for example `http://localhost/undefined`.
+ *
+ * @param origin - `URL.origin` of the request.
+ * @param capture - `req.params['0']`, the wildcard capture.
+ */
+function baseFromCapture(origin: string, capture: unknown): string {
+  const segment = stringifyParam(capture);
+  return segment === '' ? origin : `${origin}/${segment}`;
 }
 
 /** Named path parameters, with msw's numeric wildcard captures removed. */
@@ -778,10 +781,10 @@ function bodyViolations(contract: RouteContract, facts: RequestFacts): string[] 
  * parameter against {@link PLACEHOLDER_PATH_VALUES}, and the body against
  * {@link RequestExpectation.body}, then applies the route's own {@link RequestExpectation.validateQuery}.
  *
- * The origin is checked too, and reported through {@link ScreenedRequest.originAllowed}. Registration
- * screens every handler in this module against {@link allowedRequestOrigins}, so this check should
- * never fire; it is kept as the second line of defence, and as the thing that puts an entry in the ledger
- * if a handler is ever registered for a pattern this module did not scope.
+ * The origin is checked too, and reported through {@link ScreenedRequest.originAllowed}. Because every
+ * pattern is absolute, a request from another origin matches no handler and never reaches here; the check
+ * remains as the second line of defence, and as what puts a ledger entry in place if a handler is ever
+ * registered for a pattern this module did not scope.
  */
 function screenRequest(contract: RouteContract, facts: RequestFacts): ScreenedRequest {
   const violations: string[] = [];
@@ -825,10 +828,9 @@ function screenRequest(contract: RouteContract, facts: RequestFacts): ScreenedRe
   return {
     contract,
     facts,
-    // The patterns are host-agnostic, so the leading `*` matches the whole absolute prefix the caller
-    // sent - origin included - which is already the value `base` reports. Prefixing the origin here
-    // would double it.
-    base: stringifyParam(facts.params['0']),
+    // The patterns are absolute, so the leading `*` captures only the path segment the caller's base URL
+    // occupies; `base` is the whole prefix, so the origin is prepended.
+    base: baseFromCapture(facts.url.origin, facts.params['0']),
     query,
     pathParams,
     originAllowed,
@@ -922,11 +924,12 @@ function rejectScreenedRequest(screened: ScreenedRequest): ContractViolationBody
 
 /**
  * Nominal-success handlers: one per route in {@link ROUTE_CONTRACTS}, in that order, and one per entry in
- * {@link allowedRequestOrigins} within each route. Adding a route is one more `RouteContract` and one more
- * `originScopedPatterns(...).map(...)` entry: no entry reads or branches through another.
+ * {@link ALLOWED_REQUEST_ORIGINS} within each route - so eight handlers, indices `[0..1]` for the tweet
+ * collection, `[2..3]` for the tweet detail, `[4..5]` for the tweet responses and `[6..7]` for
+ * `generate-response`.
  *
- * These responses are fixtures, not backend behaviour. A suite asserting an integration outcome installs
- * the matching entry from {@link currentBackendBehaviorHandlers} instead.
+ * These responses are fixtures, not backend behaviour. A suite asserting an integration outcome installs the
+ * matching layer-2 factory instead.
  */
 export const frontendIsolationHandlers: RestHandler[] = [
   ...originScopedPatterns(TWEETS_CONTRACT.pattern).map((pattern) =>
@@ -1013,25 +1016,61 @@ export const frontendIsolationHandlers: RestHandler[] = [
 export const handlers: RestHandler[] = frontendIsolationHandlers;
 
 /* ------------------------------------------------------------------------------------------------------ *
- * Layer 2 - current backend behaviour. Each factory reproduces the status, body and content type the
- * assembled application returns today, as measured against that application.
+ * Layer 2 - what the assembled application returns today. Each factory reproduces the status, body and
+ * content type measured against that application, and each returns one handler per entry in
+ * {@link ALLOWED_REQUEST_ORIGINS}, so a call site spreads the result:
+ * `server.use(...currentBehaviorTweetsHandlers())`.
  *
- * Each returns one host-agnostic handler, screened against `allowedRequestOrigins()` like layer
- * 1, so a call site spreads the result: `server.use(...currentBehaviorTweetsHandlers())`.
+ * The factories named `currentBehavior*` reproduce the outcome with `app.db.firestore.get_db` left alone.
+ * {@link dependencyOverriddenTweetsHandlers} reproduces `GET /tweets` under a SQLAlchemy-shaped
+ * `app.dependency_overrides[get_db]`, which is the only route whose status the override changes.
  *
- * Unlike layer 1, a contract deviation here is not a ledger entry. Reproducing what the backend does with a
- * request no caller should emit - the 422 for `limit=undefined`, for instance - is the whole point of this
- * layer, so the deviation is recorded in the request log and the backend's own answer is returned.
+ * Unlike layer 1, a contract deviation here is not a ledger entry: reproducing what the backend does with a
+ * request no caller should emit is the whole point of this layer, so the deviation is recorded in the
+ * request log and the backend's own answer is returned.
  * ------------------------------------------------------------------------------------------------------ */
 
 /**
- * `GET /tweets` as the backend answers it: 200 with the tweet list, or 422 when `skip` or `limit` does not
- * coerce to `int`, naming the first failing parameter. `page` is not a declared parameter, so it is read
- * back into the request log and otherwise ignored, exactly as FastAPI ignores it.
+ * `GET /tweets` as the assembled application answers it with `app.db.firestore.get_db` left alone: 500 with
+ * the plain-text body `Internal Server Error`, because the handler calls `db.query(Tweet)` on the Firestore
+ * `Client` that dependency yields, which has no `query` attribute.
  *
- * @returns One handler per allowed loopback origin.
+ * @returns One handler per entry in {@link ALLOWED_REQUEST_ORIGINS}.
  */
 export function currentBehaviorTweetsHandlers(): RestHandler[] {
+  return originScopedPatterns(TWEETS_CONTRACT.pattern).map((pattern) =>
+    rest.get(pattern, (req, res, ctx) => {
+      const screened = screenRequest(TWEETS_CONTRACT, {
+        method: req.method,
+        url: req.url,
+        params: req.params,
+        contentType: req.headers.get('content-type'),
+        body: undefined,
+      });
+
+      record(screened, BACKEND_SERVER_ERROR_STATUS);
+      return res(
+        ctx.status(BACKEND_SERVER_ERROR_STATUS),
+        ctx.set('Content-Type', BACKEND_TEXT_CONTENT_TYPE),
+        ctx.body(BACKEND_SERVER_ERROR_BODY),
+      );
+    }),
+  );
+}
+
+/**
+ * `GET /tweets` as the same application answers it once a test has installed a SQLAlchemy-shaped stand-in
+ * through `app.dependency_overrides[app.db.firestore.get_db]`: 200 with the tweet list, or 422 when `skip`
+ * or `limit` does not coerce to `int`, naming the first failing parameter. `page` is not a declared
+ * parameter, so it is read back into the request log and otherwise ignored, exactly as FastAPI ignores it.
+ *
+ * This is the one route whose status the override changes; the other three answer the same either way. A
+ * suite installs this set only when it means to assert the overridden disposition, and
+ * {@link currentBackendBehaviorHandlers} deliberately does not include it.
+ *
+ * @returns One handler per entry in {@link ALLOWED_REQUEST_ORIGINS}.
+ */
+export function dependencyOverriddenTweetsHandlers(): RestHandler[] {
   return originScopedPatterns(TWEETS_CONTRACT.pattern).map((pattern) =>
     rest.get(pattern, (req, res, ctx) => {
       const screened = screenRequest(TWEETS_CONTRACT, {
@@ -1061,10 +1100,12 @@ export function currentBehaviorTweetsHandlers(): RestHandler[] {
 }
 
 /**
- * `GET /tweets/{tweet_id}` as the backend answers it: 500 with the plain-text body `Internal Server Error`
- * for every id, because the handler reads `Tweet.id` before it can reach its 404 branch.
+ * `GET /tweets/{tweet_id}` as the application answers it: 500 with the plain-text body
+ * `Internal Server Error` for every id, either way - unoverridden the absent `db.query` raises, and under an
+ * override the handler reads `Tweet.id`, which the pydantic model does not declare, before it can reach its
+ * 404 branch.
  *
- * @returns One handler per allowed loopback origin.
+ * @returns One handler per entry in {@link ALLOWED_REQUEST_ORIGINS}.
  */
 export function currentBehaviorTweetByIdHandlers(): RestHandler[] {
   return originScopedPatterns(TWEET_BY_ID_CONTRACT.pattern).map((pattern) =>
@@ -1088,10 +1129,10 @@ export function currentBehaviorTweetByIdHandlers(): RestHandler[] {
 }
 
 /**
- * `POST /tweets/{tweet_id}/responses` as the backend answers it: 500 with the plain-text body
- * `Internal Server Error`, from the same `Tweet.id` access.
+ * `POST /tweets/{tweet_id}/responses` as the application answers it: 500 with the plain-text body
+ * `Internal Server Error`, either way, for the same two reasons as the tweet-detail route.
  *
- * @returns One handler per allowed loopback origin.
+ * @returns One handler per entry in {@link ALLOWED_REQUEST_ORIGINS}.
  */
 export function currentBehaviorTweetResponsesHandlers(): RestHandler[] {
   return originScopedPatterns(TWEET_RESPONSES_CONTRACT.pattern).map((pattern) =>
@@ -1115,10 +1156,10 @@ export function currentBehaviorTweetResponsesHandlers(): RestHandler[] {
 }
 
 /**
- * `POST /generate-response` as the backend answers it: 404 `{"detail":"Not Found"}`, because no router
- * declares that path.
+ * `POST /generate-response` as the application answers it: 404 `{"detail":"Not Found"}`, because no router
+ * declares that path. Routing fails before any dependency resolves, so an override changes nothing.
  *
- * @returns One handler per allowed loopback origin.
+ * @returns One handler per entry in {@link ALLOWED_REQUEST_ORIGINS}.
  */
 export function currentBehaviorGenerateResponseHandlers(): RestHandler[] {
   return originScopedPatterns(GENERATE_RESPONSE_CONTRACT.pattern).map((pattern) =>
@@ -1138,11 +1179,15 @@ export function currentBehaviorGenerateResponseHandlers(): RestHandler[] {
 }
 
 /**
- * Every current-behaviour handler, in {@link ROUTE_CONTRACTS} order, for a suite that installs the whole
- * set through `server.use(...)`. Built fresh on each call so no handler instance is shared between tests.
+ * Every unoverridden current-behaviour handler, in {@link ROUTE_CONTRACTS} order, for a suite that installs
+ * the whole set through `server.use(...)`. Built fresh on each call so no handler instance is shared between
+ * tests.
  *
- * @returns The four routes that reproduce today's 200-or-422, 500, 500 and 404, each registered once per
- *   route, screened against {@link allowedRequestOrigins}.
+ * {@link dependencyOverriddenTweetsHandlers} is deliberately not included: it is the alternative
+ * disposition of one route, not an addition to this set, and a suite that wants it installs it explicitly.
+ *
+ * @returns The four routes that reproduce today's 500, 500, 500 and 404, each registered once per entry in
+ *   {@link ALLOWED_REQUEST_ORIGINS}.
  */
 export function currentBackendBehaviorHandlers(): RestHandler[] {
   return [

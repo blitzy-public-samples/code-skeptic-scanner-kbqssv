@@ -14,10 +14,8 @@
 'use strict';
 
 /*
- * Inline ts-jest compiler options; mirrored in
+ * Inline ts-jest compiler options - no tsconfig file is read. Mirrored in
  * `frontend/jest.transform.extensionless.js`, which adds `isolatedModules`.
- * No tsconfig file is read: `frontend/tsconfig.json` references a
- * `tsconfig.node.json` that does not exist.
  */
 const TSCONFIG = {
   jsx: 'react-jsx',
@@ -34,9 +32,8 @@ module.exports = {
   setupFilesAfterEnv: ['<rootDir>/src/test-utils/setup-jest.ts'],
 
   /*
-   * Two transformers, and only two: the extension-less component modules, then
-   * every .ts/.tsx/.js/.jsx file. No `preset` is declared, so nothing merges a
-   * further ts-jest entry in behind these.
+   * Two transformers, matched in declaration order: the extension-less component modules,
+   * then every .ts/.tsx/.js/.jsx file. No `preset` is declared.
    */
   transform: {
     'src[\\\\/]components[\\\\/](Dashboard|TweetManagement|Analytics|Configuration)$':
@@ -48,13 +45,10 @@ module.exports = {
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node', ''],
 
   /*
-   * Four groups, evaluated in declaration order.
-   *
-   * Group 1 - the four extension-less component modules.
-   * Group 2 - three specifiers with no implementation, sent to test-side stubs. `configSchema` is
-   *   matched in both the relative form `store/configSlice.ts` uses and an aliased form.
-   * Group 3 - three bare specifiers that do not resolve.
-   * Group 4 - the generic `@/*` alias mirroring `tsconfig.json`.
+   * Four groups, evaluated in declaration order: the four extension-less component modules; three
+   * specifiers with no implementation, sent to test-side stubs, `configSchema` matched in both the
+   * relative form `store/configSlice.ts` uses and an aliased form; three bare specifiers that do
+   * not resolve; then the generic `@/*` alias mirroring `tsconfig.json`.
    */
   moduleNameMapper: {
     '^@/components/Dashboard$': '<rootDir>/src/components/Dashboard',
@@ -98,20 +92,12 @@ module.exports = {
   coverageReporters: ['text-summary', 'lcov', 'json', 'json-summary', 'cobertura'],
 
   /*
-   * Console output, then JUnit XML keyed by file path.
-   *
-   * The reporting path a result is traced along: `<testcase classname>` is the test file and
-   * `<testcase name>` is the full test name. `src/test-utils/handlers.ts` stamps that same
-   * file-and-name pair, separators normalised to `/`, on every entry of its intercepted-request log
-   * and on every contract-violation line - so a recorded request, a console line and a `<testcase>`
-   * are all attributable to one test.
-   *
-   * `reportTestSuiteErrors` is what puts a suite that fails to load - an import error, a transform
-   * failure - into the XML; without it such a file contributes no `<testcase>` at all and reads
-   * downstream as absent rather than broken. `addFileAttribute` adds the `file` attribute CI
-   * annotators read. `includeConsoleOutput` carries the correlated console lines into `<system-out>`
-   * whenever Jest buffers them, which is any run it does not switch to verbose - it does so
-   * automatically for a single test file, and then streams the lines to stdout instead.
+   * Console output, then JUnit XML at `frontend/reports/jest-junit.xml`. `<testcase classname>` is
+   * the test file and `<testcase name>` the full test name - the same pair
+   * `src/test-utils/handlers.ts` stamps, separators normalised to `/`, on every intercepted-request
+   * and contract-violation record. `reportTestSuiteErrors` emits a suite that failed to load,
+   * `addFileAttribute` the `file` attribute CI annotators read, `includeConsoleOutput` the console
+   * lines Jest buffers, under `<system-out>`.
    */
   reporters: [
     'default',

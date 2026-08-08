@@ -7,9 +7,11 @@
  *
  * Configures the dev server only: it declares no `build` options.
  *
- * The port comes from `harnessPort()` below - `E2E_PORT`, else `4173 + CLONE_INDEX`,
- * else `4173` - so concurrent checkouts of this repository on one host bind
- * different sockets.
+ * Host and port come from `./harness-origin`, which `e2e/playwright.config.ts`
+ * imports as well. This file resolves neither itself, so the socket the harness
+ * binds and the origin the runner polls are the same value by construction.
+ *
+ * @see docs/testing/DECISION-LOG.md - section 4, every choice made below.
  */
 
 import fs from 'node:fs';
@@ -31,59 +33,16 @@ const FRONTEND_SRC = path.join(FRONTEND, 'src');
 const FRONTEND_MODULES = path.join(FRONTEND, 'node_modules');
 const HARNESS = path.join(HERE, 'harness');
 const STUBS = path.join(HARNESS, 'stubs');
-const FIXTURES = path.join(HERE, 'fixtures');
 const CACHE_DIR = path.join(HERE, 'node_modules', '.vite');
 /**
  * Client runtime of the Vite installation that serves the harness, holding
  * `client.mjs` and `env.mjs`.
  *
- * `/@vite/client` opens with `import "/@fs/<this directory>/env.mjs"`. `/main.tsx`,
- * `/@react-refresh` and the `index.html` preamble each import `/@vite/client`, which
- * places this directory in the dependency chain of every module script in the
- * document.
+ * Every module script in the document reaches it: `/@vite/client` opens with
+ * `import "/@fs/<this directory>/env.mjs"`, and `/main.tsx`, `/@react-refresh` and
+ * the `index.html` preamble each import `/@vite/client`.
  */
 const VITE_CLIENT_DIR = path.join(HERE, 'node_modules', 'vite', 'dist', 'client');
-
-/* -------------------------------------------------------------------------- */
-/* Server address                                                             */
-/* -------------------------------------------------------------------------- */
-
-/** Loopback interface the harness binds. It is never reachable off the host. */
-const HARNESS_HOST = '127.0.0.1';
-
-/** Port the harness binds when the environment selects none. */
-const DEFAULT_HARNESS_PORT = 4173;
-
-/** Largest `CLONE_INDEX` the offset below accepts. */
-const MAX_CLONE_INDEX = 999;
-
-/**
- * Port this harness binds, from the first of these that yields a usable number:
- *
- * 1. `E2E_PORT` - an exact port. `e2e/playwright.config.ts` sets it on the
- *    dev-server process it spawns, so the port Playwright polls and the port the
- *    harness binds are the same number by construction.
- * 2. `CLONE_INDEX` - `4173 + index`. Several checkouts of this repository run
- *    concurrently on one host, and a fixed port would put them on the same
- *    socket, where one checkout's suite can be served by another's harness.
- * 3. `4173`.
- *
- * `server.strictPort` is `true`, so a collision fails the start rather than
- * moving the harness to a port nothing is polling.
- */
-function harnessPort(): number {
-  const explicit = Number.parseInt(process.env.E2E_PORT ?? '', 10);
-  if (Number.isInteger(explicit) && explicit > 0 && explicit < 65536) {
-    return explicit;
-  }
-  const cloneIndex = Number.parseInt(process.env.CLONE_INDEX ?? '', 10);
-  if (Number.isInteger(cloneIndex) && cloneIndex >= 0 && cloneIndex <= MAX_CLONE_INDEX) {
-    return DEFAULT_HARNESS_PORT + cloneIndex;
-  }
-  return DEFAULT_HARNESS_PORT;
-}
-
-const HARNESS_PORT = harnessPort();
 
 /* -------------------------------------------------------------------------- */
 /* Module tables                                                              */
@@ -118,27 +77,20 @@ const STUB_MODULES: Record<string, string> = {
 
 /**
  * Named exports the frontend imports but never declares, supplied so the importing
- * module can load at all: a missing named export is a link-time error under native
- * ESM. Each entry is appended to the end of the real module's source text; nothing
- * in that text is rewritten.
+ * module can load at all. Each entry is appended to the end of the real module's
+ * source text; nothing in that text is rewritten.
  *
- * Every value is `undefined`, which is the value the same import already carries
- * under Jest and CommonJS, so the importer reaches the same branch here as it does
- * everywhere else. `TweetCard` in particular stays `undefined`: rendering it is an
- * invalid element type that unmounts the route, which is why the harness answers
- * the tweet-collection route with an empty array (see {@link API_DEFAULT_ROUTES}).
- *
- * A missing named export is a link-time error under native ESM, so every entry
- * here exists to let the importing module load. Each value is `undefined`, which
- * is the value the same import already has under Jest and CommonJS, so the
- * importer reaches the same branch in the harness as it does everywhere else.
+ * Every value is `undefined`, which is what the same import already carries under
+ * Jest and CommonJS, so the importer reaches the same branch here as everywhere
+ * else. `TweetCard` in particular stays `undefined`: rendering it is an invalid
+ * element type that unmounts the route.
  *
  * Keys are paths under `frontend/src` without an extension. Values map an export
  * name to an expression evaluated in that module's own scope.
  *
  * Add an entry to extend.
  *
- * @see docs/testing/DECISION-LOG.md - section 4, the compatibility-export decision.
+ * @see docs/testing/DECISION-LOG.md - row D42.
  */
 const COMPAT_EXPORTS: Record<string, Record<string, string>> = {
   'services/api': {
@@ -199,18 +151,13 @@ const DEDUPED_PACKAGES = [
 /* -------------------------------------------------------------------------- */
 
 /**
- * The only directories this dev server may read over `/@fs/`: the harness itself,
- * which contains `harness/stubs`; the pre-bundle cache, from which the optimised
- * deps are served; the Vite client runtime, from which the dev client is served;
- * and the frontend sources and package tree the aliases resolve to.
+ * The only directories this dev server may read over `/@fs/`, and the whole of the
+ * harness graph: the harness itself, which contains `harness/stubs`; the pre-bundle
+ * cache; the Vite client runtime; and the frontend sources and package tree the
+ * aliases resolve to.
  *
- * The Vite root is `e2e/harness` and the nearest manifest is `e2e/package.json`,
- * so `server.fs.strict` scopes access to `e2e/` unless the directories holding the
- * graph are named here. `harnessFilesystemGuard` below checks this same list through
- * `isWithinAllowedRoot`, and it runs ahead of the Vite middleware that exempts the
- * client runtime.
- *
- * Nothing outside these five is part of the harness graph.
+ * Both `server.fs.allow` and `harnessFilesystemGuard` below read this list, the
+ * guard through `isWithinAllowedRoot`.
  *
  * To serve another directory, add one entry here.
  */
@@ -243,17 +190,13 @@ const DENIED_PATH_EXPRESSION =
   /(^|[\\/])(\.env(\.[^\\/]*)?|\.npmrc|\.netrc|id_rsa[^\\/]*|\.git)([\\/]|$)|\.(crt|pem|key|pfx|p12|cer|cert|jks|keystore|local)$/i;
 
 /**
- * NTFS alternate-data-stream syntax in a request path.
+ * NTFS alternate-data-stream syntax in a request path, such as `secret.env::$DATA`.
  *
- * Windows resolves `secret.env::$DATA` and `secret.env:$DATA` to the default data stream of
- * `secret.env`, and `dir:$INDEX_ALLOCATION` to the directory itself, so a colon inside a path
- * segment is a second spelling of a file whose first spelling is denied. The pinned vite 4.5.14
- * does not normalise those forms before applying `server.fs.deny`, which is
- * GHSA-fx2h-pf6j-xcff / CVE-2026-53571; the fix landed in 6.4.3 / 7.3.5 / 8.0.16 and there is no
- * 4.x release carrying it. See `docs/testing/DECISION-LOG.md`.
+ * Invariant: a colon is refused anywhere except immediately after a single leading drive letter,
+ * which is the one legitimate colon a `/@fs/C:/...` URL contains. No path in the harness graph
+ * carries any other colon.
  *
- * Matches a colon anywhere except immediately after a single leading drive letter, which is the
- * one legitimate colon a `/@fs/C:/...` URL contains.
+ * @see docs/testing/DECISION-LOG.md - rows D110 and D115.
  */
 const NTFS_STREAM_EXPRESSION = /:/;
 
@@ -263,58 +206,61 @@ const LEADING_DRIVE_EXPRESSION = /^\/[A-Za-z]:/;
 /**
  * Windows 8.3 short-name syntax, such as `PROGRA~1` or `SECRET~1.ENV`.
  *
- * The same advisory covers it: a short name is another spelling of a long name, and the pinned
- * Vite does not reject it, so a denied file can be addressed by its short form. No path in the
- * harness graph contains a tilde, so refusing the whole shape costs nothing.
+ * Invariant: `~<digit>` is refused anywhere. No path in the harness graph contains a tilde.
+ *
+ * @see docs/testing/DECISION-LOG.md - rows D110 and D115.
  */
 const SHORT_NAME_EXPRESSION = /~\d/;
 
 /** Bound on repeated percent-decoding, so a nested encoding cannot outrun the check. */
 const MAX_DECODE_PASSES = 4;
 /* -------------------------------------------------------------------------- */
-/* Harness API defaults                                                       */
+/* Harness API surface                                                        */
 /* -------------------------------------------------------------------------- */
 
 /**
- * The API requests the four mounted components issue, and the response the harness
- * answers each with when no spec has intercepted it.
+ * Every API request the four mounted components issue, and the interception a spec
+ * must install to drive it.
  *
- * These are matched on the exact `method` and `pathname` below, none of which is a
- * client route: `frontend/src/services/api.ts` interpolates an undefined base URL,
- * so its requests all begin `/undefined/`, and the two stubs under `harness/stubs`
- * request paths under `/api/`. The client routes `/`, `/tweets`, `/analytics` and
- * `/configuration` are therefore untouched and keep the SPA fallback.
+ * Keyed `<METHOD> <pathname>` and matched exactly. None of these keys is a client
+ * route: `frontend/src/services/api.ts` interpolates an undefined base URL, so its
+ * requests all begin `/undefined/`, and the two stubs under `harness/stubs` request
+ * paths under `/api/`. The client routes `/`, `/tweets`, `/analytics` and
+ * `/configuration` are untouched and keep the SPA fallback.
  *
- * A spec overrides any of these with `page.route`, which intercepts in the browser
- * before the request is issued.
+ * Contract: the dev server answers every entry here with
+ * {@link API_NOT_INTERCEPTED_STATUS} and never with a success status, so no flow can
+ * be satisfied by a server default and every payload a spec asserts on is a payload
+ * that spec supplied. `page.route` intercepts in the browser, before the request is
+ * issued, so an installed interception is answered without reaching this server at
+ * all.
  *
- * Add an entry to extend, keyed `<METHOD> <pathname>`.
+ * Add an entry to extend.
  *
- * @see docs/testing/DECISION-LOG.md - section 4, why the harness answers these itself.
+ * @see docs/testing/DECISION-LOG.md - row D126, which supersedes D43.
  */
-const API_DEFAULT_ROUTES: Record<string, () => { body: string; contentType: string }> = {
-  // The tweet collection `frontend/src/services/api.ts` `fetchTweets` requests, which
-  // `components/Dashboard` reaches through `services/twitterService` `getLatestTweets`.
-  // Empty: any member would be rendered by the undefined `TweetCard`.
-  'GET /undefined/tweets': () => ({
-    body: '[]',
-    contentType: 'application/json',
-  }),
+const HARNESS_API_SURFACE: Record<string, string> = {
+  // `services/api.ts` fetchTweets, reached by `components/Dashboard` through
+  // `services/twitterService` getLatestTweets.
+  'GET /undefined/tweets':
+    "page.route('**/undefined/tweets*', route => route.fulfill({ json: [] }))",
 
-  // The trend series `harness/stubs/analyticsService.ts` requests, served from the
-  // committed fixture so its status check and JSON parse run against real bytes.
-  'GET /api/trends': () => ({
-    body: fs.readFileSync(path.join(FIXTURES, 'trends.json'), 'utf8'),
-    contentType: 'application/json',
-  }),
+  // `harness/stubs/analyticsService.ts` getTrendData. `e2e/fixtures/trends.json`
+  // is the payload a spec fulfils with.
+  'GET /api/trends':
+    "page.route('**/api/trends*', route => route.fulfill({ path: 'fixtures/trends.json' }))",
 
-  // The credential payload `harness/stubs/configService.ts` posts, answered 2xx so
-  // `components/Configuration` takes its success branch.
-  'POST /api/config/twitter': () => ({
-    body: '{}',
-    contentType: 'application/json',
-  }),
+  // `harness/stubs/configService.ts` updateTwitterAPIConfig, from the
+  // `components/Configuration` submit handler.
+  'POST /api/config/twitter':
+    "page.route('**/api/config/twitter', route => route.fulfill({ json: {} }))",
 };
+
+/** Status the harness answers an un-intercepted {@link HARNESS_API_SURFACE} request with. */
+const API_NOT_INTERCEPTED_STATUS = 503;
+
+/** `error` of every un-intercepted-request body, and the dev-server log prefix. */
+const API_NOT_INTERCEPTED_ERROR = 'harness-api-not-intercepted';
 
 /** URL prefix under which Vite serves a file by absolute path. */
 const FS_URL_PREFIX = '/@fs/';
@@ -323,15 +269,12 @@ const FS_URL_PREFIX = '/@fs/';
  * URL prefix under which Vite serves a *virtual* module id, with the leading NUL encoded as
  * `__x00__`.
  *
- * Exempt from the alternate-spelling and denied-path checks, and it has to be: the harness's own
- * virtual ids embed an absolute path, so `\0extless:C:/…/components/Dashboard` reaches the browser
- * as `/@id/__x00__extless:C:/…/components/Dashboard` — two colons, neither of them an ADS suffix.
+ * Exempt from the alternate-spelling and denied-path checks: a harness virtual id embeds an
+ * absolute path and so carries two colons, and a `/@id/` request never becomes a filesystem read
+ * by path - it goes to the plugin container, where `harnessSourceResolver.resolveId` returns a
+ * NUL-prefixed id only for a key of `virtualModules`, the map built once at config time below.
  *
- * Exempting it opens nothing. A `/@id/` request never becomes a filesystem read by path: it goes to
- * the plugin container, and `harnessSourceResolver.resolveId` returns a NUL-prefixed id only when it
- * is already a key of `virtualModules`, a map built once at config time from
- * `EXTENSIONLESS_COMPONENTS` and `COMPAT_EXPORTS`. An id naming any other file resolves to `null`
- * and 404s.
+ * @see docs/testing/DECISION-LOG.md - rows D110 and D115.
  */
 const VIRTUAL_ID_URL_PREFIX = '/@id/';
 
@@ -641,17 +584,16 @@ function resolveRootRelativePath(url: string): string | null {
 /**
  * Whether a request path uses an alternate Windows spelling of a filename.
  *
- * Applied to every request, `/@fs/` or not, before the path is resolved: the point is to refuse the
- * spelling itself, because `path.resolve` and `fs.realpathSync` both preserve an ADS suffix and a
- * short name resolves to the long name only after the deny check would already have passed.
+ * Applied to every request, `/@fs/` or not, before the path is resolved: `path.resolve` and
+ * `fs.realpathSync` both preserve an ADS suffix, and a short name resolves to the long name only
+ * after the deny check would already have passed.
  *
- * On Windows a `/@fs/` URL contains one legitimate colon, the drive letter's, and it appears *after*
- * the prefix: `/@fs/C:/…`. The prefix is therefore stripped first, exactly as
- * {@link resolveServedPath} does, and the drive letter removed from what remains — testing
- * `LEADING_DRIVE_EXPRESSION` against the unstripped path can never match, because `@` is not a
- * letter, and every `/@fs/` request on Windows would then be refused for its drive colon. That is
- * every dependency Vite serves: React, ReactDOM, the store slices and Vite's own dev client, which
- * leaves the page blank with nothing in the console but eight 403s.
+ * The `/@fs/` prefix and, on Windows, the drive letter are stripped before the check, because a
+ * `/@fs/C:/...` URL carries one legitimate colon. Testing `LEADING_DRIVE_EXPRESSION` against the
+ * unstripped path can never match, which would refuse every `/@fs/` request on Windows - React,
+ * ReactDOM, the store slices and Vite's own dev client included.
+ *
+ * @see docs/testing/DECISION-LOG.md - rows D110 and D115.
  *
  * @param pathname - Request path, query and fragment removed; decoded or raw.
  * @param isFsRequest - `true` when the path begins with {@link FS_URL_PREFIX}.
@@ -686,24 +628,16 @@ function isWithinAllowedRoot(candidate: string): boolean {
  *
  * - `/__open-in-editor`, which spawns a local editor process;
  * - any request path, `/@fs/` or root-relative, that uses NTFS alternate-data-stream syntax or a
- *   Windows 8.3 short name — see {@link usesAlternateWindowsSpelling}. This is the class the pinned
- *   vite 4.5.14 does not normalise before applying `server.fs.deny`
- *   (GHSA-fx2h-pf6j-xcff / CVE-2026-53571), and `/.env::$DATA?raw` is the published example;
- * - a **root-relative** read that resolves onto a `DENIED_FILE_PATTERNS` name, which Vite's own deny
- *   list is otherwise the only thing standing in front of;
+ *   Windows 8.3 short name - see {@link usesAlternateWindowsSpelling};
+ * - a **root-relative** read that resolves onto a `DENIED_FILE_PATTERNS` name;
  * - a `/@fs/` read that resolves outside `ALLOWED_SERVE_ROOTS` or onto a `DENIED_FILE_PATTERNS`
- *   name. The check runs on the decoded, normalised, symlink-resolved path, so alternate spellings
- *   of one path are refused too, and it covers every extension including `.html`.
+ *   name. The check runs on the decoded, normalised, symlink-resolved path and covers every
+ *   extension, `.html` included.
  *
- * Every check runs on a fully percent-decoded path, so a nested encoding cannot carry a colon or a
- * tilde past it, and it runs on the raw URL as well, so an encoding this middleware decoded but
- * Vite would not is still refused.
+ * Every check runs on the fully percent-decoded path *and* on the raw URL, so neither a nested
+ * encoding nor an encoding Vite would not decode can carry a colon or a tilde past it.
  *
- * The guard is what closes the advisory here rather than a version bump: the fix landed in vite
- * 6.4.3 / 7.3.5 / 8.0.16 and no 4.x release carries it, while the AAP pins 4.5.14 and the harness
- * design depends on behaviour verified against it. `server.host` is `127.0.0.1`, so the dev server
- * is reachable only from this machine — the advisory's other precondition is a server exposed to the
- * network. See `docs/testing/DECISION-LOG.md`.
+ * @see docs/testing/DECISION-LOG.md - rows D110 and D115.
  */
 function harnessFilesystemGuard(): Plugin {
   return {
@@ -770,41 +704,55 @@ function harnessFilesystemGuard(): Plugin {
 }
 
 /* -------------------------------------------------------------------------- */
-/* API defaults                                                               */
+/* API fail-closed guard                                                      */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Answers the requests in {@link API_DEFAULT_ROUTES} and passes every other request
- * through.
+ * Answers every {@link HARNESS_API_SURFACE} request that reached this server with
+ * {@link API_NOT_INTERCEPTED_STATUS}, and passes every other request through.
  *
- * Runs ahead of Vite's own middleware, so it also answers the two requests Vite
- * would otherwise mishandle: the SPA fallback is `connect-history-api-fallback`,
- * which returns `index.html` to a `fetch`, whose `Accept` header is a bare
- * wildcard, and `404` to an axios XHR, whose `Accept` header begins
- * `application/json`.
+ * A request reaches here only when no `page.route` claimed it, so reaching here *is*
+ * the missing interception. The response names the request and the interception the
+ * spec is missing, and the same line is written to the dev-server log, which
+ * `e2e/playwright.config.ts` pipes into the run output.
  *
- * Each response carries `Cache-Control: no-store`, so a reload re-issues the
- * request and a spec sees it.
+ * Runs ahead of Vite's own middleware, so these paths never reach the SPA fallback -
+ * `connect-history-api-fallback` answers `index.html` to a `fetch`, whose `Accept`
+ * header is a bare wildcard, which would make `response.ok` true for an HTML body.
+ *
+ * `Cache-Control: no-store`, so a reload re-issues the request and a spec sees it.
  */
-function harnessApiDefaults(): Plugin {
+function harnessApiFailClosed(): Plugin {
   return {
-    name: 'harness-api-defaults',
+    name: 'harness-api-fail-closed',
     enforce: 'pre',
 
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
+        const method = req.method ?? '';
         const pathname = withoutQuery(req.url ?? '').split('#')[0];
-        const respond = API_DEFAULT_ROUTES[`${req.method ?? ''} ${pathname}`];
-        if (respond === undefined) {
+        const remedy = HARNESS_API_SURFACE[`${method} ${pathname}`];
+        if (remedy === undefined) {
           next();
           return;
         }
 
-        const { body, contentType } = respond();
-        res.statusCode = 200;
-        res.setHeader('Content-Type', `${contentType}; charset=utf-8`);
+        const request = `${method} ${req.url ?? pathname}`;
+        server.config.logger.warn(
+          `[${API_NOT_INTERCEPTED_ERROR}] ${request} was answered ` +
+            `${API_NOT_INTERCEPTED_STATUS}; install ${remedy}`,
+        );
+
+        res.statusCode = API_NOT_INTERCEPTED_STATUS;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
         res.setHeader('Cache-Control', 'no-store');
-        res.end(body);
+        res.end(
+          JSON.stringify({
+            error: API_NOT_INTERCEPTED_ERROR,
+            request,
+            remedy,
+          }),
+        );
       });
     },
   };
@@ -824,11 +772,12 @@ export default defineConfig({
   appType: 'spa',
 
   // All three custom plugins carry `enforce: 'pre'` and run before `react()`. The
-  // guard is first, so a refused request is never answered by a later plugin.
-  plugins: [harnessFilesystemGuard(), harnessApiDefaults(), harnessSourceResolver(), react()],
+  // filesystem guard is first, so a refused request is never answered by a later
+  // plugin.
+  plugins: [harnessFilesystemGuard(), harnessApiFailClosed(), harnessSourceResolver(), react()],
 
   server: {
-    // Host, port and origin come from `./harness-origin`, which `e2e/playwright.config.ts`
+    // Host and port come from `./harness-origin`, which `e2e/playwright.config.ts`
     // reads as well, so the server and the runner cannot disagree. The port is
     // clone-specific: see that module for how it is resolved.
     host: HARNESS_HOST,
@@ -879,16 +828,15 @@ export default defineConfig({
     include: [...FRONTEND_PACKAGES],
   },
 
-  // `frontend/src/services/api.ts` reads `process.env` at module scope, which a
-  // browser does not provide.
+  // `frontend/src/services/api.ts` reads `process.env` at module scope, which a browser does
+  // not provide.
   //
-  // Declaration order is load-bearing: the dev client assigns these keys onto the
-  // global object in the order below, so `process.env` must come before the two
-  // keys under it or it would replace the object they were just written onto.
+  // Declaration order is load-bearing: the dev client assigns these keys onto the global
+  // object in the order below, so `process.env` must come first or it would replace the object
+  // the two keys under it were just written onto.
   //
-  // `REACT_APP_API_BASE_URL` resolves to the `undefined` literal, which keeps the
-  // base URL production computes today - hence the `/undefined/tweets` request path
-  // in `API_DEFAULT_ROUTES`.
+  // `REACT_APP_API_BASE_URL` resolves to the `undefined` literal, which keeps the base URL
+  // production computes today - hence the `/undefined/tweets` key in `HARNESS_API_SURFACE`.
   //
   // @see docs/testing/DECISION-LOG.md - section 4.
   define: {

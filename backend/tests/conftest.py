@@ -1,59 +1,47 @@
 """Shared test infrastructure for the Code Skeptic Scanner backend suite.
 
 Ordering in this module is load-bearing.  Eight production modules build a
-``Settings()`` at their own module scope, and pytest imports every test
-module during collection, before any fixture runs.  The environment seeding,
-the ``Optional`` shim and the credential neutralisation below therefore
-execute at *this module's* scope.
+``Settings()`` at their own module scope, and pytest imports every test module
+during collection, before any fixture runs.  The environment seeding, the
+``Optional`` shim, the credential neutralisation and the egress guard therefore
+execute at *this module's* scope.  No ``app.*`` module is imported here:
+production modules are imported lazily inside a fixture through
+:func:`importlib.import_module`, so the prologue has always run first.
 
-No ``app.*`` module is imported at this scope: production modules are
-imported lazily inside a fixture through :func:`importlib.import_module`, so
-the prologue has always run first.
+Invariants this module enforces structurally rather than by convention:
 
-Three properties are enforced structurally rather than left to a test author.
-
-Synthetic settings, unconditionally
-    Every ``Settings`` field name is *managed*: the eight declared without a
-    default are assigned obvious placeholders, and every defaulted one — plus
-    the two fields production reads but never declares — is *removed* from the
-    environment so the declared default governs. Assignment is unconditional, so
-    an ambient real ``SECRET_KEY``, Twitter, OpenAI or Google value cannot win,
-    and an ambient ``POPULARITY_THRESHOLD`` cannot silently rewrite an oracle.
-    The previous value of every managed name is snapshotted and restored at
-    session teardown.
+Synthetic settings
+    Every ``Settings`` field name is managed.  The eight declared without a
+    default are assigned placeholders; every defaulted one, plus the two fields
+    production reads but never declares, is removed so the declared default
+    governs.  Assignment is unconditional, so no ambient value can win.
 
 Deny-by-default egress, from before collection until after teardown
-    The network guard is installed by this module's prologue, not by a fixture:
-    ``app/db/firestore.py`` line 5 and ``app/db/bigquery.py`` line 5 construct a
-    Google Cloud ``Client()`` at *import* time, and collection imports both, so
-    a per-test fixture would arrive too late. It stays installed until
-    :func:`pytest_unconfigure`, which keeps a thread that outlives a test from
-    escaping during teardown. Connect, send, DNS resolution, the Windows
-    overlapped connector, gRPC channel construction and child-process creation
-    are all refused unless the target cannot leave the machine.
+    Connect, datagram send, DNS resolution, the Windows overlapped connector,
+    gRPC channel construction and child-process creation are refused unless the
+    target is a socket this process itself owns - see :func:`_is_local_address`.
 
 Fail-closed shims
     A symbol production imports but never defines is stood in for by a value
-    that *refuses* rather than one that succeeds, so a code path reaching it
-    fails loudly instead of receiving a truthy mock. This matters most for
-    ``verify_token``: a permissive stand-in would authorise an arbitrary token.
-    Each shim is installed on the module that defines the name *and* on every
-    already-loaded module that captured it with ``from ... import ...``, and on
-    exit every loaded consumer is set back to the fail-closed sentinel, because
-    ``app.main``, ``app.api.dependencies`` and ``app.api.routes.tweets`` are
-    deliberately never evicted and would otherwise keep a permissive object for
-    the rest of the session.
+    that *refuses*.  Each shim is installed on the defining module and on every
+    already-loaded module that captured it, and reset to the sentinel on exit.
+    Every such shim lives here and nowhere else, so a test can neither install
+    its own nor leak one into a later test.
+
+Nothing survives the run
+    :func:`pytest_unconfigure` restores the environment, the credential patch,
+    ``builtins.Optional``, the logging record factory and the socket guard.
 
 Contents
 --------
 Module-scope prologue
-    Snapshots and then forces every managed ``Settings`` environment variable,
-    points ``GOOGLE_APPLICATION_CREDENTIALS`` at an absent path, installs the
-    ``Optional`` shim that makes ``app/core/security.py`` importable, neutralises
-    ambient Google credential resolution, and installs the egress guard.
+    Snapshots and forces the managed ``Settings`` variables, points
+    ``GOOGLE_APPLICATION_CREDENTIALS`` at an absent path, installs the
+    ``Optional`` shim, neutralises ambient Google credentials, installs the
+    egress guard.
 Configuration hooks
     :func:`pytest_configure` adds the child-process guard;
-    :func:`pytest_unconfigure` releases every global mutation this module made.
+    :func:`pytest_unconfigure` releases every global mutation.
 Test correlation
     Puts ``test_id`` and ``correlation_id`` on every log record, which is what
     the log formats in ``backend/pytest.ini`` print.
@@ -66,14 +54,10 @@ Named fixtures
     :func:`response_generator_module`, :func:`app_module`,
     :func:`frozen_clock`.
 
-Every shim for a symbol that production code imports but never defines lives in
-this module and nowhere else, so a test can neither install its own nor leak
-one into a later test.
-
-Reasoning for the choices in this module: ``docs/testing/DECISION-LOG.md`` §10,
-rows D104 (synthetic settings), D105 (the egress guard) and D106 (the fail-closed
-shims).  ``docs/testing/TRACEABILITY-MATRIX.md`` records the construct each
-fixture covers.
+Reasoning for every choice in this module: ``docs/testing/DECISION-LOG.md``
+rows D25, D104, D105, D106, D121, D134 and D135.
+``docs/testing/TRACEABILITY-MATRIX.md`` records the construct each fixture
+covers.
 """
 
 import builtins
@@ -89,7 +73,6 @@ import subprocess
 import sys
 import threading
 import typing
-from collections import namedtuple
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -208,25 +191,25 @@ MANAGED_ENVIRONMENT_NAMES = (
     + ("GOOGLE_APPLICATION_CREDENTIALS",)
 )
 
-#: Host strings that cannot leave the machine.  See :func:`_is_local_address`.
-LOOPBACK_HOSTS = frozenset(
-    {"127.0.0.1", "::1", "localhost", "ip6-localhost", "0.0.0.0", "::", ""}
-)
+#: Host names that name this machine.  A literal address is classified with
+#: :mod:`ipaddress` instead; see :func:`_is_local_host`.
+LOOPBACK_HOSTS = frozenset({"localhost", "ip6-localhost", ""})
 
-#: Classification returned by :func:`_address_class` for an address that names
-#: no host reachable over IP: an ``AF_UNIX`` socket or a filesystem path.
-ADDRESS_UNIX = "unix"
+#: Loopback ports this process bound, recorded by the guard on
+#: ``socket.socket.bind`` and read by :func:`_is_local_address`.  A loopback
+#: *port* belongs to whichever process bound it, so admitting the whole
+#: loopback interface would admit every other service on this host - under
+#: parallel execution, another checkout's dev server or application process.
+#: Only a port this interpreter bound itself is a socket the suite owns.
+#:
+#: Written and read under :data:`_BOUND_PORTS_LOCK`; a port is never removed,
+#: because a closed port cannot be reached and re-recording is idempotent.
+_PROCESS_BOUND_PORTS = set()
 
-#: Classification for an address on the local machine.  A loopback port on this
-#: host belongs to whatever else is running on it — under parallel
-#: execution, another checkout's dev server or application process — so it
-#: is treated as a foreign service and refused unless
-#: :func:`_socketpair_in_progress` holds.
-ADDRESS_LOOPBACK = "loopback"
-
-#: Classification for every other address, including any host name that is not
-#: in :data:`LOOPBACK_HOST_NAMES` and any address that cannot be parsed.
-ADDRESS_REMOTE = "remote"
+#: Serialises access to :data:`_PROCESS_BOUND_PORTS`.  ``socket.bind`` is
+#: reachable from any thread, and starlette's ``TestClient`` runs its event
+#: loop in one.
+_BOUND_PORTS_LOCK = threading.Lock()
 
 #: ``(module, attribute)`` channel factories blocked by
 #: :func:`block_network_access`.  gRPC opens its sockets in the C core
@@ -243,11 +226,10 @@ GRPC_CHANNEL_FACTORIES = (
 )
 
 #: ``(module, attribute)`` name-resolution entry points blocked alongside the
-#: connectors. A hostname is refused before it can be resolved, which stops a
-#: client that would otherwise reach the connect guard only after a real DNS
-#: round trip, and covers the UDP resolver traffic a connect guard never sees.
-#: A loopback name or address is resolved normally: starlette's ``TestClient``
-#: portal and asyncio's self-pipe both need it.
+#: connectors, so a hostname is refused before a DNS round trip and the UDP
+#: resolver traffic a connect guard never sees is covered too.  A loopback name
+#: or address resolves normally; the port check in :func:`_is_local_address` is
+#: what then decides whether the connect itself is admitted.
 DNS_RESOLVERS = (
     ("socket", "getaddrinfo"),
     ("socket", "gethostbyname"),
@@ -264,42 +246,32 @@ OUT_OF_BAND_CONNECTORS = (("socket", "create_connection"),)
 #: ``(module, "Class.method")`` connectors reached as a bound method whose second
 #: argument is the address.
 #:
-#: Windows is the case that matters. The default policy here is
-#: ``WindowsProactorEventLoopPolicy``, and a proactor loop does not connect
-#: through ``socket.socket.connect``: it calls ``IocpProactor.connect``, which
-#: goes straight to the ``ConnectEx`` method on an ``_overlapped.Overlapped``
-#: instance. That method cannot be replaced — ``_overlapped.Overlapped`` is an
-#: extension type and ``setattr`` on it raises ``TypeError: can't set attributes
-#: of built-in/extension type`` — so the guard sits on the last pure-Python frame
-#: above it instead. A hostname would already have been refused by
-#: :data:`DNS_RESOLVERS`; this closes the same path for a literal IP address,
-#: which needs no resolution.
+#: A Windows proactor event loop does not connect through
+#: ``socket.socket.connect``; it reaches ``ConnectEx`` on an
+#: ``_overlapped.Overlapped`` instance, which is an extension type and cannot be
+#: patched, so the guard sits on the last pure-Python frame above it.  This is
+#: the path a literal IP address takes, which needs no resolution.
 METHOD_CONNECTORS = (
     ("asyncio.windows_events", "IocpProactor.connect"),
     ("asyncio.proactor_events", "BaseProactorEventLoop.sock_connect"),
 )
 
 #: ``(module, attribute)`` shell entry points refused while a test is running.
-#: A child process is the one egress path invisible to every guard above,
-#: because its sockets belong to another process: nothing under ``backend/app``
-#: spawns one, so a child here could only be a test reaching for a
-#: network-capable binary such as ``curl``, ``ping`` or ``gcloud``.
-#: :class:`subprocess.Popen` is guarded separately, at ``__init__`` rather than
-#: by replacing the class, so the type stays intact for anything that inspects
-#: it. ``os.popen`` needs no entry: it is implemented on top of
-#: :class:`subprocess.Popen`.
+#: A child process is the one egress path invisible to every guard above, since
+#: its sockets belong to another process.  :class:`subprocess.Popen` is guarded
+#: at ``__init__`` rather than by replacing the class, so the type stays intact
+#: for anything that inspects it; ``os.popen`` needs no entry because it is
+#: implemented on top of ``Popen``.
 CHILD_PROCESS_FACTORIES = (("os", "system"),)
 
 #: Symbols production code imports but that no production module defines, each
 #: mapped to the module the import reads from and to every module that binds the
 #: name into its own namespace with ``from ... import ...``.
 #:
-#: A consumer listed here captures the *object*, so replacing the attribute on
-#: the defining module after the consumer has been imported does not reach it.
-#: :func:`_install_missing_symbol` therefore writes to the definer and to every
-#: loaded consumer, and on exit sets each loaded consumer back to the fail-closed
-#: sentinel — the modules are deliberately never evicted, so anything permissive
-#: left behind would outlive the fixture that installed it.
+#: A consumer listed here captures the *object*, so
+#: :func:`_install_missing_symbol` writes to the definer and to every loaded
+#: consumer, and on exit sets each loaded consumer back to the fail-closed
+#: sentinel rather than restoring it.
 #:
 #: ``kind`` selects the sentinel shape: ``"callable"`` for a name production
 #: calls, ``"class"`` for a name production instantiates or uses as an
@@ -350,116 +322,11 @@ GET_DB_CONSUMERS = ("app.main", "app.api.dependencies")
 PRE_FREEZE_IMPORTS = ("pydantic", "app.core.config", "app.core.security")
 
 
-def _reject_every_token(token):
-    """Stand in for the undefined ``verify_token`` outside any fixture.
-
-    ``app/api/dependencies.py`` line 3 imports ``verify_token`` from
-    ``app.core.security``, which defines no such name, and line 11 treats the
-    result as a truth value. Returning ``None`` sends ``get_current_user`` down
-    its 401 path, so a module left in :data:`sys.modules` cannot authenticate a
-    token once the fixture that shimmed it has ended. The function holds no
-    state, so nothing it observes can reach another test.
-    """
-    return None
-
-
-def _unavailable_add_response(*args, **kwargs):
-    """Stand in for the undefined ``add_response`` outside any fixture.
-
-    ``app/tasks/response_generator.py`` line 1 imports ``add_response`` from
-    ``app.db.firestore``, which defines only ``get_db``, ``add_tweet``,
-    ``get_tweet`` and ``update_tweet``. Raising is the fail-closed disposition
-    for a write: a stand-in that returned a value would let a test record a
-    response nobody asked for.
-
-    Raises :class:`RuntimeError` on every call.
-    """
-    raise RuntimeError(
-        "app.db.firestore.add_response does not exist in production; request "
-        "the response_generator_module fixture to obtain the test stand-in."
-    )
-
-
-#: One record per symbol production code imports but that no production module
-#: defines. ``exporter`` is the module a ``from ... import`` reads the name
-#: from;
-#: ``importers`` are the modules that copy the name into their own namespace at
-#: their own import time and therefore keep their copy when the exporter's
-#: attribute is restored; ``factory`` builds the stand-in a fixture installs;
-#: ``baseline`` builds the stateless value left in an importer's namespace once
-#: that fixture has ended.
-_MissingSymbol = namedtuple(
-    "_MissingSymbol", "attribute exporter importers factory baseline"
-)
-
-#: ``verify_token`` on ``app.core.security`` — ``app/api/dependencies.py`` line
-#: 3. The stand-in returns ``None`` so an unconfigured call takes the 401 path;
-#: a test that needs an authenticated result sets ``return_value`` itself.
-VERIFY_TOKEN_SYMBOL = _MissingSymbol(
-    attribute="verify_token",
-    exporter="app.core.security",
-    importers=("app.api.dependencies",),
-    factory=lambda: MagicMock(name="verify_token", return_value=None),
-    baseline=lambda: _reject_every_token,
-)
-
-#: ``TwitterService`` on ``app.services.twitter_service`` —
-#: ``app/api/routes/tweets.py`` line 6. That module exposes only
-#: ``TwitterStreamListener`` and ``start_twitter_stream``.
-TWITTER_SERVICE_SYMBOL = _MissingSymbol(
-    attribute="TwitterService",
-    exporter="app.services.twitter_service",
-    importers=("app.api.routes.tweets",),
-    factory=lambda: MagicMock,
-    baseline=lambda: MagicMock,
-)
-
-#: ``LLMService`` on ``app.services.llm_service`` —
-#: ``app/api/routes/tweets.py`` line 7, ``app/tasks/tweet_processor.py`` line 4
-#: and ``app/tasks/response_generator.py`` line 3. That module exposes only the
-#: free function ``generate_response``.
-#:
-#: The stand-in is :class:`unittest.mock.MagicMock` itself. It has to be a
-#: class: ``tweet_processor.py`` line 10 annotates ``llm_service: LLMService``
-#: and line 14 calls ``LLMService()``. ``on_status`` line 32 then feeds
-#: ``self.llm_service.calculate_doubt_rating(text)`` straight into
-#: ``Tweet(doubt_rating=...)``, and a ``MagicMock`` coerces to ``1.0`` through
-#: ``__float__``.
-LLM_SERVICE_SYMBOL = _MissingSymbol(
-    attribute="LLMService",
-    exporter="app.services.llm_service",
-    importers=("app.api.routes.tweets", "app.tasks.tweet_processor"),
-    factory=lambda: MagicMock,
-    baseline=lambda: MagicMock,
-)
-
-#: ``add_response`` on ``app.db.firestore`` —
-#: ``app/tasks/response_generator.py`` line 1.
-ADD_RESPONSE_SYMBOL = _MissingSymbol(
-    attribute="add_response",
-    exporter="app.db.firestore",
-    importers=("app.tasks.response_generator",),
-    factory=lambda: MagicMock(name="add_response"),
-    baseline=lambda: _unavailable_add_response,
-)
-
-#: The three symbols ``app.main``'s import graph needs in order to load.
-APPLICATION_SYMBOLS = (
-    VERIFY_TOKEN_SYMBOL,
-    TWITTER_SERVICE_SYMBOL,
-    LLM_SERVICE_SYMBOL,
-)
-
-
 class UnmockedNetworkAccessError(RuntimeError):
-    """Raised when the suite reaches for a resource outside the machine.
+    """Raised when the suite reaches for a resource it does not own.
 
-    ``google.auth.default()`` resolves against ambient credentials in some
-    environments and both stream starters terminate in
-    ``stream.filter(track=...)``, so an unpatched boundary reaches live
-    infrastructure rather than failing offline.  :data:`_EGRESS_GUARD` turns
-    every such attempt — connect, send, name resolution, gRPC channel
-    construction or child process — into this error.
+    Every refusal names the test, the operation and the target, and lists the
+    boundaries a test should patch instead.
     """
 
 
@@ -468,12 +335,11 @@ class MissingProductionSymbolError(RuntimeError):
 
     Four names are imported by production modules and defined by none:
     ``verify_token``, ``TwitterService``, ``LLMService`` and ``add_response``.
-    The suite stands each one up only so its importer can load, and the
-    stand-in refuses every call, because a permissive stand-in for
-    ``verify_token`` would hand ``app/api/dependencies.py`` line 10 a truthy
-    principal for an arbitrary token. A test needing a controlled result patches
-    the attribute on the module under test, which is the boundary that module
-    actually reads.
+    Each stand-in exists so its importer can load, and refuses every call.  A
+    test needing a controlled result patches the attribute on the module under
+    test, which is the boundary that module actually reads.
+
+    See ``docs/testing/DECISION-LOG.md`` row D106.
     """
 
 
@@ -486,17 +352,19 @@ def _is_local_host(host):
     """Return ``True`` when ``host`` names this machine and nothing else.
 
     A literal address is parsed with :mod:`ipaddress` rather than matched as a
-    string, so every canonical spelling of the loopback range is recognised —
-    ``127.0.0.5``, ``::1`` and the IPv4-mapped ``::ffff:127.0.0.1`` — while
-    ``10.0.0.1`` and the cloud metadata address ``169.254.169.254`` are not. A
-    prefix test on ``"127."`` accepts the first group and would also accept a
-    *name* beginning with those characters. Abbreviated shorthand such as
-    ``127.1`` is not a valid :mod:`ipaddress` literal, so it is classified as
-    remote and blocked rather than admitted.
+    string, so every canonical spelling of the loopback range is recognised -
+    ``127.0.0.5``, ``::1`` and the IPv4-mapped ``::ffff:127.0.0.1`` - while
+    ``10.0.0.1`` and the cloud metadata address ``169.254.169.254`` are not.
+    Abbreviated shorthand such as ``127.1`` is not a valid :mod:`ipaddress`
+    literal, so it is classified as remote.
 
     Anything that is neither a name in :data:`LOOPBACK_HOSTS` nor a parseable
     loopback or unspecified address is remote, so the classification fails
     closed.
+
+    Naming this machine is necessary but not sufficient for a connect: see
+    :func:`_is_local_address`, which also requires the port to be one this
+    process bound.
     """
     if host is None:
         return True
@@ -517,11 +385,48 @@ def _is_local_host(host):
     return address.is_loopback or address.is_unspecified
 
 
-def _is_local_address(sock, address):
-    """Return ``True`` when ``address`` cannot leave the machine.
+def _record_bound_port(sock):
+    """Record the loopback port ``sock`` is bound to, if it has one.
 
-    An ``AF_UNIX`` socket is local by construction, so its path is not
-    inspected.
+    Called after a successful ``bind``, so the port is read from
+    ``getsockname()`` rather than from the requested address: a bind to port
+    ``0`` - which is what :func:`socket.socketpair` and every ephemeral listener
+    ask for - is only assigned its real port by the kernel.
+    """
+    try:
+        name = sock.getsockname()
+    except OSError:
+        return
+    if not isinstance(name, tuple) or len(name) < 2:
+        return
+    host, port = name[0], name[1]
+    if not isinstance(port, int) or port <= 0 or not _is_local_host(host):
+        return
+    with _BOUND_PORTS_LOCK:
+        _PROCESS_BOUND_PORTS.add(port)
+
+
+def _is_port_owned_by_this_process(port):
+    """Return ``True`` when this process bound ``port`` on a loopback address."""
+    if not isinstance(port, int):
+        return False
+    with _BOUND_PORTS_LOCK:
+        return port in _PROCESS_BOUND_PORTS
+
+
+def _is_local_address(sock, address):
+    """Return ``True`` when ``address`` is a socket this process itself owns.
+
+    Three admissions, and nothing else:
+
+    * an ``AF_UNIX`` socket, which is local by construction and has no port;
+    * an address with no port component, which cannot be a TCP or UDP target;
+    * a loopback host on a port recorded in :data:`_PROCESS_BOUND_PORTS`.
+
+    A loopback host on any other port is refused. That is the difference between
+    "cannot leave the machine" and "belongs to this test run": a neighbouring
+    checkout's dev server, an application process or another user's service all
+    listen on this host, and reaching one is neither offline nor deterministic.
     """
     unix_family = getattr(socket, "AF_UNIX", None)
     family = getattr(sock, "family", None)
@@ -529,22 +434,27 @@ def _is_local_address(sock, address):
         return True
     if not isinstance(address, tuple) or not address:
         return False
-    return _is_local_host(address[0])
+    if not _is_local_host(address[0]):
+        return False
+    if len(address) < 2:
+        return True
+    return _is_port_owned_by_this_process(address[1])
 
 
 class _EgressGuard:
-    """Refuses every network operation whose target is not this machine.
+    """Refuses every network operation whose target this process does not own.
 
-    Installed by the module-scope prologue, which is the earliest point a
-    conftest can act and is before pytest imports any test module — and
-    therefore before collection triggers ``app/db/firestore.py`` line 5, whose
-    module-scope ``Client()`` resolves credentials. Released only by
-    :func:`pytest_unconfigure`, so a background thread that outlives the test
-    that started it is still refused during teardown.
+    Installed by the module-scope prologue - the earliest point a conftest can
+    act, and before collection imports the two production modules that build a
+    Google Cloud ``Client()`` at module scope.  Released only by
+    :func:`pytest_unconfigure`, so a thread that outlives the test that started
+    it is still refused during teardown.
 
     ``test_id`` is set by :func:`block_network_access` for the duration of each
     test and reported in the error, so a refusal names the test that caused it.
     Outside a test the subject is reported as ``collection``.
+
+    See ``docs/testing/DECISION-LOG.md`` rows D25, D105 and D121.
     """
 
     def __init__(self):
@@ -599,12 +509,34 @@ class _EgressGuard:
         return guarded
 
     def _guard_address_callable(self, name, real):
-        """Guard a callable whose first argument is an address tuple."""
+        """Guard a callable whose first argument is an address tuple.
+
+        ``sock`` is ``None``: these callables construct their own socket, so
+        there is no family to inspect and the address is judged on its own.
+        """
 
         def guarded(address, *args, **kwargs):
-            if isinstance(address, tuple) and address and _is_local_host(address[0]):
+            if _is_local_address(None, address):
                 return real(address, *args, **kwargs)
             raise self.refuse(name, address)
+
+        return guarded
+
+    def _guard_bind(self, real):
+        """Record the loopback port a successful ``bind`` assigned.
+
+        Binding is not egress, so nothing is refused here. This is what makes a
+        later connect to that port admissible: :func:`_is_local_address` admits a
+        loopback target only when this process bound the port itself, and
+        :func:`socket.socketpair` - which asyncio's proactor self-pipe and
+        starlette's ``TestClient`` portal both reach - binds a listener on an
+        ephemeral loopback port before connecting to it.
+        """
+
+        def guarded(sock, address, *args, **kwargs):
+            result = real(sock, address, *args, **kwargs)
+            _record_bound_port(sock)
+            return result
 
         return guarded
 
@@ -617,7 +549,7 @@ class _EgressGuard:
         """
 
         def guarded(instance, sock, address, *args, **kwargs):
-            if isinstance(address, tuple) and address and _is_local_host(address[0]):
+            if _is_local_address(sock, address):
                 return real(instance, sock, address, *args, **kwargs)
             raise self.refuse(name, address)
 
@@ -646,16 +578,15 @@ class _EgressGuard:
     def _refuse_inside_a_test(self, name, real):
         """Return a callable that refuses only while a test is executing.
 
-        Used for the child-process entry points. On Windows the standard library
-        itself shells out: ``platform.uname()`` runs ``cmd /c ver``, which
-        ``platform.system()`` reaches through any import that checks the
-        platform — ``aiohttp``, pulled in by ``openai`` 0.27, does so at module
-        scope — and pytest's own JUnit reporter calls ``platform.node()`` at
-        session finish. The prologue warms that cache so neither normally
-        happens, and this narrowing means a benign spawn from pytest's machinery
-        outside any test cannot fail a run either. Egress from *within* a test,
-        which is the case the guard exists for, is still refused, and every
-        socket, resolver and gRPC guard stays unconditional.
+        Used for the child-process entry points only, because on Windows the
+        standard library itself shells out - ``platform.uname()`` runs
+        ``cmd /c ver`` - from module-scope imports and from pytest's own JUnit
+        reporter.  The prologue warms that cache, and this narrowing keeps a
+        benign spawn from pytest's machinery outside any test from failing a
+        run.  Every socket, datagram, resolver and gRPC guard stays
+        unconditional.
+
+        See ``docs/testing/DECISION-LOG.md`` row D105.
         """
 
         def guarded(*args, **kwargs):
@@ -712,7 +643,18 @@ class _EgressGuard:
         self._patchers.append(patcher)
 
     def install(self):
-        """Install every connector, datagram, resolver and gRPC guard."""
+        """Install the bind recorder and every connector, datagram, resolver and
+        gRPC guard.
+
+        The bind recorder goes first, so no ephemeral loopback port can be bound
+        between installing the connect guards and installing it.
+        """
+        bind_patcher = patch.object(
+            socket.socket, "bind", self._guard_bind(socket.socket.bind)
+        )
+        bind_patcher.start()
+        self._patchers.append(bind_patcher)
+
         for attribute in ("connect", "connect_ex"):
             patcher = patch.object(
                 socket.socket,
@@ -892,12 +834,10 @@ _AMBIENT_CREDENTIAL_PATCH.start()
 
 # Populate platform's uname cache while no guard is installed. On Windows
 # ``platform.uname()`` obtains the OS version by running ``cmd /c ver`` in a
-# child process, and it is reached from ``platform.system()`` and
-# ``platform.node()`` — the first by any import that branches on the platform,
-# including ``aiohttp`` at module scope, which ``openai`` 0.27 imports, and the
-# second by pytest's JUnit reporter at session finish. One call here caches the
-# result for the whole process, so the child-process guard below never sees a
-# spawn the standard library itself needed.
+# child process, and both ``platform.system()`` and ``platform.node()`` reach it.
+# This one call caches the result for the whole process, so the child-process
+# guard below never sees a spawn the standard library itself needed.
+# See ``docs/testing/DECISION-LOG.md`` row D105.
 platform.uname()
 
 # Last step of the prologue: deny egress from here until pytest_unconfigure.
@@ -1024,8 +964,18 @@ def pytest_unconfigure(config):
     Runs after the last fixture teardown, so the egress guard is still in force
     while a session-scoped fixture unwinds and while a thread started by a test
     is still alive.
+
+    Invariant: the interpreter this run leaves behind is the one it entered - no
+    seeded variable, no credential patch, no injected builtin, no replaced
+    logging factory and no socket guard survives.
     """
     _EGRESS_GUARD.release()
+
+    # Installed at this module's scope; a run inside a larger session - an IDE
+    # test runner, or a second pytest invocation in one interpreter - would
+    # otherwise keep stamping `test_id` and `correlation_id` onto every record
+    # any code in the process emits.
+    logging.setLogRecordFactory(_BASE_LOG_RECORD_FACTORY)
 
     with contextlib.suppress(RuntimeError):
         _AMBIENT_CREDENTIAL_PATCH.stop()
@@ -1216,62 +1166,6 @@ def _install_missing_symbol(symbol_name, replacement=None):
             delattr(definer, symbol_name)
         for consumer in _loaded_consumers(symbol_name):
             setattr(consumer, symbol_name, sentinel)
-
-
-@contextlib.contextmanager
-def _rebind_importer_alias(importer_name, symbol, replacement):
-    """Point one importer's copied alias at ``replacement`` inside a block.
-
-    ``from app.core.security import verify_token`` copies the object into the
-    importing module's namespace, so restoring the exporter's attribute leaves
-    that copy in place. This binds the copy as well, and on exit replaces it
-    with ``symbol.baseline()`` — a stateless, fail-closed value — so neither
-    the stand-in nor any call it recorded is visible to a later test.
-
-    ``importer_name`` may be absent from :data:`sys.modules` on entry and be
-    imported inside the block, so the module is looked up again on exit.
-    """
-    importer = sys.modules.get(importer_name)
-    if importer is not None and hasattr(importer, symbol.attribute):
-        setattr(importer, symbol.attribute, replacement)
-    try:
-        yield
-    finally:
-        importer = sys.modules.get(importer_name)
-        if importer is not None and hasattr(importer, symbol.attribute):
-            setattr(importer, symbol.attribute, symbol.baseline())
-
-
-@contextlib.contextmanager
-def _shimmed(symbols):
-    """Install a fresh stand-in for each of ``symbols`` for one test.
-
-    For every record the stand-in is bound on ``symbol.exporter`` and on each
-    module in ``symbol.importers``, so a module that has already copied the
-    alias observes the same object as one importing it for the first time
-    inside this block. Every binding is undone on exit: the exporter's
-    attribute returns to the state it had — deleted when production defines no
-    such name — and each importer's alias becomes ``symbol.baseline()``.
-
-    Yields a ``{attribute: replacement}`` mapping so a fixture can hand a
-    stand-in to its test.
-    """
-    with contextlib.ExitStack() as stack:
-        replacements = {}
-        for symbol in symbols:
-            exporter = importlib.import_module(symbol.exporter)
-            replacement = symbol.factory()
-            replacements[symbol.attribute] = replacement
-            stack.enter_context(
-                _install_missing_symbol(
-                    exporter, symbol.attribute, replacement
-                )
-            )
-            for importer_name in symbol.importers:
-                stack.enter_context(
-                    _rebind_importer_alias(importer_name, symbol, replacement)
-                )
-        yield replacements
 
 
 # Helpers used by the fixtures below.
@@ -1507,9 +1401,9 @@ def bigquery_settings():
 
 
 # --------------------------------------------------------------------------- #
-# Module fixtures.  Each installs, through :func:`_shimmed`, the stand-ins its
-# import graph needs, on the exporting module and on every importer that copies
-# the alias.
+# Module fixtures.  Each installs, through :func:`_install_missing_symbol`, the
+# stand-ins its import graph needs, on the module that defines the name and on
+# every already-loaded module that captured it.
 #
 # Invariant: only ``app.tasks.response_generator`` is evicted from
 # ``sys.modules``.  ``app.db.firestore``, ``app.schema.tweet``,
@@ -1586,14 +1480,14 @@ def app_module():
     installed for the whole test, so a test body may import that module
     itself.
 
-    * ``verify_token`` on ``app.core.security`` â€” imported by
+    * ``verify_token`` on ``app.core.security`` - imported by
       ``app/api/dependencies.py`` line 3.  That module exposes only
       ``create_access_token``, ``verify_password``, ``get_password_hash`` and
       ``pwd_context``.
-    * ``TwitterService`` on ``app.services.twitter_service`` â€” imported by
+    * ``TwitterService`` on ``app.services.twitter_service`` - imported by
       ``app/api/routes/tweets.py`` line 6.  That module exposes only
       ``TwitterStreamListener`` and ``start_twitter_stream``.
-    * ``LLMService`` on ``app.services.llm_service`` â€” imported by
+    * ``LLMService`` on ``app.services.llm_service`` - imported by
       ``app/api/routes/tweets.py`` line 7 and by
       ``app/tasks/tweet_processor.py`` line 4, which ``app/main.py`` line 5
       pulls in.

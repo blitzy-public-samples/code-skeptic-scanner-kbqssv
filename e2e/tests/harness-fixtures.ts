@@ -1,38 +1,41 @@
 /**
  * The `test` and `expect` every spec in `e2e/tests` imports.
  *
- * `e2e/playwright.config.ts` sets `testMatch: '**​/*.spec.ts'`, so this module is not collected as a
- * spec; it exists to extend Playwright's `test` with one automatic fixture that confines the browser
- * to the harness.
+ * `e2e/playwright.config.ts` sets `testMatch` to the recursive `.spec.ts` glob, so this module is not
+ * collected as a spec; it exists to extend Playwright's `test` with one automatic fixture that confines
+ * the browser to the harness and holds every spec to explicit request interception.
  *
- * ## Why a context-wide rule and not a per-spec `page.route`
+ * The origin comes from `../harness-origin`, the same module the runner and the Vite config read, so
+ * a clone-specific port cannot make this fixture treat the real harness as external.
  *
- * A spec's `page.route('**​/tweets*', ...)` covers the requests that spec anticipated, on the page
- * object it holds. Playwright documents two gaps in that: a page route does not intercept requests
- * a Service Worker makes, and it does not intercept a popup's very first request. A third gap is
- * simply forgetting - a new spec that installs no route has no interception at all, and its
- * component's mount-time fetch would go wherever its base URL points.
+ * ## What the automatic fixture enforces
  *
- * `noEgress` closes all three by registering the rule on the **context**, before the page exists, so
- * it applies to that page, to every other page opened in the context, to popups, and to workers.
- * Anything not addressed to the harness origin is aborted. `serviceWorkers: 'block'` in the runner
- * config means no worker registers in the first place, and the Chromium switches there deny egress
- * below the route layer as well; this fixture is the layer that makes a refusal *attributable*, by
- * naming the URL in the test output.
+ * It registers one catch-all `context.route` rule, on the recursive wildcard glob, before the page
+ * exists, so it covers that page,
+ * every other page opened in the context, popups and workers - the three cases a per-spec
+ * `page.route` misses, the third being simply forgetting to install one. Playwright evaluates route
+ * handlers most-recently-registered-first and this rule is installed by an automatic fixture, so a
+ * `page.route(...)` or `context.route(...)` a spec adds is matched first and wins. A request that
+ * reaches this rule is therefore provably one no spec claimed, and it is dispositioned by origin:
  *
- * ## Order relative to a spec's own routes
+ * | Request | Disposition |
+ * |---------|-------------|
+ * | Not the harness origin | aborted `blockedbyclient`, recorded, thrown at teardown |
+ * | Harness origin, a {@link HARNESS_API_PATHS} path | passed to the dev server, which fails it closed, recorded, thrown at teardown |
+ * | Harness origin, anything else | `route.fallback()` - documents, modules, assets |
  *
- * Playwright evaluates route handlers most-recently-registered first. This rule is installed by an
- * automatic fixture, before the test body runs, so a `page.route(...)` or `context.route(...)` the
- * spec adds is matched first and wins. Mocking a request is therefore unchanged; only a request no
- * handler claimed reaches this rule, and it is aborted rather than performed.
+ * Both ledgers are read at teardown rather than in the request, because every caller in this
+ * codebase swallows or replaces what it is handed, so a refusal expressed only as a response can be
+ * absorbed and the test can still pass.
+ *
+ * @see docs/testing/DECISION-LOG.md - rows D130 and D131.
  *
  * @example
  * ```ts
- * import { expect, test } from './harness-fixtures';
+ * import { expect, HARNESS_ORIGIN, test } from './harness-fixtures';
  *
  * test('the feed renders', async ({ page }) => {
- *   await page.route('**​/tweets*', (route) => route.fulfill({ json: [] }));
+ *   await page.route(`${HARNESS_ORIGIN}/undefined/tweets*`, (route) => route.fulfill({ json: [] }));
  *   await page.goto('/');
  *   await expect(page.getByText('Real-Time Tweet Feed')).toBeVisible();
  * });
@@ -41,14 +44,28 @@
 
 import { test as base, expect } from '@playwright/test';
 
+import { HARNESS_ORIGIN } from '../harness-origin';
+
+export { HARNESS_ORIGIN };
+
 /**
- * Origin the harness is served from, matching `server.host` and `server.port` in
- * `e2e/vite.harness.config.ts` and `baseURL` in `e2e/playwright.config.ts`.
+ * Pathnames the mounted components request, which `e2e/vite.harness.config.ts` answers
+ * `503 harness-api-not-intercepted` when no spec has intercepted them.
+ *
+ * A spec drives one of these by installing its own route for it; reaching the dev server means it
+ * did not. Keep in step with `HARNESS_API_SURFACE` in that config.
  */
-export const HARNESS_ORIGIN = 'http://127.0.0.1:4173';
+const HARNESS_API_PATHS: readonly string[] = Object.freeze([
+  '/undefined/tweets',
+  '/api/trends',
+  '/api/config/twitter',
+]);
 
 /** Every URL aborted by {@link test}'s `noEgress` fixture, in the order they were seen. */
 const abortedUrls: string[] = [];
+
+/** Every harness API request that reached the dev server, in the order they were seen. */
+const unInterceptedApiRequests: string[] = [];
 
 /**
  * URLs the current test attempted that were not addressed to the harness.
@@ -57,6 +74,15 @@ const abortedUrls: string[] = [];
  */
 export function abortedRequestUrls(): readonly string[] {
   return Object.freeze([...abortedUrls]);
+}
+
+/**
+ * Harness API requests the current test issued without installing a route for them.
+ *
+ * @returns A frozen snapshot, oldest first, each entry `<METHOD> <url>`.
+ */
+export function unInterceptedApiRequestUrls(): readonly string[] {
+  return Object.freeze([...unInterceptedApiRequests]);
 }
 
 /**
@@ -71,37 +97,68 @@ function isHarnessRequest(url: string): boolean {
   return url === HARNESS_ORIGIN || url.startsWith(`${HARNESS_ORIGIN}/`);
 }
 
+/**
+ * Whether a harness-origin URL addresses one of {@link HARNESS_API_PATHS}.
+ *
+ * @param url - Absolute request URL, already known to be same-origin.
+ */
+function isHarnessApiRequest(url: string): boolean {
+  const { pathname } = new URL(url);
+  return HARNESS_API_PATHS.includes(pathname);
+}
+
 export const test = base.extend<{ noEgress: void }>({
   /**
-   * Aborts every request the context makes to anything but the harness origin.
+   * Aborts every request to anything but the harness origin, and records every harness API request
+   * no spec route claimed. Fails the test at teardown on either.
    *
-   * `auto: true`, so a spec gets it without naming it. Registered on the context rather than the
-   * page, and before the test body runs, so a spec's own routes take precedence and this rule only
-   * sees what nothing else claimed.
+   * `auto: true`, so a spec gets it without naming it, and it cannot be opted out of.
    */
   noEgress: [
     async ({ context }, use, testInfo) => {
       abortedUrls.length = 0;
+      unInterceptedApiRequests.length = 0;
 
       await context.route('**/*', async (route) => {
-        const url = route.request().url();
-        if (isHarnessRequest(url)) {
-          await route.fallback();
+        const request = route.request();
+        const url = request.url();
+
+        if (!isHarnessRequest(url)) {
+          abortedUrls.push(url);
+          await route.abort('blockedbyclient');
           return;
         }
-        abortedUrls.push(url);
-        await route.abort('blockedbyclient');
+
+        if (isHarnessApiRequest(url)) {
+          unInterceptedApiRequests.push(`${request.method()} ${url}`);
+        }
+
+        await route.fallback();
       });
 
       await use();
 
+      const failures: string[] = [];
+
       if (abortedUrls.length > 0) {
-        const detail = abortedUrls.map((url) => `  - ${url}`).join('\n');
-        throw new Error(
-          `${testInfo.title} attempted ${abortedUrls.length} request(s) outside the harness ` +
-            `origin ${HARNESS_ORIGIN}. Each was aborted, not performed:\n${detail}\n` +
-            'Mock the request with page.route(...) instead of letting it leave the browser.',
+        failures.push(
+          `${abortedUrls.length} request(s) outside the harness origin ${HARNESS_ORIGIN}. Each was ` +
+            'aborted, not performed. Mock the request with page.route(...) instead of letting it ' +
+            `leave the browser:\n${abortedUrls.map((url) => `  - ${url}`).join('\n')}`,
         );
+      }
+
+      if (unInterceptedApiRequests.length > 0) {
+        failures.push(
+          `${unInterceptedApiRequests.length} harness API request(s) reached the dev server, which ` +
+            'answered 503 harness-api-not-intercepted. A flow that depends on one of these must ' +
+            'install its own route and supply its own payload:\n' +
+            unInterceptedApiRequests.map((entry) => `  - ${entry}`).join('\n'),
+        );
+      }
+
+      if (failures.length > 0) {
+        throw new Error(`${testInfo.title} breached harness isolation.\n${failures.join('\n')}`);
       }
     },
     { auto: true },
