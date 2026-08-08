@@ -7,18 +7,19 @@
  *
  * @see frontend/TESTING.md - the dual-transformer arrangement, and every `moduleNameMapper`
  *   substitution together with the importer each one serves.
- * @see docs/testing/DECISION-LOG.md - section 3, the single source of truth for why each setting
- *   below is what it is, including the options and shims deliberately not used.
+ * @see docs/testing/DECISION-LOG.md - rows D30-D37 for the transforms, mappers, coverage gate and
+ *   reporters, D71 for the coverage denominator, D92 for the shims not installed, and D146 for the
+ *   timezone pin.
  */
 
 'use strict';
 
 /*
- * Timezone pin: every suite renders local date parts in UTC. Set here, in the main process, because
- * the `process.env` a test file sees is a sandboxed copy with no libuv-backed setter - assigning
- * `TZ` from inside a suite leaves V8's cached zone untouched.
+ * Timezone pin, set in the main process before any worker is spawned: every suite renders local date
+ * parts in UTC.
  *
  * @see frontend/src/utils/dateUtils.test.ts - the `formatDate` assertions this pin governs.
+ * @see docs/testing/DECISION-LOG.md - row D146.
  */
 process.env.TZ = 'UTC';
 
@@ -33,6 +34,31 @@ const TSCONFIG = {
   allowJs: true,
   target: 'ES2020',
 };
+
+/*
+ * Canonical test identity, shared with `src/test-utils/handlers.ts`:
+ *
+ *   <rootDir-relative test file, forward slashes> > <every enclosing describe title and the leaf title,
+ *                                                    joined by a single space>
+ *
+ * `<testcase classname>` carries the left side and `<testcase name>` the right, so the two joined by ` > `
+ * are the string `currentTestId()` returns and stamps on every intercepted-request and contract-violation
+ * record. The right side is also Jest's own `currentTestName`, so it is a valid `jest -t` pattern verbatim.
+ *
+ * `jest-junit` builds its `{filepath}` with `path.relative`, so on Windows it arrives with backslashes;
+ * `{title}` is the leaf title alone and `{classname}` the ancestor titles joined by `ancestorSeparator`.
+ * The two helpers below are what the reporter options apply to those variables.
+ *
+ * @see frontend/src/test-utils/junit-correlation.test.ts - the suite that holds both halves to this shape.
+ */
+const toPosixPath = (value) => String(value).replace(/\\/g, '/');
+
+/**
+ * The already-joined ancestor titles (`{classname}`) followed by the leaf title, in the order and with the
+ * separator Jest reports them in. A test with no enclosing `describe` is its leaf title alone.
+ */
+const toFullTestName = (joinedAncestorTitles, title) =>
+  joinedAncestorTitles ? `${joinedAncestorTitles} ${title}` : title;
 
 module.exports = {
   testEnvironment: 'jsdom',
@@ -101,12 +127,19 @@ module.exports = {
   coverageReporters: ['text-summary', 'lcov', 'json', 'json-summary', 'cobertura'],
 
   /*
-   * Console output, then JUnit XML at `frontend/reports/jest-junit.xml`. `<testcase classname>` is
-   * the test file and `<testcase name>` the full test name - the same pair
-   * `src/test-utils/handlers.ts` stamps, separators normalised to `/`, on every intercepted-request
-   * and contract-violation record. `reportTestSuiteErrors` emits a suite that failed to load,
-   * `addFileAttribute` the `file` attribute CI annotators read, `includeConsoleOutput` the console
-   * lines Jest buffers, under `<system-out>`.
+   * Console output, then JUnit XML at `frontend/reports/jest-junit.xml`, with every `<testcase>` carrying
+   * the canonical identity defined above: `classname` the `/`-separated test file, `name` the ancestor
+   * titles and the leaf title. Two tests that share a leaf title under different `describe` blocks are
+   * therefore distinct, and each `<testcase>` matches the ledger entry of the requests it made.
+   *
+   * The templates are functions rather than `{...}` strings because a string cannot normalise a separator
+   * and `{title}` expands to the leaf title alone. `ancestorSeparator` is the single space Jest joins those
+   * titles with, and it reaches the emitted name through the `{classname}` variable.
+   *
+   * `reportTestSuiteErrors` emits a suite that failed to load - jest-junit names such a suite by its raw
+   * platform path and cannot be templated there. `addFileAttribute` adds the `file` attribute CI annotators
+   * read, also the raw platform path; `includeConsoleOutput` carries the console lines Jest buffers into
+   * `<system-out>`.
    */
   reporters: [
     'default',
@@ -115,10 +148,10 @@ module.exports = {
       {
         outputDirectory: '<rootDir>/reports',
         outputName: 'jest-junit.xml',
-        suiteNameTemplate: '{filepath}',
-        classNameTemplate: '{filepath}',
-        titleTemplate: '{title}',
-        ancestorSeparator: ' > ',
+        suiteNameTemplate: ({ filepath }) => toPosixPath(filepath),
+        classNameTemplate: ({ filepath }) => toPosixPath(filepath),
+        titleTemplate: ({ classname, title }) => toFullTestName(classname, title),
+        ancestorSeparator: ' ',
         addFileAttribute: 'true',
         reportTestSuiteErrors: 'true',
         includeConsoleOutput: 'true',

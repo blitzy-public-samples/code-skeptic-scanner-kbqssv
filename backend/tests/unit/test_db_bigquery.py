@@ -23,9 +23,9 @@ Both reads of the project are **class** attribute reads
 The second half asserts the behaviour underneath
     The ``bigquery_settings`` fixture from ``backend/tests/conftest.py``
     substitutes a project-carrying stand-in for the ``Settings`` name bound
-    into ``app.db.bigquery``, which is what makes all three functions
-    reachable.  ``app.db.bigquery.Client`` is patched alongside it, so no real
-    client is ever constructed.
+    into ``app.db.bigquery``; all three functions are reachable while it holds.
+    ``app.db.bigquery.Client`` is patched alongside it, so no real client is
+    ever constructed.
 
 What this module asserts
 ------------------------
@@ -48,9 +48,13 @@ Insert return discipline
     ``<project>.tweet_analytics.tweets`` with the payload wrapped in a
     single-element list.
 Error disposition
-    The module holds no ``try``/``except``, so an exception raised by
-    ``insert_rows_json`` propagates to the caller.  ``update_tweet`` in
-    ``app/db/firestore.py`` swallows and returns ``False``; each module's
+    The module holds no ``try``/``except`` at all, so a failure raised at any
+    link reaches the caller as the instance that was raised: the ``Client``
+    constructor, ``client.query``, ``query_job.result`` and
+    ``insert_rows_json`` alike.  Each link is asserted separately, because each
+    is a distinct boundary and a clause added at one of them would leave the
+    others' assertions green.  ``update_tweet`` in ``app/db/firestore.py``
+    swallows the equivalent failure and returns ``False``; each module's
     disposition is asserted as it is, in its own suite.
 Diagnostics
     The only diagnostic this module emits is a ``print`` on the
@@ -80,105 +84,97 @@ Shared setup — the environment normalisation, the Google credential
 neutraliser and the network guard — comes from ``backend/tests/conftest.py``.
 No real client, credential, socket or clock is used.
 
-Reasoning for every choice in this module: ``docs/testing/DECISION-LOG.md``.
-``docs/testing/TRACEABILITY-MATRIX.md`` records the construct each test
-covers.
-"""
+.. seealso::
 
+   ``docs/testing/DECISION-LOG.md`` rows D150 (the ``Settings`` stand-in that
+   makes the second half reachable), D149 (the patch boundary), D25-D27 and
+   D105 (the credential neutraliser and egress guard) and D53 (production
+   defects are pinned, not repaired).
+   ``docs/testing/TRACEABILITY-MATRIX.md`` records the construct each test
+   covers.
+"""
 import pytest
 from unittest.mock import MagicMock, patch
-
 import app.db.bigquery as bigquery
 from tests.factories import make_analytics_row
-
 pytestmark = pytest.mark.unit
 
 
-# The contract this suite pins.  Every literal below is read from
-# ``app/db/bigquery.py`` or from the ``bigquery_settings`` stand-in; none is
-# recomputed from production code.
-
-#: The field name both class-attribute reads request, and the name the
-#: resulting ``AttributeError`` carries.
 MISSING_FIELD_NAME = "GOOGLE_CLOUD_PROJECT"
-
-#: ``GOOGLE_CLOUD_PROJECT`` on the stand-in the ``bigquery_settings`` fixture
-#: installs.  :func:`test_bigquery_settings_substitutes_the_expected_project`
-#: keeps this tied to the fixture.
 STAND_IN_PROJECT = "test-project"
-
-#: The table the ``table_id`` f-string addresses once the stand-in supplies the
-#: project: ``f"{Settings.GOOGLE_CLOUD_PROJECT}.tweet_analytics.tweets"``.
 EXPECTED_TABLE_ID = "test-project.tweet_analytics.tweets"
-
-#: Stable leading text of the only diagnostic the module emits, written to
-#: standard output by ``print`` on the errors-returned path.
 DIAGNOSTIC_PREFIX = "Errors occurred while inserting rows:"
-
-#: Column mappings the fake result set carries, in ``SELECT`` order.  Each is
-#: wrapped in a :class:`_MappingRow` and is what ``dict(row)`` must reproduce.
 QUERY_ROW_MAPPINGS = ({"a": 1}, {"a": 2})
-
-#: What ``run_query`` must return for :data:`QUERY_ROW_MAPPINGS`.
 EXPECTED_QUERY_RESULT = [{"a": 1}, {"a": 2}]
-
-#: Query text handed to ``run_query``.  Never executed: ``client.query`` is a
-#: mock, so the text is only ever compared.
 SAMPLE_QUERY = "SELECT a FROM `test-project.tweet_analytics.tweets`"
-
-#: Shapes ``insert_rows_json`` returns that make the ``if errors:`` gate at
-#: line 25 truthy.  The first is the per-row error structure the BigQuery
-#: client documents; the rest are minimal truthy sequences.
 NON_EMPTY_ERROR_PAYLOADS = (
     [{"index": 0, "errors": [{"reason": "invalid", "message": "bad row"}]}],
     [{"index": 0}],
     ["unstructured failure"],
 )
-
-#: Shapes ``insert_rows_json`` returns that leave the gate falsy: the empty
-#: list the client returns on success, and ``None``, the other falsy value the
-#: gate admits.
 EMPTY_ERROR_PAYLOADS = ([], None)
+
+#: Failure types injected at the module's four unguarded links.  ``Exception``
+#: is included deliberately: it is the type the bare clause in
+#: ``app/db/firestore.py`` names, so a clause of that shape added here would
+#: stop the exception these cases expect to arrive.  The narrower types are
+#: subclasses of it, and none of them is caught either.
+PROPAGATED_FAILURES = (
+    pytest.param(Exception, id="exception"),
+    pytest.param(RuntimeError, id="runtimeerror"),
+    pytest.param(ConnectionError, id="connectionerror"),
+)
+
+#: Messages carried by the injected failures, one per link, each distinct, so a
+#: propagated exception identifies the link it was raised at as well as its
+#: type.
+CLIENT_CONSTRUCTION_FAILURE_MESSAGE = "credentials could not be resolved"
+QUERY_SUBMISSION_FAILURE_MESSAGE = "the query was rejected"
+RESULT_RESOLUTION_FAILURE_MESSAGE = "the job did not complete"
+INSERT_FAILURE_MESSAGE = "the streaming insert failed"
+
+#: Initial value of a variable a completed call would overwrite.  A propagation
+#: case finding it still in place has established that the function produced no
+#: value at all -- neither a row list, nor ``True``, nor ``False``.
+UNREACHED = object()
+
+
+from types import SimpleNamespace
+
+ALTERNATIVE_PROJECT = "another-test-project"
+
+ALTERNATIVE_TABLE_ID = "another-test-project.tweet_analytics.tweets"
+
+TABLE_ID_SUFFIX = ".tweet_analytics.tweets"
+
+QUERY_FAILURES = (
+    pytest.param(RuntimeError, "job submission refused", id="runtimeerror"),
+    pytest.param(ValueError, "malformed query text", id="valueerror"),
+    pytest.param(Exception, "boom", id="exception"),
+)
 
 
 class _MappingRow:
-    """A result row that converts through ``dict`` the way a real row does.
-
-    ``google.cloud.bigquery.table.Row`` exposes ``keys`` and ``__getitem__``
-    and no ``__iter__``, so ``dict(row)`` resolves it through the mapping
-    protocol.  This stand-in exposes the same two members, which is what
-    ``run_query``'s ``[dict(row) for row in results]`` consumes.
-    """
 
     def __init__(self, mapping):
         self._mapping = dict(mapping)
+        self.conversions = 0
 
     def keys(self):
-        """Return the column names, as the mapping protocol requires."""
+        self.conversions += 1
         return self._mapping.keys()
 
     def __getitem__(self, key):
-        """Return the value of column ``key``."""
         return self._mapping[key]
 
     def __repr__(self):
-        """Return a representation naming the columns, for failure output."""
         return "_MappingRow({0!r})".format(self._mapping)
 
 
 @pytest.fixture
 def mock_bigquery_client_class(bigquery_settings):
-    """Yield the ``MagicMock`` replacing ``app.db.bigquery.Client``.
-
-    Requesting this fixture also applies ``bigquery_settings``, so the two
-    class-attribute reads resolve and all three functions become reachable.
-    ``Client`` is patched on ``app.db.bigquery`` — the module that bound the
-    name — so ``get_bq_client`` cannot construct a real client and no
-    credential or socket is required.
-
-    Yields the patched class.  Its ``return_value`` is the client instance
-    every call to ``get_bq_client`` hands back; ``mock_bigquery_client``
-    yields that instance directly.
+    """Patch the subject-bound Client while bigquery_settings supplies the
+    class attribute production reads.
     """
     with patch.object(bigquery, "Client") as client_class:
         client_class.return_value = MagicMock(name="bigquery_client")
@@ -187,74 +183,51 @@ def mock_bigquery_client_class(bigquery_settings):
 
 @pytest.fixture
 def mock_bigquery_client(mock_bigquery_client_class):
-    """Yield the client instance ``get_bq_client`` returns while patched.
-
-    Configure ``query`` or ``insert_rows_json`` on it to drive ``run_query``
-    and ``insert_tweet_analytics``.
-    """
     return mock_bigquery_client_class.return_value
+
+
+class _ConversionRecordingRow(_MappingRow):
+    """A row that counts the ``dict(row)`` conversions applied to it.
+
+    ``run_query`` converts each row through ``dict``, which resolves a
+    mapping-like object through ``keys``.  :attr:`conversions` therefore counts
+    the conversions the subject performed, which is what a propagation case
+    asserts stayed at zero.
+    """
+
+    def __init__(self, mapping):
+        super().__init__(mapping)
+        self.conversions = 0
+
+    def keys(self):
+        """Return the column names, recording that a conversion happened."""
+        self.conversions += 1
+        return super().keys()
 
 
 @pytest.fixture
 def mock_query_result(mock_bigquery_client):
-    """Wire ``client.query(...).result()`` to :data:`QUERY_ROW_MAPPINGS`.
-
-    Yields the list of :class:`_MappingRow` the fake result set contains, so a
-    test can assert against the rows it was given rather than restating them.
-    """
     rows = [_MappingRow(mapping) for mapping in QUERY_ROW_MAPPINGS]
     mock_bigquery_client.query.return_value.result.return_value = rows
     return rows
 
 
-# --------------------------------------------------------------------------- #
-# Current behaviour as shipped.
-#
-# No test in this section requests ``bigquery_settings`` or any fixture
-# built on it: each one runs against ``app.db.bigquery`` exactly as
-# imported, which is what makes it a record of the module's unmodified
-# behaviour.
-# --------------------------------------------------------------------------- #
-
-
 def test_get_bq_client_raises_attribute_error():
-    """``get_bq_client`` raises ``AttributeError`` naming the missing field.
-
-    The call reads ``Settings.GOOGLE_CLOUD_PROJECT`` off the class to build the
-    ``project`` argument.  pydantic v1 keeps declared fields in
-    ``Settings.__fields__`` rather than in the class namespace, so the read
-    fails before ``Client`` is called.
-    """
     with pytest.raises(AttributeError, match=MISSING_FIELD_NAME):
         bigquery.get_bq_client()
 
 
 def test_run_query_raises_attribute_error():
-    """``run_query`` raises ``AttributeError`` naming the missing field.
-
-    ``run_query`` delegates to ``get_bq_client`` on its first line, so the
-    failure reaches the caller before any query is issued.
-    """
     with pytest.raises(AttributeError, match=MISSING_FIELD_NAME):
         bigquery.run_query(SAMPLE_QUERY)
 
 
 def test_insert_tweet_analytics_raises_attribute_error():
-    """``insert_tweet_analytics`` raises ``AttributeError`` naming the field.
-
-    Its first line delegates to ``get_bq_client``, so this call fails at the
-    same read as :func:`test_get_bq_client_raises_attribute_error`.
-    """
     with pytest.raises(AttributeError, match=MISSING_FIELD_NAME):
         bigquery.insert_tweet_analytics(make_analytics_row(kind="tweet"))
 
 
 def test_attribute_error_names_the_settings_class_and_the_field():
-    """The raised ``AttributeError`` identifies both the class and the field.
-
-    The message names ``Settings`` and ``GOOGLE_CLOUD_PROJECT``: the object the
-    read was attempted on, and the attribute that could not be resolved.
-    """
     with pytest.raises(AttributeError) as excinfo:
         bigquery.get_bq_client()
 
@@ -264,14 +237,6 @@ def test_attribute_error_names_the_settings_class_and_the_field():
 
 
 def test_insert_tweet_analytics_raises_when_only_get_bq_client_is_patched():
-    """Replacing ``get_bq_client`` alone leaves ``insert_tweet_analytics``
-    raising ``AttributeError``.
-
-    The ``table_id`` f-string reads ``Settings.GOOGLE_CLOUD_PROJECT`` a second
-    time, after ``get_bq_client`` has already returned.  The two reads are
-    therefore independent, and the client this test supplies is never used:
-    ``get_bq_client`` is called, and ``insert_rows_json`` is not reached.
-    """
     client = MagicMock(name="bigquery_client")
 
     with patch.object(
@@ -285,42 +250,15 @@ def test_insert_tweet_analytics_raises_when_only_get_bq_client_is_patched():
 
 
 def test_module_level_client_is_constructed_at_import():
-    """``bq_client`` exists on the module, built while it was imported.
-
-    The assignment at module scope runs during collection, before any fixture,
-    and completes without credentials or network.  Nothing in production reads
-    the attribute: ``get_bq_client`` builds a new client on every call.
-    """
     assert hasattr(bigquery, "bq_client")
     assert bigquery.bq_client is not None
 
 
-# --------------------------------------------------------------------------- #
-# Behaviour under the ``Settings`` stand-in.
-#
-# Every test below reaches production through ``mock_bigquery_client_class`` or
-# a fixture built on it, which applies ``bigquery_settings`` and patches
-# ``app.db.bigquery.Client`` together.  Both patches are released when the test
-# ends.
-# --------------------------------------------------------------------------- #
-
-
 def test_bigquery_settings_substitutes_the_expected_project(bigquery_settings):
-    """The stand-in carries :data:`STAND_IN_PROJECT` as its project.
-
-    This is the precondition behind :data:`EXPECTED_TABLE_ID` and the
-    ``project`` keyword asserted below.  Asserting it directly keeps those
-    literals tied to the fixture that supplies the value.
-    """
     assert bigquery_settings.GOOGLE_CLOUD_PROJECT == STAND_IN_PROJECT
 
 
 def test_get_bq_client_passes_the_project_keyword(mock_bigquery_client_class):
-    """``get_bq_client`` constructs one client, passing ``project``.
-
-    The project comes from the substituted ``Settings``, and it is supplied as
-    a keyword argument rather than positionally.
-    """
     bigquery.get_bq_client()
 
     mock_bigquery_client_class.assert_called_once_with(
@@ -331,7 +269,6 @@ def test_get_bq_client_passes_the_project_keyword(mock_bigquery_client_class):
 def test_get_bq_client_returns_the_constructed_client(
     mock_bigquery_client_class, mock_bigquery_client
 ):
-    """``get_bq_client`` returns whatever ``Client`` produced, unwrapped."""
     assert bigquery.get_bq_client() is mock_bigquery_client
     assert mock_bigquery_client_class.call_count == 1
 
@@ -339,12 +276,6 @@ def test_get_bq_client_returns_the_constructed_client(
 def test_run_query_returns_one_dict_per_row(
     mock_bigquery_client, mock_query_result
 ):
-    """``run_query`` returns each row converted through ``dict``, in order.
-
-    The rows are mapping-like objects rather than dictionaries, so the returned
-    value is the product of production's ``dict(row)`` conversion and not a
-    pass-through of the fixture's own containers.
-    """
     result = bigquery.run_query(SAMPLE_QUERY)
 
     assert result == EXPECTED_QUERY_RESULT
@@ -355,7 +286,6 @@ def test_run_query_returns_one_dict_per_row(
 def test_run_query_passes_the_query_text_unchanged(
     mock_bigquery_client, mock_query_result
 ):
-    """``run_query`` hands the query to ``client.query`` once, positionally."""
     bigquery.run_query(SAMPLE_QUERY)
 
     mock_bigquery_client.query.assert_called_once_with(SAMPLE_QUERY)
@@ -364,18 +294,12 @@ def test_run_query_passes_the_query_text_unchanged(
 def test_run_query_resolves_the_job_before_reading_rows(
     mock_bigquery_client, mock_query_result
 ):
-    """``run_query`` calls ``result()`` on the job ``query`` returned."""
     bigquery.run_query(SAMPLE_QUERY)
 
     mock_bigquery_client.query.return_value.result.assert_called_once_with()
 
 
 def test_run_query_returns_empty_list_for_no_rows(mock_bigquery_client):
-    """``run_query`` returns ``[]`` when the result set carries no rows.
-
-    The comprehension yields nothing and the empty list reaches the caller;
-    no exception is raised for an empty result.
-    """
     mock_bigquery_client.query.return_value.result.return_value = []
 
     assert bigquery.run_query(SAMPLE_QUERY) == []
@@ -389,11 +313,6 @@ def test_run_query_returns_empty_list_for_no_rows(mock_bigquery_client):
 def test_insert_tweet_analytics_returns_true_without_errors(
     mock_bigquery_client, errors
 ):
-    """``insert_tweet_analytics`` returns ``True`` for a falsy error report.
-
-    Both values ``insert_rows_json`` can return that leave the ``if errors:``
-    gate falsy reach the final ``return True``.
-    """
     mock_bigquery_client.insert_rows_json.return_value = errors
 
     result = bigquery.insert_tweet_analytics(make_analytics_row(kind="tweet"))
@@ -404,11 +323,6 @@ def test_insert_tweet_analytics_returns_true_without_errors(
 def test_insert_tweet_analytics_prints_nothing_without_errors(
     mock_bigquery_client, capsys
 ):
-    """``insert_tweet_analytics`` writes nothing when the insert reports none.
-
-    The success path holds no diagnostic.  The errors-returned counterpart is
-    :func:`test_insert_tweet_analytics_prints_the_returned_errors`.
-    """
     mock_bigquery_client.insert_rows_json.return_value = []
 
     bigquery.insert_tweet_analytics(make_analytics_row(kind="tweet"))
@@ -425,10 +339,6 @@ def test_insert_tweet_analytics_prints_nothing_without_errors(
 def test_insert_tweet_analytics_returns_false_with_errors(
     mock_bigquery_client, errors
 ):
-    """``insert_tweet_analytics`` returns ``False`` for a truthy error report.
-
-    The value is ``False`` itself and not merely falsy.
-    """
     mock_bigquery_client.insert_rows_json.return_value = errors
 
     result = bigquery.insert_tweet_analytics(make_analytics_row(kind="tweet"))
@@ -439,12 +349,6 @@ def test_insert_tweet_analytics_returns_false_with_errors(
 def test_insert_tweet_analytics_prints_the_returned_errors(
     mock_bigquery_client, capsys
 ):
-    """The errors-returned path writes the errors to standard output.
-
-    The module emits this through ``print`` and holds no logger, so the
-    diagnostic appears on captured standard output.  Both the fixed prefix and
-    the string form of the interpolated report are present.
-    """
     errors = NON_EMPTY_ERROR_PAYLOADS[0]
     mock_bigquery_client.insert_rows_json.return_value = errors
 
@@ -458,13 +362,6 @@ def test_insert_tweet_analytics_prints_the_returned_errors(
 def test_insert_tweet_analytics_propagates_insert_failure(
     mock_bigquery_client,
 ):
-    """An exception from ``insert_rows_json`` reaches the caller unchanged.
-
-    The module holds no ``try``/``except``, so the exception is neither
-    swallowed nor converted to a ``False`` return.  ``update_tweet`` in
-    ``app/db/firestore.py`` does swallow; the two dispositions differ and each
-    is asserted as it is.
-    """
     mock_bigquery_client.insert_rows_json.side_effect = RuntimeError("boom")
 
     with pytest.raises(RuntimeError, match="boom"):
@@ -474,11 +371,6 @@ def test_insert_tweet_analytics_propagates_insert_failure(
 def test_insert_tweet_analytics_prints_nothing_when_the_insert_raises(
     mock_bigquery_client, capsys
 ):
-    """A propagating insert failure produces no diagnostic output.
-
-    The ``print`` sits behind the ``if errors:`` gate, which a raised exception
-    never reaches, so the only record of the failure is the exception itself.
-    """
     mock_bigquery_client.insert_rows_json.side_effect = RuntimeError("boom")
 
     with pytest.raises(RuntimeError):
@@ -491,11 +383,6 @@ def test_insert_tweet_analytics_prints_nothing_when_the_insert_raises(
 def test_insert_tweet_analytics_targets_the_configured_table(
     mock_bigquery_client,
 ):
-    """The insert addresses ``<project>.tweet_analytics.tweets`` with the row.
-
-    Both arguments are passed positionally, the payload wrapped in a
-    single-element list, and the row reaches the client unchanged.
-    """
     analytics_data = make_analytics_row(kind="tweet")
     mock_bigquery_client.insert_rows_json.return_value = []
 
@@ -509,14 +396,263 @@ def test_insert_tweet_analytics_targets_the_configured_table(
 def test_insert_tweet_analytics_builds_one_client_per_call(
     mock_bigquery_client_class, mock_bigquery_client
 ):
-    """Each call constructs its own client rather than reusing ``bq_client``.
-
-    ``insert_tweet_analytics`` opens with ``get_bq_client()``, so the
-    module-scope ``bq_client`` is not the object the insert is issued against.
-    """
     mock_bigquery_client.insert_rows_json.return_value = []
 
     bigquery.insert_tweet_analytics(make_analytics_row(kind="tweet"))
     bigquery.insert_tweet_analytics(make_analytics_row(kind="tweet"))
 
     assert mock_bigquery_client_class.call_count == 2
+
+
+# --------------------------------------------------------------------------- #
+# Error disposition, link by link.
+#
+# The module holds no ``try``/``except``, so each of its four external calls --
+# the ``Client`` constructor, ``client.query``, ``query_job.result`` and
+# ``insert_rows_json`` -- is a boundary at which a failure reaches the caller
+# unchanged.  Each case below injects at one link of one function, asserts the
+# identity, type and message of what escaped, and asserts that the next link was
+# not reached.  Both functions are covered at the constructor they share,
+# because they call it independently.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("failure_type", PROPAGATED_FAILURES)
+def test_run_query_propagates_a_client_construction_failure(
+    mock_bigquery_client_class, mock_bigquery_client, failure_type
+):
+    """A failing ``Client`` constructor reaches the caller from ``run_query``.
+
+    ``get_bq_client`` is the first statement, so no query is submitted, and no
+    row list -- not even an empty one -- is produced.
+    """
+    failure = failure_type(CLIENT_CONSTRUCTION_FAILURE_MESSAGE)
+    mock_bigquery_client_class.side_effect = failure
+    returned = UNREACHED
+
+    with pytest.raises(failure_type) as excinfo:
+        returned = bigquery.run_query(SAMPLE_QUERY)
+
+    assert excinfo.value is failure
+    assert str(excinfo.value) == CLIENT_CONSTRUCTION_FAILURE_MESSAGE
+    assert returned is UNREACHED
+    mock_bigquery_client.query.assert_not_called()
+
+
+@pytest.mark.parametrize("failure_type", PROPAGATED_FAILURES)
+def test_run_query_propagates_a_query_submission_failure(
+    mock_bigquery_client, failure_type
+):
+    """A failing ``client.query`` reaches the caller unchanged.
+
+    The job is never resolved, so ``result()`` is not called and the
+    comprehension that converts rows is never entered.
+    """
+    failure = failure_type(QUERY_SUBMISSION_FAILURE_MESSAGE)
+    mock_bigquery_client.query.side_effect = failure
+    returned = UNREACHED
+
+    with pytest.raises(failure_type) as excinfo:
+        returned = bigquery.run_query(SAMPLE_QUERY)
+
+    assert excinfo.value is failure
+    assert str(excinfo.value) == QUERY_SUBMISSION_FAILURE_MESSAGE
+    assert returned is UNREACHED
+    mock_bigquery_client.query.assert_called_once_with(SAMPLE_QUERY)
+    mock_bigquery_client.query.return_value.result.assert_not_called()
+
+
+@pytest.mark.parametrize("failure_type", PROPAGATED_FAILURES)
+def test_run_query_propagates_a_result_resolution_failure(
+    mock_bigquery_client, failure_type
+):
+    """A failing ``query_job.result`` reaches the caller unchanged.
+
+    A row is left ready behind the failing call, and its conversion counter
+    staying at zero is what establishes that no partial result was assembled:
+    the subject neither returns ``[]`` nor reads rows from anywhere else.
+    """
+    failure = failure_type(RESULT_RESOLUTION_FAILURE_MESSAGE)
+    row = _ConversionRecordingRow(QUERY_ROW_MAPPINGS[0])
+    query_job = mock_bigquery_client.query.return_value
+    query_job.result.return_value = [row]
+    query_job.result.side_effect = failure
+    returned = UNREACHED
+
+    with pytest.raises(failure_type) as excinfo:
+        returned = bigquery.run_query(SAMPLE_QUERY)
+
+    assert excinfo.value is failure
+    assert str(excinfo.value) == RESULT_RESOLUTION_FAILURE_MESSAGE
+    assert returned is UNREACHED
+    query_job.result.assert_called_once_with()
+    assert row.conversions == 0
+
+
+@pytest.mark.parametrize("failure_type", PROPAGATED_FAILURES)
+def test_insert_tweet_analytics_propagates_a_client_construction_failure(
+    mock_bigquery_client_class, mock_bigquery_client, failure_type
+):
+    """A failing ``Client`` constructor reaches the caller from the insert.
+
+    ``insert_tweet_analytics`` opens with the same ``get_bq_client()`` call, so
+    the failure arrives before the table id is built.  It is not converted into
+    the ``False`` the errors-returned path uses, which is the distinction this
+    case pins: a caller cannot read ``False`` and conclude the rows were
+    rejected.
+    """
+    failure = failure_type(CLIENT_CONSTRUCTION_FAILURE_MESSAGE)
+    mock_bigquery_client_class.side_effect = failure
+    returned = UNREACHED
+
+    with pytest.raises(failure_type) as excinfo:
+        returned = bigquery.insert_tweet_analytics(
+            make_analytics_row(kind="tweet")
+        )
+
+    assert excinfo.value is failure
+    assert str(excinfo.value) == CLIENT_CONSTRUCTION_FAILURE_MESSAGE
+    assert returned is UNREACHED
+    mock_bigquery_client.insert_rows_json.assert_not_called()
+
+
+@pytest.mark.parametrize("failure_type", PROPAGATED_FAILURES)
+def test_insert_tweet_analytics_propagates_every_insert_failure_type(
+    mock_bigquery_client, failure_type
+):
+    """A failing ``insert_rows_json`` escapes whatever its type.
+
+    :func:`test_insert_tweet_analytics_propagates_insert_failure` pins the
+    disposition; this case pins that it does not depend on the exception's
+    type, ``Exception`` included, and that the escaping object is the very
+    instance the client raised rather than a replacement.
+    """
+    failure = failure_type(INSERT_FAILURE_MESSAGE)
+    mock_bigquery_client.insert_rows_json.side_effect = failure
+    returned = UNREACHED
+
+    with pytest.raises(failure_type) as excinfo:
+        returned = bigquery.insert_tweet_analytics(
+            make_analytics_row(kind="tweet")
+        )
+
+    assert excinfo.value is failure
+    assert str(excinfo.value) == INSERT_FAILURE_MESSAGE
+    assert returned is UNREACHED
+
+
+def test_both_project_reads_follow_the_substituted_settings(
+    mock_bigquery_client_class, mock_bigquery_client
+):
+    """Both class-attribute reads take the project from the substitution.
+
+    This is the support-layer contract behind :data:`STAND_IN_PROJECT` and
+    :data:`EXPECTED_TABLE_ID`: rather than reading the fixture's own value back
+    out of the fixture, it installs a *different* project over the top and
+    follows that value through the two places production reads it — the
+    ``project`` keyword ``get_bq_client`` passes to ``Client``, and the
+    ``table_id`` the f-string on line 21 builds.  A project hardcoded in either
+    place, or a second read that ignored the substitution, would fail here and
+    would satisfy an assertion made against the fixture alone.
+
+    The suffix is asserted separately, so what is pinned is a configured
+    project joined to a fixed dataset and table rather than one opaque string.
+    """
+    assert ALTERNATIVE_PROJECT != STAND_IN_PROJECT
+    mock_bigquery_client.insert_rows_json.return_value = []
+    replacement = SimpleNamespace(GOOGLE_CLOUD_PROJECT=ALTERNATIVE_PROJECT)
+
+    with patch.object(bigquery, "Settings", replacement):
+        bigquery.insert_tweet_analytics(make_analytics_row(kind="tweet"))
+
+    mock_bigquery_client_class.assert_called_once_with(
+        project=ALTERNATIVE_PROJECT
+    )
+    table_id = mock_bigquery_client.insert_rows_json.call_args[0][0]
+    assert table_id == ALTERNATIVE_TABLE_ID
+    assert table_id == ALTERNATIVE_PROJECT + TABLE_ID_SUFFIX
+
+
+@pytest.mark.parametrize("failure_type, message", QUERY_FAILURES)
+def test_run_query_propagates_a_failing_job_submission(
+    mock_bigquery_client, failure_type, message
+):
+    """An exception from ``client.query`` reaches the caller unchanged.
+
+    ``run_query`` holds no handler, so the object the client raised is the one
+    the caller catches: identity is asserted, which a same-type replacement or
+    a re-wrap would not satisfy.  No empty list is substituted and no ``None``
+    is returned.
+    """
+    failure = failure_type(message)
+    mock_bigquery_client.query.side_effect = failure
+
+    with pytest.raises(failure_type) as excinfo:
+        bigquery.run_query(SAMPLE_QUERY)
+
+    assert excinfo.value is failure
+    assert type(excinfo.value) is failure_type
+    assert excinfo.value.args == (message,)
+
+
+def test_run_query_does_not_resolve_a_job_it_failed_to_submit(
+    mock_bigquery_client, mock_query_result
+):
+    """A failing submission stops before the job is resolved or read.
+
+    The result set is programmed with rows that would convert cleanly, so their
+    absence from the outcome is the subject's doing.  ``result`` is never
+    called and no row is converted, which is what makes this a statement about
+    where execution stopped rather than about what the mock happened to hold.
+    """
+    mock_bigquery_client.query.side_effect = RuntimeError("submission refused")
+
+    with pytest.raises(RuntimeError):
+        bigquery.run_query(SAMPLE_QUERY)
+
+    mock_bigquery_client.query.assert_called_once_with(SAMPLE_QUERY)
+    mock_bigquery_client.query.return_value.result.assert_not_called()
+    assert [row.conversions for row in mock_query_result] == [0, 0]
+
+
+@pytest.mark.parametrize("failure_type, message", QUERY_FAILURES)
+def test_run_query_propagates_a_failing_job_resolution(
+    mock_bigquery_client, failure_type, message
+):
+    """An exception from ``query_job.result`` reaches the caller unchanged.
+
+    Line 14 is as unguarded as line 13, so a job that fails while resolving is
+    an exception rather than an empty result set.  The query itself was sent
+    before the failure, which distinguishes this boundary from the one
+    :func:`test_run_query_propagates_a_failing_job_submission` covers.
+    """
+    failure = failure_type(message)
+    mock_bigquery_client.query.return_value.result.side_effect = failure
+
+    with pytest.raises(failure_type) as excinfo:
+        bigquery.run_query(SAMPLE_QUERY)
+
+    assert excinfo.value is failure
+    assert type(excinfo.value) is failure_type
+    assert excinfo.value.args == (message,)
+    mock_bigquery_client.query.assert_called_once_with(SAMPLE_QUERY)
+
+
+def test_run_query_converts_no_row_when_the_job_fails_to_resolve(
+    mock_bigquery_client, mock_query_result
+):
+    """A failing resolution stops before the conversion comprehension runs.
+
+    The rows the job was programmed to yield are the same objects the happy
+    path converts, and each reports zero conversions here, so line 15 was never
+    entered and no partial list was built.
+    """
+    mock_bigquery_client.query.return_value.result.side_effect = RuntimeError(
+        "job failed"
+    )
+
+    with pytest.raises(RuntimeError):
+        bigquery.run_query(SAMPLE_QUERY)
+
+    mock_bigquery_client.query.return_value.result.assert_called_once_with()
+    assert [row.conversions for row in mock_query_result] == [0, 0]

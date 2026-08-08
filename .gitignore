@@ -6,6 +6,12 @@
 # committed.  The entries below cover the artifacts produced by the backend
 # pytest suite, the frontend Jest suite, the Playwright e2e suite, and the
 # local development virtual environments.
+#
+# Generated artifacts only.  Nothing here ignores a source file, and that
+# includes dependency lockfiles: a `package-lock.json` is the recorded
+# resolution of a manifest, not an artifact of a test run, and ignoring one
+# would make an install unreproducible and hide a supply-chain change from
+# review.  No lockfile is committed today, so none is ignored either.
 # ---------------------------------------------------------------------------
 
 # --- Python bytecode / caches ---
@@ -24,8 +30,8 @@ coverage.json
 coverage.lcov
 htmlcov/
 
-# --- Test report directories, at any depth ---
-reports/
+# --- Test report directories: the three the runners write, and the repository root ---
+/reports/
 backend/reports/
 
 # --- Frontend test + coverage artifacts ---
@@ -36,8 +42,15 @@ frontend/reports/
 node_modules/
 e2e/node_modules/
 
-# --- npm lockfiles, at any depth ---
-package-lock.json
+# --- npm lockfiles: deliberately NOT ignored ---
+# There is no `package-lock.json` rule here, and there must not be one.  A
+# lockfile is the only artifact that records an integrity-hashed dependency
+# graph, and `npm ci` refuses to run without one, so ignoring it would make a
+# frozen install impossible for both `frontend` and `e2e`.  Neither package
+# commits one today - both manifests exact-pin their direct dependencies
+# instead, which frontend/src/test-utils/dependency-closure.test.ts enforces
+# alongside the absence of this rule - but nothing here stands in the way of
+# committing one.  See docs/testing/DECISION-LOG.md.
 
 # --- Playwright / e2e artifacts ---
 e2e/test-results/

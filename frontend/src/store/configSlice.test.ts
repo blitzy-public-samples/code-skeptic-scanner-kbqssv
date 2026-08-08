@@ -1,72 +1,31 @@
-/**
- * The suite that holds `./configSlice` to the behaviour it exhibits today.
- *
- * The slice is driven by calling its reducer directly - `reducer(previousState, actionCreator(payload))`.
- * No store is built here and `src/store/index.ts` is never imported.
- *
- * Every expectation below is an exact value taken from `./configSlice` itself - the three fields of its
- * `initialState` and the two literal status strings its reducers assign - or a payload one of these
- * tests supplies. Nothing here recomputes the reducer's spread to derive an expectation.
- *
- * Three properties of the subject shape these tests:
- *
- * 1. `updateConfig` **merges**: it spreads `action.payload` over the existing document instead of
- *    replacing it, so a member the payload does not name survives the call.
- * 2. That spread is **top level only**, so a payload that does name a member replaces that member's
- *    object whole - fields of it the payload omits are dropped, not carried over.
- * 3. `updateConfig` resets `error` to `null` on every call; `setError` never touches `config`.
- *
- * `Config` reaches `./configSlice` from `../schema/configSchema`, a specifier with no implementation in
- * this repository that `frontend/jest.config.js` maps to a test-side stub. It appears below in type
- * position only, so nothing here loads that stub at run time.
- *
- * @see frontend/src/store/configSlice.ts - the module under test.
- * @see frontend/src/test-utils/stubs/configSchema.ts - the `Config` shape these fixtures are built from.
- * @see docs/testing/DECISION-LOG.md - the single source of truth for the "why" behind these choices,
- *   including row D34 on never importing `src/store/index.ts`.
- */
-
 import type { Config } from '../test-utils/stubs/configSchema';
 
 import reducer, { setError, updateConfig } from './configSlice';
 
-/** The state shape `./configSlice` reduces. Declared locally: `./configSlice` does not export it. */
 type ConfigState = {
   config: Config;
   status: string;
   error: string | null;
 };
 
-/** The reducer's second parameter, narrowed to what these tests hand it. */
 type TestAction = { type: string; payload?: unknown };
 
-/**
- * An action `./configSlice` declares no case for, so the reducer returns the state it was given. Built
- * fresh on every call; no action object is shared between tests.
- */
 function makeUnhandledAction(): TestAction {
   return { type: 'unknown/action' };
 }
 
-/** The four `TwitterAPIConfig` fields. Fresh object on every call. */
 function makeTwitterAPI(): NonNullable<Config['twitterAPI']> {
   return { apiKey: 'k', apiSecret: 's', accessToken: 't', accessTokenSecret: 'ts' };
 }
 
-/** A `ThresholdsConfig`. Fresh object on every call. */
 function makeThresholds(): NonNullable<Config['thresholds']> {
   return { popularity: 100, doubtRating: 0.7 };
 }
 
-/** An `LLMConfig`. Fresh object on every call. */
 function makeLLM(): NonNullable<Config['llm']> {
   return { engine: 'text-davinci-003', maxTokens: 60, temperature: 0.7 };
 }
 
-/**
- * A state whose document already carries two of the three `Config` members, at the status and error
- * `initialState` seeds. Fresh object graph on every call.
- */
 function makeSeededState(): ConfigState {
   return {
     config: { twitterAPI: makeTwitterAPI(), thresholds: makeThresholds() },
@@ -75,25 +34,16 @@ function makeSeededState(): ConfigState {
   };
 }
 
-/**
- * A structural copy of `value`, detached from it. Requires `value` to be JSON-representable, which
- * every fixture above is.
- */
 function deepCopy<T>(value: T): T {
   return JSON.parse(JSON.stringify(value));
 }
 
-/**
- * The three fields of `initialState` and the value each is seeded with. Inert data: nothing writes to
- * this table or to anything reachable from it.
- */
 const INITIAL_STATE_FIELDS: ReadonlyArray<{ field: keyof ConfigState; expected: unknown }> = [
   { field: 'config', expected: {} },
   { field: 'status', expected: 'idle' },
   { field: 'error', expected: null },
 ];
 
-/** Payloads handed to `setError`, each recorded in `state.error` verbatim. Inert data. */
 const SET_ERROR_PAYLOADS: ReadonlyArray<{ label: string; payload: string }> = [
   { label: 'a sentence naming the failure', payload: 'Configuration load failed' },
   { label: 'a bare token', payload: 'boom' },
@@ -141,7 +91,6 @@ describe('configSlice reducer', () => {
 
       const next = reducer(previous, updateConfig({ thresholds: { popularity: 250, doubtRating: 0.9 } }));
 
-      // The payload named `thresholds` only, so `twitterAPI` is carried through untouched.
       expect(next.config.twitterAPI).toEqual({
         apiKey: 'k',
         apiSecret: 's',
@@ -156,7 +105,6 @@ describe('configSlice reducer', () => {
 
       const next = reducer(previous, updateConfig({ twitterAPI: { apiKey: 'rotated' } }));
 
-      // The spread is top level, so the three omitted `twitterAPI` fields do not survive.
       expect(next.config.twitterAPI).toEqual({ apiKey: 'rotated' });
       expect(next.config.thresholds).toEqual({ popularity: 100, doubtRating: 0.7 });
     });
@@ -164,7 +112,6 @@ describe('configSlice reducer', () => {
     it('clears an error a previous setError recorded and returns status to "updated"', () => {
       const errored = reducer(undefined, setError('boom'));
 
-      // The precondition the reset is measured against.
       expect(errored.error).toBe('boom');
       expect(errored.status).toBe('error');
 
@@ -195,7 +142,6 @@ describe('configSlice reducer', () => {
       const next = reducer(previous, setError('Configuration save failed'));
 
       expect(next.config).toEqual(documentBefore);
-      // Nothing assigned to `state.config`, so the document is carried through by reference.
       expect(next.config).toBe(previous.config);
     });
   });

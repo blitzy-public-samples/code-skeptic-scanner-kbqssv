@@ -1,45 +1,10 @@
-/**
- * Unit suite for `src/services/api.ts`, the axios wrapper `services/twitterService.ts` and
- * `services/llmService.ts` both import through the bare specifier `app/services/api`.
- *
- * ## The base URL is the literal string `undefined`
- *
- * `api.ts` reads `process.env.REACT_APP_API_BASE_URL` once, at module scope, into the base URL it
- * prefixes every request with. `src/test-utils/setup-jest.ts` removes that variable before any module in
- * the graph can read it, so the base is `undefined` and template interpolation makes it the literal
- * four-character string `undefined`. Every URL asserted below therefore begins `undefined/`; that string
- * is the oracle, not a stand-in for one.
- *
- * ## The module neither catches nor transforms
- *
- * There is no `try`/`catch` and no conditional anywhere in `api.ts`. Each rejection reaches the caller as
- * the instance axios raised, and each resolved value is `response.data` - for `generateResponse`,
- * `response.data.generatedResponse` - with nothing copied, validated or defaulted.
- *
- * ## Two observation points
- *
- * An `axios` method spy records the URL string `api.ts` constructed, as its own argument.
- *
- * The default handlers in `src/test-utils/handlers.ts` record the request where it reaches the network
- * boundary, over the real axios adapter and after jsdom has resolved it against the document base - so a
- * handler sees `http://localhost/undefined/tweets`, which is a different string from the argument. Their
- * wildcard-prefixed patterns cover `/tweets`, `/tweets/:tweetId` and `/generate-response`, every URL this
- * module issues. This suite adds no default pattern, and each `server.use(...)` override stays inside
- * the one test that needs it.
- *
- * Every spy below is given a mocked return value in the statement that creates it. An `axios` spy
- * without one calls through and opens a socket.
- *
- * @see frontend/TESTING.md - the msw contract and the `server.use(...)` idiom.
- * @see docs/testing/DECISION-LOG.md - the rationale for every choice made in this file.
- * @see docs/testing/TRACEABILITY-MATRIX.md - this suite mapped back to the three exported functions.
- */
 
 import axios from 'axios';
-import { rest } from 'msw';
 
 import {
+  ALLOWED_REQUEST_ORIGINS,
   DEFAULT_GENERATED_RESPONSE,
+  currentBehaviorTweetByIdHandlers,
   lastRecordedRequest,
   makeDefaultTweetsJson,
 } from '../test-utils/handlers';
@@ -50,10 +15,19 @@ import { fetchTweetById, fetchTweets, generateResponse } from './api';
 import * as apiModule from './api';
 
 /**
- * Removes every `axios` spy, leaving the next test to install its own or to reach the msw boundary
- * through the real adapter. `clearMocks` in `jest.config.js` clears call bookkeeping between tests but
- * leaves mock implementations installed; this hook is what removes them.
+ * Origin jsdom serves this suite from, and therefore the origin every request below resolves against.
+ * Asserted to be a member of `ALLOWED_REQUEST_ORIGINS` wherever it is used, so the literal stays tied to
+ * the shared origin contract in `../test-utils/handlers` rather than standing on its own.
  */
+const DOCUMENT_ORIGIN = 'http://localhost';
+
+/** Path `fetchTweetById('42')` resolves to once jsdom has applied the document base. */
+const TWEET_DETAIL_PATHNAME = '/undefined/tweets/42';
+
+/** Status the shared current-behaviour tweet-detail handlers answer with. */
+const SERVER_ERROR_STATUS = 500;
+
+/** Restore axios spies; clearMocks resets calls but does not remove spy implementations. */
 afterEach(() => {
   jest.restoreAllMocks();
 });
@@ -66,7 +40,6 @@ describe('fetchTweets', () => {
 
     expect(get).toHaveBeenCalledTimes(1);
     expect(get).toHaveBeenCalledWith('undefined/tweets?page=2&limit=10');
-    // `api.ts` passes the URL alone, with no axios request config.
     expect(get.mock.calls[0]).toEqual(['undefined/tweets?page=2&limit=10']);
   });
 
@@ -118,12 +91,39 @@ describe('fetchTweetById', () => {
     expect(get.mock.calls[0]).toEqual(['undefined/tweets/42']);
   });
 
-  it('sends the tweet id verbatim, without encoding or trimming it', async () => {
+  it('interpolates the tweet id into the URL string verbatim, without encoding or trimming it', async () => {
     const get = jest.spyOn(axios, 'get').mockResolvedValue({ data: makeTweet() });
 
     await fetchTweetById('tweet 1/../7');
 
+    // The string `api.ts` built, observed before any adapter parses it. `axios` is mocked here, so no
+    // URL parser runs and the traversal segment is still present as written. What the network receives
+    // is a different string; the case below asserts that one.
     expect(get).toHaveBeenCalledWith('undefined/tweets/tweet 1/../7');
+  });
+
+  it('lets a traversal segment in the tweet id retarget the request at the network boundary', async () => {
+    // No axios spy: the request travels over the real adapter, so jsdom resolves it against the document
+    // base and the URL parser applies path normalisation before msw matches a handler.
+    const result = await fetchTweetById('tweet 1/../7');
+
+    const recorded = lastRecordedRequest();
+    expect(recorded).toBeDefined();
+    expect(recorded?.method).toBe('GET');
+    // `..` removes the preceding `tweet%201` segment, so the id `api.ts` sent is gone from the path.
+    expect(recorded?.url).toBe('http://localhost/undefined/tweets/7');
+    expect(recorded?.pathname).toBe('/undefined/tweets/7');
+    expect(recorded?.pathname).not.toContain('..');
+    // The id itself is absent in both spellings: as written, and percent-encoded as jsdom would send it.
+    expect(recorded?.pathname).not.toContain('tweet 1');
+    expect(recorded?.pathname).not.toContain('tweet%201');
+    // The route parameter the backend would bind is `7`, not the identifier the caller asked for.
+    expect(recorded?.pathParams).toEqual({ tweetId: '7' });
+    expect(recorded?.status).toBe(200);
+    expect(recorded?.violations).toEqual([]);
+    // And the caller is handed the record for the retargeted id, with nothing signalling the switch:
+    // `api.ts` neither validates nor encodes the id, and no error is raised on either side.
+    expect(result.tweet_id).toBe('7');
   });
 
   it('resolves with the response body itself, neither copied nor transformed', async () => {
@@ -133,7 +133,6 @@ describe('fetchTweetById', () => {
     const result = await fetchTweetById('42');
 
     expect(result).toBe(body);
-    // Nothing serialises on this path, so the `Date` the factory built arrives as a `Date`.
     expect(result.timestamp).toBeInstanceOf(Date);
   });
 
@@ -141,7 +140,6 @@ describe('fetchTweetById', () => {
     const result = await fetchTweetById('42');
 
     expect(result).toEqual({ ...makeTweet({ tweet_id: '42' }), timestamp: FIXED_TWEET_TIMESTAMP });
-    // JSON carries no Date, so the field the schema types as `z.date()` crosses the wire as a string.
     expect(typeof result.timestamp).toBe('string');
   });
 
@@ -153,15 +151,27 @@ describe('fetchTweetById', () => {
   });
 
   it('rejects with the axios error carrying the response when the route answers 500', async () => {
-    server.use(rest.get('*/tweets/:tweetId', (_req, res, ctx) => res(ctx.status(500))));
+    // The shared origin-scoped factory rather than a wildcard-prefixed pattern of this suite's own:
+    // it registers one handler per entry in `ALLOWED_REQUEST_ORIGINS`, so a request emitted to any
+    // other origin matches nothing, reaches `onUnhandledRequest` and fails the test through the
+    // isolation ledger instead of being answered regardless of where it was addressed.
+    server.use(...currentBehaviorTweetByIdHandlers());
 
     const caught = await fetchTweetById('42').catch((error: unknown) => error);
 
     expect(caught).toBeInstanceOf(Error);
     expect(caught).toMatchObject({
-      message: 'Request failed with status code 500',
-      response: { status: 500 },
+      message: `Request failed with status code ${SERVER_ERROR_STATUS}`,
+      response: { status: SERVER_ERROR_STATUS },
     });
+
+    /* The origin and path the handler actually answered, read back from the shared request log. */
+    const recorded = lastRecordedRequest();
+    expect(ALLOWED_REQUEST_ORIGINS).toContain(DOCUMENT_ORIGIN);
+    expect(recorded?.origin).toBe(DOCUMENT_ORIGIN);
+    expect(recorded?.pathname).toBe(TWEET_DETAIL_PATHNAME);
+    expect(recorded?.status).toBe(SERVER_ERROR_STATUS);
+    expect(recorded?.violations).toEqual([]);
   });
 });
 
@@ -175,7 +185,6 @@ describe('generateResponse', () => {
 
     expect(post).toHaveBeenCalledTimes(1);
     expect(post).toHaveBeenCalledWith('undefined/generate-response', { tweetId: '42' });
-    // The URL and the body, and no third axios request-config argument.
     expect(post.mock.calls[0]).toEqual(['undefined/generate-response', { tweetId: '42' }]);
   });
 
@@ -223,14 +232,6 @@ describe('generateResponse', () => {
   });
 });
 
-/**
- * The module's export list, asserted in both directions.
- *
- * Two symbols other modules import from here are absent. `store/tweetSlice.ts` imports `api` and calls
- * `api.get('/tweets')` inside a `try`/`catch`, so that thunk rejects with `'Failed to fetch tweets'`;
- * `app.tsx` and `index.tsx` import `setupInterceptors` and invoke it. Both absences are the module's
- * current surface, and both are pinned below.
- */
 describe('module surface', () => {
   it('exports exactly the three request functions', () => {
     expect(Object.keys(apiModule).sort()).toEqual([

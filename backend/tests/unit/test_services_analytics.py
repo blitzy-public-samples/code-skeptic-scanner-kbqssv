@@ -1,103 +1,5 @@
-"""Unit suite for ``app/services/analytics_service.py``, the two BigQuery
-date-ranged aggregations.
-
-The subject declares two public functions, ``get_tweet_analytics(start_date,
-end_date)`` and ``get_user_analytics(start_date, end_date)``.  Each assembles a
-SQL string, hands it to ``run_query``, wraps the returned rows in a pandas
-``DataFrame`` and reduces that frame to a dictionary of totals, averages and a
-per-day breakdown.
-
-Patch boundary
---------------
-Every test replaces ``app.services.analytics_service.run_query`` -- the
-attribute on the *subject* module, which bound the name at import time with
-``from app.db.bigquery import run_query`` (line 2).  No test replaces
-``app.db.bigquery.run_query``.
-:func:`test_run_query_is_bound_into_the_subject_module` and
-:func:`test_mock_run_query_replaces_the_subject_module_attribute` assert
-the two halves of that binding directly: the name resolves to the same
-object under both modules before a patch, and to the replacement on the
-subject alone during one.
-Because the boundary sits above ``app.db.bigquery``, no BigQuery client is
-constructed and no credential is read by any test in this module.
-
-What this suite asserts
------------------------
-* The module exposes ``get_tweet_analytics`` and ``get_user_analytics`` and
-  nothing else callable; ``AnalyticsService`` and ``calculate_engagement_rate``
-  are absent.
-* ``get_tweet_analytics`` reduces two controlled rows to ``total_tweets`` 8,
-  ``avg_daily_tweets`` 4.0, ``avg_retweets`` 1.5, ``avg_favorites`` 3.0 and a
-  two-record ``daily_breakdown``.
-* ``get_user_analytics`` reduces two controlled rows to
-  ``total_active_users`` 8, ``avg_daily_active_users`` 4.0, ``avg_followers``
-  1.5, ``avg_friends`` 3.0 and a two-record ``daily_breakdown``.
-* Each function returns exactly its five declared keys, asserted by set
-  equality, with the total coerced to ``int`` and the three averages to
-  ``float``.
-* ``daily_breakdown`` is the ``DataFrame.to_dict('records')`` shape: a list of
-  plain dictionaries keyed on the row keys, equal to the rows that went in.
-* Each function issues exactly one query, as a single positional argument.
-* The emitted SQL carries the ``BETWEEN`` clause built from the caller's two
-  date strings, the ``as`` aliases of the ``SELECT`` list, and the dataset from
-  ``settings.BIGQUERY_DATASET``.  Assertions are substring containment; the
-  query is never rebuilt.
-
-Current behaviour captured as divergence
-----------------------------------------
-An empty result set raises ``KeyError``.  ``DataFrame([])`` carries no columns,
-so the first subscript fails: ``'tweet_count'`` for ``get_tweet_analytics`` and
-``'active_users'`` for ``get_user_analytics``.  Neither function returns a
-zeroed result and neither raises a domain error.
-
-Propagation is total.  The subject contains no ``try`` and no ``except``, so
-anything ``run_query`` raises leaves the function unchanged.  This is the
-opposite disposition to ``update_tweet`` in ``app/db/firestore.py``, which
-swallows a write failure and returns ``False``.
-
-Neither function validates its date range.  An inverted range and a string that
-is not a date are both interpolated verbatim into the SQL text and the call
-succeeds.
-
-``get_user_analytics`` returns ``total_active_users``.  The key
-``total_users`` -- asserted by legacy
-``tests/test_api.py::test_get_user_analytics`` against a
-``GET /analytics/users`` route that does not exist -- is absent, and
-:func:`test_get_user_analytics_omits_the_legacy_total_users_key` asserts that
-absence.
-
-The row keys are the ``as`` aliases of the ``SELECT`` list, not the columns
-``AVG()`` reduces: a tweet row is keyed ``date``, ``tweet_count``,
-``avg_retweets``, ``avg_favorites``, and carries no ``retweet_count`` or
-``favorite_count``.  Every row in this module comes from
-``tests.factories.make_analytics_row``, which is the single published source of
-both shapes.
-
-Observability
--------------
-The subject emits no log record and no diagnostic output, so there is nothing
-for ``caplog`` or ``capsys`` to capture and neither is used.  The one
-externally visible trace of what the service did is the SQL text handed to
-``run_query``; this suite captures it from the replacement's call arguments and
-asserts against it.
-
-Scope
------
-``run_query`` itself, the ``Settings.GOOGLE_CLOUD_PROJECT`` class-attribute
-access it performs and the BigQuery client it builds belong to
-``tests/unit/test_db_bigquery.py``.  The ``bigquery_settings`` fixture is
-therefore not requested here: with the boundary above ``app.db.bigquery``,
-nothing in this module needs it.
-
-Reasoning for every choice in this module is recorded in
-``docs/testing/DECISION-LOG.md``; the legacy constructs it covers are rows E7,
-E8, E17 and E18 of ``docs/testing/TRACEABILITY-MATRIX.md``.
-"""
-
 from unittest.mock import patch
-
 import pytest
-
 import app.db.bigquery as bigquery
 import app.services.analytics_service as analytics_service
 from tests.factories import (
@@ -105,32 +7,13 @@ from tests.factories import (
     SECOND_ANALYTICS_DATE,
     make_analytics_row,
 )
-
 pytestmark = pytest.mark.unit
 
 
-# --------------------------------------------------------------------------- #
-# Oracles.  Every value below is either read from the subject module or drives
-# an aggregation that lands on an exact literal.
-# --------------------------------------------------------------------------- #
-
-#: Attribute replaced by :func:`mock_run_query`.  The subject module, never
-#: ``app.db.bigquery``.
 RUN_QUERY_TARGET = "app.services.analytics_service.run_query"
-
-#: Names the subject module must expose as callables.
 PUBLIC_AGGREGATIONS = ("get_tweet_analytics", "get_user_analytics")
-
-#: Names legacy ``tests/test_services.py`` referenced on this module and that
-#: production never defined: the class its ``setUp`` instantiated and the
-#: method its removed assertions called.
 ABSENT_LEGACY_NAMES = ("AnalyticsService", "calculate_engagement_rate")
-
-#: Key legacy ``tests/test_api.py::test_get_user_analytics`` expected from
-#: ``GET /analytics/users``.  ``get_user_analytics`` returns
-#: ``total_active_users`` instead.
 LEGACY_USER_TOTAL_KEY = "total_users"
-
 TWEET_ANALYTICS_KEYS = frozenset(
     {
         "total_tweets",
@@ -140,7 +23,6 @@ TWEET_ANALYTICS_KEYS = frozenset(
         "daily_breakdown",
     }
 )
-
 USER_ANALYTICS_KEYS = frozenset(
     {
         "total_active_users",
@@ -151,66 +33,76 @@ USER_ANALYTICS_KEYS = frozenset(
     }
 )
 
-# Second-row values.  Paired with the factory defaults -- 3 for the count, 1.0
-# and 2.0 for the two averages -- they give a count summing to 8 with a mean of
-# 4.0, and averages meaning 1.5 and 3.0.  Each is an exact binary fraction, and
-# every assertion below compares with ``==``.
 
 SECOND_ROW_COUNT = 5
-
 SECOND_ROW_FIRST_AVERAGE = 2.0
-
 SECOND_ROW_SECOND_AVERAGE = 4.0
-
 EXPECTED_TOTAL = 8
-
 EXPECTED_DAILY_MEAN = 4.0
-
 EXPECTED_FIRST_AVERAGE = 1.5
-
 EXPECTED_SECOND_AVERAGE = 3.0
-
 EXPECTED_BREAKDOWN_LENGTH = 2
-
-#: ``as`` aliases of the tweet ``SELECT`` list, in the order the subject
-#: declares them.  These are the keys a tweet row must carry.
 TWEET_QUERY_ALIASES = (
     "as date",
     "as tweet_count",
     "as avg_retweets",
     "as avg_favorites",
 )
-
-#: ``as`` aliases of the user ``SELECT`` list.
 USER_QUERY_ALIASES = (
     "as date",
     "as active_users",
     "as avg_followers",
     "as avg_friends",
 )
-
-#: Message carried by the exception the propagation tests inject.
 QUERY_FAILURE_MESSAGE = "query failed"
-
-#: Start of the inverted range: the last day of the year whose first day is
-#: :data:`FIRST_ANALYTICS_DATE`.  The end therefore precedes the start by
-#: nearly a year.
 INVERTED_START_DATE = "2024-12-31"
+INJECTION_START_DATE = "{date}' OR 1=1 --".format(date=FIRST_ANALYTICS_DATE)
 
-#: Date pairs neither function validates.  ``inverted`` puts the later date
-#: first; ``malformed`` is not a date in any format.
 UNVALIDATED_DATE_RANGES = (
     pytest.param(INVERTED_START_DATE, FIRST_ANALYTICS_DATE, id="inverted"),
     pytest.param("not-a-date", "also-not-a-date", id="malformed"),
+    pytest.param(INJECTION_START_DATE, SECOND_ANALYTICS_DATE, id="injection"),
+)
+
+
+import re
+TWEET_SELECT_EXPRESSIONS = (
+    "DATE(created_at) as date",
+    "COUNT(*) as tweet_count",
+    "AVG(retweet_count) as avg_retweets",
+    "AVG(favorite_count) as avg_favorites",
+)
+USER_SELECT_EXPRESSIONS = (
+    "DATE(created_at) as date",
+    "COUNT(DISTINCT user_id) as active_users",
+    "AVG(followers_count) as avg_followers",
+    "AVG(friends_count) as avg_friends",
+)
+SELECT_LIST_SEPARATOR = ", "
+FILTERED_EXPRESSION = "DATE(created_at)"
+GROUP_BY_CLAUSE = "GROUP BY {0}".format(FILTERED_EXPRESSION)
+ORDER_BY_CLAUSE = "ORDER BY date"
+TWEET_QUERY_TEMPLATE = (
+    "SELECT DATE(created_at) as date, COUNT(*) as tweet_count, "
+    "AVG(retweet_count) as avg_retweets, AVG(favorite_count) as avg_favorites "
+    "FROM `{dataset}.tweets` "
+    "WHERE DATE(created_at) BETWEEN '{start}' AND '{end}' "
+    "GROUP BY DATE(created_at) "
+    "ORDER BY date"
+)
+USER_QUERY_TEMPLATE = (
+    "SELECT DATE(created_at) as date, "
+    "COUNT(DISTINCT user_id) as active_users, "
+    "AVG(followers_count) as avg_followers, "
+    "AVG(friends_count) as avg_friends "
+    "FROM `{dataset}.tweets` "
+    "WHERE DATE(created_at) BETWEEN '{start}' AND '{end}' "
+    "GROUP BY DATE(created_at) "
+    "ORDER BY date"
 )
 
 
 def _tweet_rows():
-    """Return the two tweet rows the happy-path oracles are computed from.
-
-    Built from :func:`tests.factories.make_analytics_row`; the first row is the
-    factory default and the second varies the date and all three metrics.
-    """
     return [
         make_analytics_row(),
         make_analytics_row(
@@ -223,11 +115,6 @@ def _tweet_rows():
 
 
 def _user_rows():
-    """Return the two user rows the happy-path oracles are computed from.
-
-    The counterpart of :func:`_tweet_rows` for ``kind="user"``, carrying the
-    same numeric values under the aliases ``get_user_analytics`` indexes.
-    """
     return [
         make_analytics_row(kind="user"),
         make_analytics_row(
@@ -241,12 +128,6 @@ def _user_rows():
 
 
 def _emitted_query(mock_run_query):
-    """Return the SQL text ``run_query`` received, asserting the call shape.
-
-    The subject calls ``run_query(query)`` with one positional argument and no
-    keywords; this helper pins that shape before handing back the argument, so
-    a caller asserting on the text cannot silently read a different call.
-    """
     assert mock_run_query.call_count == 1
     positional, keyword = mock_run_query.call_args
     assert keyword == {}
@@ -254,20 +135,10 @@ def _emitted_query(mock_run_query):
     return positional[0]
 
 
-# --------------------------------------------------------------------------- #
-# Fixtures.  Shared infrastructure -- the synthetic settings, the credential
-# neutraliser and the egress guard -- comes from backend/tests/conftest.py.
-# --------------------------------------------------------------------------- #
-
-
 @pytest.fixture
 def mock_run_query():
-    """Replace ``app.services.analytics_service.run_query`` for one test.
-
-    Yields the replacement, on which a test sets ``return_value`` to the rows
-    the aggregation should see or ``side_effect`` to the failure it should
-    propagate.  The patch is undone when the test ends, so no module state
-    outlives a test and no test depends on another's ordering.
+    """Patch app.services.analytics_service.run_query, the name the subject
+    bound at import.
     """
     with patch(RUN_QUERY_TARGET) as replacement:
         yield replacement
@@ -275,76 +146,38 @@ def mock_run_query():
 
 @pytest.fixture
 def mock_run_query_returning_tweet_rows(mock_run_query):
-    """Yield :func:`mock_run_query` already returning :func:`_tweet_rows`."""
     mock_run_query.return_value = _tweet_rows()
     return mock_run_query
 
 
 @pytest.fixture
 def mock_run_query_returning_user_rows(mock_run_query):
-    """Yield :func:`mock_run_query` already returning :func:`_user_rows`."""
     mock_run_query.return_value = _user_rows()
     return mock_run_query
 
 
-# --------------------------------------------------------------------------- #
-# Module contract.  What the subject exposes, and what legacy tests referenced
-# on it that production never defined.
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize("name", PUBLIC_AGGREGATIONS)
 def test_module_exposes_aggregation(name):
-    """Each declared aggregation is present on the module and callable."""
     assert callable(getattr(analytics_service, name))
 
 
 @pytest.mark.parametrize("name", ABSENT_LEGACY_NAMES)
 def test_module_does_not_expose_legacy_name(name):
-    """``AnalyticsService`` and ``calculate_engagement_rate`` are absent.
-
-    Legacy ``tests/test_services.py`` instantiated ``AnalyticsService()`` in
-    ``setUp`` and called ``calculate_engagement_rate`` on the result.  The
-    module defines neither; rows E17 and E18 of
-    ``docs/testing/TRACEABILITY-MATRIX.md`` record their disposition.
-    """
     assert not hasattr(analytics_service, name)
 
 
 def test_run_query_is_bound_into_the_subject_module():
-    """``run_query`` resolves to one object under both module names.
-
-    ``app/services/analytics_service.py`` line 2 is
-    ``from app.db.bigquery import run_query``, so the subject holds its own
-    reference to the function ``app.db.bigquery`` defines.
-    """
     assert analytics_service.run_query is bigquery.run_query
 
 
 def test_mock_run_query_replaces_the_subject_module_attribute(mock_run_query):
-    """The fixture rebinds the name on the subject and leaves the other alone.
-
-    While the patch is active the subject resolves ``run_query`` to the
-    replacement, and ``app.db.bigquery.run_query`` still resolves to the real
-    function -- so nothing this suite calls can reach it.
-    """
     assert analytics_service.run_query is mock_run_query
     assert bigquery.run_query is not mock_run_query
-
-
-# --------------------------------------------------------------------------- #
-# get_tweet_analytics -- happy path.
-# --------------------------------------------------------------------------- #
 
 
 def test_get_tweet_analytics_totals_the_tweet_counts(
     mock_run_query_returning_tweet_rows,
 ):
-    """``total_tweets`` is the sum of the rows' ``tweet_count``.
-
-    The two rows carry 3 and 5, so the sum is 8 and the mean is 4.0; the two
-    values differ, which is what distinguishes a sum from an average.
-    """
     result = analytics_service.get_tweet_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -355,7 +188,6 @@ def test_get_tweet_analytics_totals_the_tweet_counts(
 def test_get_tweet_analytics_averages_the_daily_tweet_counts(
     mock_run_query_returning_tweet_rows,
 ):
-    """``avg_daily_tweets`` is the mean of the rows' ``tweet_count``."""
     result = analytics_service.get_tweet_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -366,7 +198,6 @@ def test_get_tweet_analytics_averages_the_daily_tweet_counts(
 def test_get_tweet_analytics_averages_the_retweet_averages(
     mock_run_query_returning_tweet_rows,
 ):
-    """``avg_retweets`` is the mean of the rows' ``avg_retweets``."""
     result = analytics_service.get_tweet_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -377,7 +208,6 @@ def test_get_tweet_analytics_averages_the_retweet_averages(
 def test_get_tweet_analytics_averages_the_favorite_averages(
     mock_run_query_returning_tweet_rows,
 ):
-    """``avg_favorites`` is the mean of the rows' ``avg_favorites``."""
     result = analytics_service.get_tweet_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -388,10 +218,6 @@ def test_get_tweet_analytics_averages_the_favorite_averages(
 def test_get_tweet_analytics_returns_the_declared_key_set(
     mock_run_query_returning_tweet_rows,
 ):
-    """The result carries exactly its five declared keys.
-
-    Asserted by set equality, so an added, dropped or renamed key fails.
-    """
     result = analytics_service.get_tweet_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -402,12 +228,6 @@ def test_get_tweet_analytics_returns_the_declared_key_set(
 def test_get_tweet_analytics_coerces_the_metric_types(
     mock_run_query_returning_tweet_rows,
 ):
-    """The total is an ``int`` and the three averages are ``float``.
-
-    The subject coerces each explicitly, so no numpy scalar reaches a caller.
-    Each assertion is on the exact type, so a ``bool`` does not satisfy the
-    ``int`` one.
-    """
     result = analytics_service.get_tweet_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -421,12 +241,6 @@ def test_get_tweet_analytics_coerces_the_metric_types(
 def test_get_tweet_analytics_daily_breakdown_is_records_shaped(
     mock_run_query_returning_tweet_rows,
 ):
-    """``daily_breakdown`` is a list of plain dicts equal to the rows.
-
-    ``DataFrame.to_dict('records')`` yields one dictionary per row keyed on the
-    frame's columns, which are the row keys; no frame or numpy container
-    reaches a caller.
-    """
     expected_rows = _tweet_rows()
 
     result = analytics_service.get_tweet_analytics(
@@ -446,7 +260,6 @@ def test_get_tweet_analytics_daily_breakdown_is_records_shaped(
 def test_get_tweet_analytics_runs_exactly_one_query(
     mock_run_query_returning_tweet_rows,
 ):
-    """One query is issued, as a single positional argument."""
     analytics_service.get_tweet_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -457,7 +270,6 @@ def test_get_tweet_analytics_runs_exactly_one_query(
 def test_get_tweet_analytics_emits_the_requested_date_range(
     mock_run_query_returning_tweet_rows,
 ):
-    """The emitted SQL carries the caller's dates in a ``BETWEEN`` clause."""
     analytics_service.get_tweet_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -476,12 +288,6 @@ def test_get_tweet_analytics_emits_the_requested_date_range(
 def test_get_tweet_analytics_emits_the_selected_alias(
     alias, mock_run_query_returning_tweet_rows
 ):
-    """Each ``as`` alias the subject then indexes appears in the emitted SQL.
-
-    The aliases are the row contract: ``tweet_count``, ``avg_retweets`` and
-    ``avg_favorites`` are the keys the frame is subscripted with, not the
-    ``retweet_count`` and ``favorite_count`` columns ``AVG()`` reduces.
-    """
     analytics_service.get_tweet_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -492,7 +298,6 @@ def test_get_tweet_analytics_emits_the_selected_alias(
 def test_get_tweet_analytics_targets_the_configured_dataset(
     mock_run_query_returning_tweet_rows,
 ):
-    """The emitted SQL names the dataset from ``settings.BIGQUERY_DATASET``."""
     analytics_service.get_tweet_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -505,18 +310,9 @@ def test_get_tweet_analytics_targets_the_configured_dataset(
     ) in query
 
 
-# --------------------------------------------------------------------------- #
-# get_user_analytics -- happy path and the legacy key-name divergence.
-# --------------------------------------------------------------------------- #
-
-
 def test_get_user_analytics_totals_the_active_user_counts(
     mock_run_query_returning_user_rows,
 ):
-    """``total_active_users`` is the sum of the rows' ``active_users``.
-
-    The two rows carry 3 and 5, so the sum is 8 and the mean is 4.0.
-    """
     result = analytics_service.get_user_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -527,7 +323,6 @@ def test_get_user_analytics_totals_the_active_user_counts(
 def test_get_user_analytics_averages_the_daily_active_user_counts(
     mock_run_query_returning_user_rows,
 ):
-    """``avg_daily_active_users`` is the mean of the rows' ``active_users``."""
     result = analytics_service.get_user_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -538,7 +333,6 @@ def test_get_user_analytics_averages_the_daily_active_user_counts(
 def test_get_user_analytics_averages_the_follower_averages(
     mock_run_query_returning_user_rows,
 ):
-    """``avg_followers`` is the mean of the rows' ``avg_followers``."""
     result = analytics_service.get_user_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -549,7 +343,6 @@ def test_get_user_analytics_averages_the_follower_averages(
 def test_get_user_analytics_averages_the_friend_averages(
     mock_run_query_returning_user_rows,
 ):
-    """``avg_friends`` is the mean of the rows' ``avg_friends``."""
     result = analytics_service.get_user_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -560,7 +353,6 @@ def test_get_user_analytics_averages_the_friend_averages(
 def test_get_user_analytics_returns_the_declared_key_set(
     mock_run_query_returning_user_rows,
 ):
-    """The result carries exactly its five declared keys."""
     result = analytics_service.get_user_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -571,14 +363,6 @@ def test_get_user_analytics_returns_the_declared_key_set(
 def test_get_user_analytics_omits_the_legacy_total_users_key(
     mock_run_query_returning_user_rows,
 ):
-    """The result carries ``total_active_users`` and not ``total_users``.
-
-    Legacy ``tests/test_api.py::test_get_user_analytics`` asserted
-    ``total_users`` in the body of ``GET /analytics/users``.  That route is not
-    implemented, and the key the implementing function returns is
-    ``total_active_users``, so the legacy expectation was wrong independently
-    of the missing route.
-    """
     result = analytics_service.get_user_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -590,7 +374,6 @@ def test_get_user_analytics_omits_the_legacy_total_users_key(
 def test_get_user_analytics_coerces_the_metric_types(
     mock_run_query_returning_user_rows,
 ):
-    """The total is an ``int`` and the three averages are ``float``."""
     result = analytics_service.get_user_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -604,7 +387,6 @@ def test_get_user_analytics_coerces_the_metric_types(
 def test_get_user_analytics_daily_breakdown_is_records_shaped(
     mock_run_query_returning_user_rows,
 ):
-    """``daily_breakdown`` is a list of plain dicts equal to the rows."""
     expected_rows = _user_rows()
 
     result = analytics_service.get_user_analytics(
@@ -621,7 +403,6 @@ def test_get_user_analytics_daily_breakdown_is_records_shaped(
 def test_get_user_analytics_runs_exactly_one_query(
     mock_run_query_returning_user_rows,
 ):
-    """One query is issued, as a single positional argument."""
     analytics_service.get_user_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -632,7 +413,6 @@ def test_get_user_analytics_runs_exactly_one_query(
 def test_get_user_analytics_emits_the_requested_date_range(
     mock_run_query_returning_user_rows,
 ):
-    """The emitted SQL carries the caller's dates in a ``BETWEEN`` clause."""
     analytics_service.get_user_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -651,7 +431,6 @@ def test_get_user_analytics_emits_the_requested_date_range(
 def test_get_user_analytics_emits_the_selected_alias(
     alias, mock_run_query_returning_user_rows
 ):
-    """Each ``as`` alias the subject indexes appears in the emitted SQL."""
     analytics_service.get_user_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -662,13 +441,6 @@ def test_get_user_analytics_emits_the_selected_alias(
 def test_get_user_analytics_targets_the_configured_dataset(
     mock_run_query_returning_user_rows,
 ):
-    """The emitted SQL names the dataset from ``settings.BIGQUERY_DATASET``.
-
-    Both aggregations read the same ``tweets`` table; the user query derives
-    its counts from the ``user_id``, ``followers_count`` and
-    ``friends_count`` columns of that table rather than from a separate users
-    table.
-    """
     analytics_service.get_user_analytics(
         FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
     )
@@ -681,12 +453,6 @@ def test_get_user_analytics_targets_the_configured_dataset(
     ) in query
 
 
-# --------------------------------------------------------------------------- #
-# Edge case: an empty result set.  Produced by returning no rows at all, never
-# by removing a key from a row.
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize(
     ("aggregation_name", "missing_column"),
     (
@@ -697,13 +463,6 @@ def test_get_user_analytics_targets_the_configured_dataset(
 def test_aggregation_raises_key_error_on_empty_result(
     aggregation_name, missing_column, mock_run_query
 ):
-    """An empty result set raises ``KeyError`` naming the first column read.
-
-    ``DataFrame([])`` carries no columns, so the first subscript in the metric
-    dictionary fails: ``'tweet_count'`` for ``get_tweet_analytics`` and
-    ``'active_users'`` for ``get_user_analytics``.  Neither function returns a
-    zeroed result, and the query is still issued before the failure.
-    """
     mock_run_query.return_value = []
     aggregation = getattr(analytics_service, aggregation_name)
 
@@ -714,22 +473,10 @@ def test_aggregation_raises_key_error_on_empty_result(
     assert mock_run_query.call_count == 1
 
 
-# --------------------------------------------------------------------------- #
-# Error disposition: propagation.  The subject contains no try and no except.
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize("aggregation_name", PUBLIC_AGGREGATIONS)
 def test_aggregation_propagates_query_failure(
     aggregation_name, mock_run_query
 ):
-    """A failure raised by ``run_query`` leaves the aggregation unchanged.
-
-    The subject wraps nothing in ``try``, so the exception type and message a
-    caller sees are the ones ``run_query`` raised.  ``update_tweet`` in
-    ``app/db/firestore.py`` takes the opposite disposition and returns
-    ``False`` on a swallowed failure.
-    """
     mock_run_query.side_effect = RuntimeError(QUERY_FAILURE_MESSAGE)
     aggregation = getattr(analytics_service, aggregation_name)
 
@@ -740,25 +487,16 @@ def test_aggregation_propagates_query_failure(
     assert excinfo.value.args == (QUERY_FAILURE_MESSAGE,)
 
 
-# --------------------------------------------------------------------------- #
-# Divergence: the date range is interpolated without validation.
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize(("start_date", "end_date"), UNVALIDATED_DATE_RANGES)
 def test_get_tweet_analytics_interpolates_an_unvalidated_date_range(
     start_date, end_date, mock_run_query_returning_tweet_rows
 ):
-    """A range the subject never validates reaches the SQL text verbatim.
-
-    Both an inverted range, whose end precedes its start, and a string that is
-    not a date are accepted: the call returns its ordinary aggregate and the
-    ``BETWEEN`` clause carries the two arguments exactly as they were passed.
-    """
     result = analytics_service.get_tweet_analytics(start_date, end_date)
 
     query = _emitted_query(mock_run_query_returning_tweet_rows)
 
+    assert start_date in query
+    assert end_date in query
     assert (
         "BETWEEN '{start}' AND '{end}'".format(start=start_date, end=end_date)
         in query
@@ -770,13 +508,302 @@ def test_get_tweet_analytics_interpolates_an_unvalidated_date_range(
 def test_get_user_analytics_interpolates_an_unvalidated_date_range(
     start_date, end_date, mock_run_query_returning_user_rows
 ):
-    """A range the subject never validates reaches the SQL text verbatim."""
     result = analytics_service.get_user_analytics(start_date, end_date)
 
     query = _emitted_query(mock_run_query_returning_user_rows)
 
+    assert start_date in query
+    assert end_date in query
     assert (
         "BETWEEN '{start}' AND '{end}'".format(start=start_date, end=end_date)
         in query
     )
     assert result["total_active_users"] == EXPECTED_TOTAL
+
+
+def _normalised_query(mock_run_query):
+    """Return the emitted SQL with every whitespace run collapsed to a space.
+
+    The subject builds each statement as a fourteen-line indented f-string, so
+    the raw text carries newlines and leading spaces that no consumer depends
+    on.  Collapsing them is what lets a clause be asserted as the one-line
+    literal it is in SQL terms, and it is the only transformation applied: no
+    token is reordered, removed or lower-cased.
+
+    Goes through :func:`_emitted_query`, so the single-positional-argument call
+    shape is pinned here too.
+    """
+    return re.sub(r"\s+", " ", _emitted_query(mock_run_query)).strip()
+
+
+@pytest.mark.parametrize("expression", TWEET_SELECT_EXPRESSIONS)
+def test_get_tweet_analytics_selects_the_expression(
+    expression, mock_run_query_returning_tweet_rows
+):
+    """Each selected expression appears with its own alias attached.
+
+    The pair is what matters: ``avg_retweets`` is the mean of
+    ``retweet_count`` and ``avg_favorites`` the mean of ``favorite_count``, so
+    swapping the two columns would leave both aliases present and both
+    aggregates wrong.
+    """
+    analytics_service.get_tweet_analytics(
+        FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
+    )
+
+    assert expression in _normalised_query(
+        mock_run_query_returning_tweet_rows
+    )
+
+
+def test_get_tweet_analytics_selects_exactly_those_four_expressions(
+    mock_run_query_returning_tweet_rows,
+):
+    """The ``SELECT`` list is those four expressions, in order, and no others.
+
+    Read as the text between ``SELECT`` and ``FROM`` and compared for equality,
+    so a fifth column, a dropped column or a reordering is reported -- none of
+    which a per-expression containment assertion can see.
+    """
+    analytics_service.get_tweet_analytics(
+        FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
+    )
+
+    query = _normalised_query(mock_run_query_returning_tweet_rows)
+    select_list = query.split("SELECT ", 1)[1].split(" FROM ", 1)[0]
+
+    assert select_list == SELECT_LIST_SEPARATOR.join(
+        TWEET_SELECT_EXPRESSIONS
+    )
+
+
+def test_get_tweet_analytics_reads_from_the_dataset_tweets_table(
+    mock_run_query_returning_tweet_rows,
+):
+    """The ``FROM`` clause names the backticked ``<dataset>.tweets`` table.
+
+    Asserted as the clause rather than as a bare substring, so the dataset
+    appearing anywhere else in the statement would not satisfy it.
+    """
+    analytics_service.get_tweet_analytics(
+        FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
+    )
+
+    query = _normalised_query(mock_run_query_returning_tweet_rows)
+
+    assert "FROM `{dataset}.tweets` WHERE".format(
+        dataset=analytics_service.settings.BIGQUERY_DATASET
+    ) in query
+
+
+def test_get_tweet_analytics_filters_on_the_created_at_date(
+    mock_run_query_returning_tweet_rows,
+):
+    """The ``WHERE`` clause filters ``DATE(created_at)``, not ``created_at``.
+
+    The expression, the two dates and the clause that follows are asserted
+    together, which pins what is compared as well as what it is compared to: a
+    filter moved onto the raw timestamp, or onto another column, would keep the
+    same ``BETWEEN`` values.
+    """
+    analytics_service.get_tweet_analytics(
+        FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
+    )
+
+    query = _normalised_query(mock_run_query_returning_tweet_rows)
+
+    assert (
+        "WHERE {expression} BETWEEN '{start}' AND '{end}' {group_by}".format(
+            expression=FILTERED_EXPRESSION,
+            start=FIRST_ANALYTICS_DATE,
+            end=SECOND_ANALYTICS_DATE,
+            group_by=GROUP_BY_CLAUSE,
+        )
+        in query
+    )
+
+
+def test_get_tweet_analytics_groups_by_the_created_at_date(
+    mock_run_query_returning_tweet_rows,
+):
+    """The statement groups on ``DATE(created_at)``, one row per day.
+
+    Grouping is what makes ``daily_breakdown`` daily and what makes
+    ``avg_daily_tweets`` a mean over days; dropping it would collapse the
+    result to a single row and change every metric the function returns.
+    """
+    analytics_service.get_tweet_analytics(
+        FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
+    )
+
+    query = _normalised_query(mock_run_query_returning_tweet_rows)
+
+    assert "{group_by} {order_by}".format(
+        group_by=GROUP_BY_CLAUSE, order_by=ORDER_BY_CLAUSE
+    ) in query
+
+
+def test_get_tweet_analytics_orders_by_the_date_alias(
+    mock_run_query_returning_tweet_rows,
+):
+    """The statement ends by ordering on the ``date`` alias.
+
+    Asserted as the end of the text, so nothing follows the ordering -- no
+    ``LIMIT``, no second clause -- and the order is ascending by omission.
+    """
+    analytics_service.get_tweet_analytics(
+        FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
+    )
+
+    query = _normalised_query(mock_run_query_returning_tweet_rows)
+
+    assert query.endswith(ORDER_BY_CLAUSE)
+
+
+def test_get_tweet_analytics_emits_the_expected_statement(
+    mock_run_query_returning_tweet_rows,
+):
+    """The whole normalised statement equals the specified text.
+
+    The exhaustive form of the cases above: every token of the statement is
+    pinned at once, with only the dataset and the caller's two dates supplied.
+    The clause-level cases are kept because this one reports a single diff
+    wherever the change is, while they name the clause that moved.
+    """
+    analytics_service.get_tweet_analytics(
+        FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
+    )
+
+    query = _normalised_query(mock_run_query_returning_tweet_rows)
+
+    assert query == TWEET_QUERY_TEMPLATE.format(
+        dataset=analytics_service.settings.BIGQUERY_DATASET,
+        start=FIRST_ANALYTICS_DATE,
+        end=SECOND_ANALYTICS_DATE,
+    )
+
+
+@pytest.mark.parametrize("expression", USER_SELECT_EXPRESSIONS)
+def test_get_user_analytics_selects_the_expression(
+    expression, mock_run_query_returning_user_rows
+):
+    """Each selected expression appears with its own alias attached.
+
+    ``COUNT(DISTINCT user_id) as active_users`` is the case that matters most:
+    dropping ``DISTINCT``, or counting rows instead, would leave the alias --
+    and therefore ``total_active_users`` and ``avg_daily_active_users`` --
+    intact while making both a tweet count.
+    """
+    analytics_service.get_user_analytics(
+        FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
+    )
+
+    assert expression in _normalised_query(mock_run_query_returning_user_rows)
+
+
+def test_get_user_analytics_selects_exactly_those_four_expressions(
+    mock_run_query_returning_user_rows,
+):
+    """The ``SELECT`` list is those four expressions, in order, and no more."""
+    analytics_service.get_user_analytics(
+        FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
+    )
+
+    query = _normalised_query(mock_run_query_returning_user_rows)
+    select_list = query.split("SELECT ", 1)[1].split(" FROM ", 1)[0]
+
+    assert select_list == SELECT_LIST_SEPARATOR.join(USER_SELECT_EXPRESSIONS)
+
+
+def test_get_user_analytics_reads_from_the_dataset_tweets_table(
+    mock_run_query_returning_user_rows,
+):
+    """The ``FROM`` clause names the same ``<dataset>.tweets`` table.
+
+    There is no separate users table: the user metrics are derived from the
+    ``user_id``, ``followers_count`` and ``friends_count`` columns of the
+    tweets table, which is why ``active_users`` needs ``DISTINCT``.
+    """
+    analytics_service.get_user_analytics(
+        FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
+    )
+
+    query = _normalised_query(mock_run_query_returning_user_rows)
+
+    assert "FROM `{dataset}.tweets` WHERE".format(
+        dataset=analytics_service.settings.BIGQUERY_DATASET
+    ) in query
+
+
+def test_get_user_analytics_filters_on_the_created_at_date(
+    mock_run_query_returning_user_rows,
+):
+    """The ``WHERE`` clause filters ``DATE(created_at)``, not the timestamp.
+
+    The same clause the tweet statement uses, asserted here so neither
+    aggregation can drift onto the raw ``created_at`` on its own.
+    """
+    analytics_service.get_user_analytics(
+        FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
+    )
+
+    query = _normalised_query(mock_run_query_returning_user_rows)
+
+    assert (
+        "WHERE {expression} BETWEEN '{start}' AND '{end}' {group_by}".format(
+            expression=FILTERED_EXPRESSION,
+            start=FIRST_ANALYTICS_DATE,
+            end=SECOND_ANALYTICS_DATE,
+            group_by=GROUP_BY_CLAUSE,
+        )
+        in query
+    )
+
+
+def test_get_user_analytics_groups_by_the_created_at_date(
+    mock_run_query_returning_user_rows,
+):
+    """The statement groups on ``DATE(created_at)``, one row per day.
+
+    ``avg_daily_active_users`` is a mean over those groups, so the grouping key
+    is part of what that metric means.
+    """
+    analytics_service.get_user_analytics(
+        FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
+    )
+
+    query = _normalised_query(mock_run_query_returning_user_rows)
+
+    assert "{group_by} {order_by}".format(
+        group_by=GROUP_BY_CLAUSE, order_by=ORDER_BY_CLAUSE
+    ) in query
+
+
+def test_get_user_analytics_orders_by_the_date_alias(
+    mock_run_query_returning_user_rows,
+):
+    """The statement ends by ordering on the ``date`` alias."""
+    analytics_service.get_user_analytics(
+        FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
+    )
+
+    query = _normalised_query(mock_run_query_returning_user_rows)
+
+    assert query.endswith(ORDER_BY_CLAUSE)
+
+
+def test_get_user_analytics_emits_the_expected_statement(
+    mock_run_query_returning_user_rows,
+):
+    """The whole normalised statement equals the specified text."""
+    analytics_service.get_user_analytics(
+        FIRST_ANALYTICS_DATE, SECOND_ANALYTICS_DATE
+    )
+
+    query = _normalised_query(mock_run_query_returning_user_rows)
+
+    assert query == USER_QUERY_TEMPLATE.format(
+        dataset=analytics_service.settings.BIGQUERY_DATASET,
+        start=FIRST_ANALYTICS_DATE,
+        end=SECOND_ANALYTICS_DATE,
+    )

@@ -1,27 +1,3 @@
-/**
- * Suite for `RealTimeFeed`, the default export of `frontend/src/components/Dashboard` - a file with
- * no extension, reached through the `moduleNameMapper` entry and the transformer that
- * `frontend/jest.config.js` registers for it.
- *
- * Two properties of the subject shape everything below.
- *
- * 1. Line 10 calls `getLatestTweets()` with **no arguments**, while
- *    `frontend/src/services/twitterService.ts` declares `getLatestTweets(count: number)`, so the
- *    declared `count` arrives as `undefined`.
- * 2. Line 3 imports `TweetCard` from `@/components/TweetManagement`, which exports only `TweetList`
- *    and imports `TweetCard` from itself. `TweetCard` is therefore `undefined`, and it is exported
- *    by nothing anywhere in the repository, so line 25 cannot render a tweet.
- *
- * The mounted tree calls `setInterval` exactly once, so the spy's first recorded result is the
- * subject's own interval id. The mount fetch settles on the microtask queue while the poll is a
- * timer: advancing the fake clock does not settle a promise, and settling a promise does not fire a
- * timer.
- *
- * @see frontend/src/components/Dashboard - the subject.
- * @see frontend/TESTING.md - how to add a colocated suite, and the pitfalls of this one.
- * @see docs/testing/DECISION-LOG.md - the single source of truth for why this suite is built this way.
- */
-
 import { act, cleanup, screen } from '@testing-library/react';
 
 import RealTimeFeed from '@/components/Dashboard';
@@ -29,52 +5,45 @@ import { getLatestTweets } from '@/services/twitterService';
 import { makeFeedTweet } from '@/test-utils/factories';
 import { renderWithProviders } from '@/test-utils/render';
 
-/* Replaces the one module the subject fetches through. It is the only module this suite mocks. */
 jest.mock('@/services/twitterService');
 
-/** The `setInterval` delay at line 16 of the subject. */
 const POLL_INTERVAL_MS = 30000;
 
-/** One millisecond short of {@link POLL_INTERVAL_MS}. */
 const ONE_TICK_BEFORE_POLL_MS = 29999;
 
-/** Text of the `h2` at line 23 of the subject. */
 const FEED_HEADING = 'Real-Time Tweet Feed';
 
-/** Class on the wrapper `div` at line 22. The element carries no test id, so the class is the handle. */
 const WRAPPER_SELECTOR = 'div.real-time-feed';
 
-/** The mocked service function, typed as a mock. */
 const latestTweets = () => jest.mocked(getLatestTweets);
 
-/**
- * Settles the promise the mount effect starts at line 14, and lets React apply the `setTweets` that
- * follows it. Rejects with whatever React threw while applying that update.
- */
+/** Flush the mount fetch and React state update; propagate render errors. */
 async function flushPendingFetch(): Promise<void> {
   await act(async () => {});
 }
 
-/**
- * Advances the fake clock and settles whatever the fired timer callbacks started, so an assertion
- * that follows sees both the timer and its promise resolved.
- *
- * @param milliseconds - How far to advance the fake clock.
- */
+/** Advance fake timers and flush promises started by polling callbacks. */
 async function advanceTimers(milliseconds: number): Promise<void> {
   await act(async () => {
     jest.advanceTimersByTime(milliseconds);
   });
 }
 
+/** Error the service is made to reject with; asserted by identity, never by message alone. */
+const FETCH_FAILURE = new Error('the tweet feed could not be fetched');
+
 /**
- * Everything a `console.error` spy recorded, one call per line, every argument stringified. React
- * reports an invalid element type across several arguments and several calls, and interpolates the
- * type through a `%s` format specifier instead of writing it into a single argument.
+ * A promise that never settles, for the mount fetch of the rejection cases.
  *
- * @param spy - A spy installed on `console.error`.
- * @returns The recorded text, joined for substring assertions.
+ * The mount call at line 14 discards its promise, so a mount fetch that rejected would leave an
+ * unhandled rejection behind; one that never settles leaves the subject waiting at line 10 forever,
+ * which reaches no state update, holds no timer and is discarded when the tree unmounts.
  */
+function neverSettles(): Promise<never[]> {
+  return new Promise<never[]>(() => undefined);
+}
+
+/** Flatten console.error calls because React splits formatted warnings across arguments and calls. */
 function reportedText(spy: jest.SpyInstance): string {
   return spy.mock.calls
     .map((callArguments: unknown[]) =>
@@ -92,9 +61,6 @@ describe('RealTimeFeed (src/components/Dashboard)', () => {
   beforeEach(() => {
     jest.useFakeTimers();
 
-    /*
-     * An array, not `undefined`: line 11 stores whatever resolves and line 24 calls `.map` on it.
-     */
     latestTweets().mockReset().mockResolvedValue([]);
 
     /* Installed after the fake clock, so they wrap its implementations. */
@@ -103,11 +69,7 @@ describe('RealTimeFeed (src/components/Dashboard)', () => {
   });
 
   afterEach(() => {
-    /*
-     * Unmounting happens while the fake clock and both spies are still installed. Restoring a spy
-     * writes back the implementation it wrapped, which for these two is the fake clock's, and the
-     * clock is uninstalled on the line after.
-     */
+    /* Unmount before restoring timer spies, then restore spies before returning to real timers. */
     cleanup();
     jest.restoreAllMocks();
     jest.useRealTimers();
@@ -179,7 +141,6 @@ describe('RealTimeFeed (src/components/Dashboard)', () => {
     const { unmount } = renderWithProviders(<RealTimeFeed />);
     await flushPendingFetch();
 
-    /* The only recorded call is the subject's, so its result is the id line 18 clears. */
     const intervalId = setIntervalSpy.mock.results[0].value;
 
     /* The shared cleanup unmounts only after this test body has finished. */
@@ -187,7 +148,6 @@ describe('RealTimeFeed (src/components/Dashboard)', () => {
 
     expect(clearIntervalSpy).toHaveBeenCalledWith(intervalId);
 
-    /* The cleared interval no longer fires: two further periods produce no additional fetch. */
     await advanceTimers(POLL_INTERVAL_MS * 2);
 
     expect(getLatestTweets).toHaveBeenCalledTimes(1);
@@ -196,14 +156,9 @@ describe('RealTimeFeed (src/components/Dashboard)', () => {
   it('throws Element type is invalid when a tweet reaches the undefined TweetCard', async () => {
     latestTweets().mockResolvedValue([makeFeedTweet()]);
 
-    /*
-     * React writes the invalid type to `console.error` before it throws. Captured for this test
-     * only, asserted on below, and restored in `finally`.
-     */
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 
     try {
-      /* Line 25 is reached by the re-render that line 11 triggers, so the render itself succeeds. */
       renderWithProviders(<RealTimeFeed />);
 
       const flushed = flushPendingFetch();
@@ -212,7 +167,6 @@ describe('RealTimeFeed (src/components/Dashboard)', () => {
       await expect(flushed).rejects.toThrow(/got: undefined/);
       await expect(flushed).rejects.toThrow(/Check the render method of `RealTimeFeed`/);
 
-      /* The element was created before it failed to reconcile, so the type warning is reported too. */
       const reported = reportedText(consoleError);
 
       expect(reported).toContain('React.jsx: type is invalid');
@@ -222,7 +176,91 @@ describe('RealTimeFeed (src/components/Dashboard)', () => {
       consoleError.mockRestore();
     }
 
-    /* The single tweet was fetched once; the failure is in rendering it, not in fetching it. */
     expect(getLatestTweets).toHaveBeenCalledTimes(1);
+  });
+
+  describe('when the feed service rejects', () => {
+    /**
+     * Mounts the subject with a mount fetch that never settles, then arms the next fetch to reject.
+     *
+     * @returns The render result, plus `poll` - the function line 16 registered with `setInterval`,
+     *   which is the same object line 14 called at mount, and `intervalId`, the id line 18 clears.
+     */
+    function mountWithArmedRejection() {
+      latestTweets().mockReset().mockReturnValue(neverSettles());
+
+      const rendered = renderWithProviders(<RealTimeFeed />);
+
+      /* One call, from the mount, and one registration, whose callback is the subject's own. */
+      expect(getLatestTweets).toHaveBeenCalledTimes(1);
+      expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+
+      const poll = setIntervalSpy.mock.calls[0][0] as () => Promise<void>;
+      const intervalId = setIntervalSpy.mock.results[0].value;
+
+      latestTweets().mockReset().mockRejectedValueOnce(FETCH_FAILURE);
+
+      return { ...rendered, poll, intervalId };
+    }
+
+    it('propagates the rejection out of its own fetch function, unchanged', async () => {
+      const { poll } = mountWithArmedRejection();
+
+      /*
+       * The subject holds no `try` and no `.catch`, so the error the service rejected with is the
+       * error its own function rejects with - the same object, not a copy and not a replacement.
+       * This is the promise line 14 and line 16 both discard, which is what makes the rejection
+       * unhandled in production.
+       */
+      await expect(poll()).rejects.toBe(FETCH_FAILURE);
+    });
+
+    it('fetches the same way the mount did, with no arguments', async () => {
+      const { poll } = mountWithArmedRejection();
+
+      await expect(poll()).rejects.toBe(FETCH_FAILURE);
+
+      /*
+       * Line 16 registers the very function line 14 called, so the argument-less call recorded here
+       * is the call the mount makes as well: the disposition asserted above is the disposition of
+       * both. `getLatestTweets` declares one `count` parameter and receives none, which is the
+       * defect the module docstring records.
+       */
+      expect(latestTweets().mock.calls).toEqual([[]]);
+    });
+
+    it('applies no state update and logs nothing', async () => {
+      const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      const { container, poll } = mountWithArmedRejection();
+
+      await expect(poll()).rejects.toBe(FETCH_FAILURE);
+
+      /*
+       * Line 11 is never reached, so the tweet list is untouched and the wrapper still holds only
+       * the heading: no tweet is rendered and the invalid `TweetCard` is never reached either.
+       */
+      const wrapper = container.querySelector(WRAPPER_SELECTOR);
+      expect(wrapper).not.toBeNull();
+      expect(wrapper?.children).toHaveLength(1);
+      expect(screen.getByRole('heading', { level: 2, name: FEED_HEADING })).toBeInTheDocument();
+
+      /* The subject has no error handling at all: nothing is logged and nothing is displayed. */
+      expect(reportedText(consoleError)).toBe('');
+      expect(screen.queryByText(FETCH_FAILURE.message)).toBeNull();
+    });
+
+    it('clears its interval on unmount and stops fetching', async () => {
+      const { poll, intervalId, unmount } = mountWithArmedRejection();
+      await expect(poll()).rejects.toBe(FETCH_FAILURE);
+
+      unmount();
+
+      expect(clearIntervalSpy).toHaveBeenCalledWith(intervalId);
+
+      /* Two further periods produce no fetch, so the failed feed leaves no timer behind. */
+      await advanceTimers(POLL_INTERVAL_MS * 2);
+
+      expect(latestTweets().mock.calls).toHaveLength(1);
+    });
   });
 });

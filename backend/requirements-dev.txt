@@ -14,10 +14,19 @@ pytest-xdist==3.8.0
 
 # runtime stack the tests exercise
 fastapi==0.95.2
-# SECURITY EXCEPTION - starlette 0.27.0: GHSA-f96h-pmfr-66vw / CVE-2024-47874,
-# multipart-parser DoS. Unreachable here (python-multipart is absent and no
-# implemented route accepts a form or an upload) and not upgradable without
-# replacing fastapi 0.95.2, which is out of scope. See docs/testing/DECISION-LOG.md.
+# SECURITY EXCEPTION - starlette 0.27.0 carries two advisories, neither closable
+# without replacing fastapi 0.95.2, which is out of scope:
+#  1. GHSA-f96h-pmfr-66vw / CVE-2024-47874, multipart-parser DoS. Unreachable
+#     here: python-multipart is absent and no implemented route accepts a form or
+#     an upload.
+#  2. GHSA-86qp-5c8j-p5mr / CVE-2026-48710, Host-header handling, affecting every
+#     release through 1.0.0. REACHABLE: the slash redirect builds an absolute
+#     Location from the unvalidated Host header and app/main.py installs no
+#     TrustedHostMiddleware, so POST /tweets/ with a hostile Host answers 307 to
+#     that host. Behaviour pinned by the Host census in
+#     backend/tests/integration/test_route_surface.py; the production mitigation
+#     needs an authorized change this suite does not have.
+# See docs/testing/DECISION-LOG.md.
 starlette==0.27.0
 pydantic==1.10.13
 uvicorn==0.22.0
@@ -27,7 +36,11 @@ google-cloud-firestore==2.11.1
 google-cloud-bigquery==3.11.4
 google-auth==2.22.0
 google-api-core==2.11.1
-python-jose[cryptography]==3.3.0
+# SECURITY - python-jose raised from 3.3.0 to 3.5.0: 3.3.0 is affected by
+# CVE-2024-33663 / PYSEC-2024-232 (algorithm and key confusion) and
+# CVE-2024-33664 / PYSEC-2024-233 (compressed-JWE decompression bomb), both
+# fixed in 3.4.0.  3.5.0 supports Python 3.9.  See docs/testing/DECISION-LOG.md.
+python-jose[cryptography]==3.5.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 pandas==1.5.3

@@ -1,26 +1,3 @@
-/**
- * Contract of `frontend/src/components/Configuration`, whose default export is `TwitterAPISettings`: the form
- * it renders, the four controlled inputs it binds to its own state, the single object it hands its
- * collaborator on submit, and the disposition of a rejected save.
- *
- * Two properties of the subject are unusual, and both are handled in configuration rather than here. The
- * subject is an extension-less file: `frontend/jest.config.js` resolves `@/components/Configuration` to it
- * through `moduleNameMapper` and compiles it with `frontend/jest.transform.extensionless.js`, whose pattern is
- * `$`-anchored, so this suite's own `.tsx` name falls outside it and reaches ts-jest directly. And the
- * subject's collaborator specifier `@/services/configService` has no implementation under
- * `frontend/src/services`: the same config maps it to `frontend/src/test-utils/stubs/configService.ts`, which
- * is the module `jest.mock` below automocks.
- *
- * `frontend/src/test-utils/setup-jest.ts` supplies the jest-dom matchers and msw interception to every suite,
- * and registers no `alert` stub and no `console` spy; both are installed below, per test and restored. The
- * subject issues no request of its own, so msw stands over it as a guard only.
- *
- * @see frontend/src/components/Configuration - the module under test.
- * @see frontend/src/test-utils/render.tsx - the `renderWithProviders` harness every component suite mounts through.
- * @see frontend/TESTING.md - how to add a colocated suite, and the pitfalls of the four in this folder.
- * @see docs/testing/DECISION-LOG.md - the single source of truth for why each choice below is what it is.
- */
-
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -30,13 +7,10 @@ import { renderWithProviders } from '@/test-utils/render';
 
 jest.mock('@/services/configService');
 
-/** The subject's only collaborator, automocked. Every test drives it from the default set in `beforeEach`. */
 const updateTwitterAPIConfigMock = jest.mocked(updateTwitterAPIConfig);
 
-/** The interaction session handle, as `userEvent.setup()` returns it. */
 type User = ReturnType<typeof userEvent.setup>;
 
-/** The four label texts the subject renders, in DOM order, each matched in full. */
 const FIELD_LABELS = {
   apiKey: 'API Key:',
   apiSecret: 'API Secret:',
@@ -44,13 +18,10 @@ const FIELD_LABELS = {
   accessTokenSecret: 'Access Token Secret:',
 };
 
-/** Text of the subject's level-2 heading. */
 const HEADING = 'Twitter API Settings';
 
-/** Accessible name of the subject's only button. */
 const SUBMIT_LABEL = 'Save Twitter API Settings';
 
-/** One distinct value per field, so no assertion below can hold with two fields transposed. */
 const CREDENTIALS = {
   apiKey: 'k-1',
   apiSecret: 's-2',
@@ -58,21 +29,16 @@ const CREDENTIALS = {
   accessTokenSecret: 'ts-4',
 };
 
-/** The keys, in order, of the object the subject builds for its collaborator. */
 const PAYLOAD_KEYS = ['apiKey', 'apiSecret', 'accessToken', 'accessTokenSecret'];
 
-/** What `test-utils/stubs/configService.ts` resolves with. The subject awaits it and reads nothing from it. */
 const ACKNOWLEDGEMENT = { updated: true, section: 'twitterAPI' };
 
-/** The subject's success message, its failure message, and the prefix it logs a failure under. */
 const SUCCESS_ALERT = 'Twitter API settings updated successfully';
 const FAILURE_ALERT = 'Failed to update Twitter API settings';
 const FAILURE_LOG_PREFIX = 'Error updating Twitter API settings:';
 
-/** Message of the rejection the failure test installs. */
 const FAILURE_MESSAGE = 'save failed';
 
-/** Label, `id` and `type` of each input the subject renders, in DOM order. */
 const INPUT_FIELDS: [string, string, string][] = [
   [FIELD_LABELS.apiKey, 'apiKey', 'text'],
   [FIELD_LABELS.apiSecret, 'apiSecret', 'password'],
@@ -80,15 +46,7 @@ const INPUT_FIELDS: [string, string, string][] = [
   [FIELD_LABELS.accessTokenSecret, 'accessTokenSecret', 'password'],
 ];
 
-/**
- * Types every value in {@link CREDENTIALS} into the input its label identifies.
- *
- * `@testing-library/react` resolves `@testing-library/dom` 9.3.4 and `@testing-library/user-event` resolves
- * 10.4.1, so the `eventWrapper` the first configures is not the one the second reads, and each keystroke's
- * state update lands outside React's act scope. The keystrokes therefore run inside an explicit `act`, which
- * is where React expects them and what keeps the component-stack warning - one per character, each carrying a
- * source-mapped stack - out of the output and out of the suite's running time.
- */
+/** Wrap typing in act because this dependency graph otherwise schedules state updates outside React's act scope. */
 async function fillCredentials(user: User): Promise<void> {
   await act(async () => {
     await user.type(screen.getByLabelText(FIELD_LABELS.apiKey), CREDENTIALS.apiKey);
@@ -101,13 +59,11 @@ async function fillCredentials(user: User): Promise<void> {
   });
 }
 
-/** Clicks the subject's submit button. */
 async function submitForm(user: User): Promise<void> {
   await user.click(screen.getByRole('button', { name: SUBMIT_LABEL }));
 }
 
 describe('TwitterAPISettings (src/components/Configuration)', () => {
-  /** jsdom implements no `alert`. Installed before every render, restored after every test. */
   let alertSpy: jest.SpyInstance;
 
   beforeEach(() => {
@@ -199,11 +155,7 @@ describe('TwitterAPISettings (src/components/Configuration)', () => {
 
     expect(form).not.toBeNull();
 
-    /*
-     * Dispatching `submit` on the form reaches the handler with all four fields still empty, because it skips
-     * the constraint-validation step that the submit algorithm behind a button click performs - the step the
-     * last test in this file covers. `fireEvent` returns false when a listener called `preventDefault`.
-     */
+    /* fireEvent.submit bypasses native constraint validation; its false return records preventDefault. */
     expect(fireEvent.submit(form as HTMLFormElement)).toBe(false);
 
     // Settles the handler inside the test, so no `alert` arrives after the spy is restored.
@@ -222,8 +174,7 @@ describe('TwitterAPISettings (src/components/Configuration)', () => {
     renderWithProviders(<TwitterAPISettings />);
     await fillCredentials(user);
 
-    // The subject's own logging is this test's assertion target, so the spy covers the submit alone: it goes
-    // in once the form is filled and comes out immediately after.
+    // Scope the console spy to the rejected submit so unrelated logs are not captured.
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 
     try {
@@ -245,7 +196,6 @@ describe('TwitterAPISettings (src/components/Configuration)', () => {
       expect(alertSpy).toHaveBeenCalledTimes(1);
       expect(alertSpy).not.toHaveBeenCalledWith(SUCCESS_ALERT);
 
-      // Swallowed rather than propagated: the form, and the values entered into it, are both still there.
       expect(screen.getByRole('heading', { level: 2, name: HEADING })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: SUBMIT_LABEL })).toBeInTheDocument();
       expect(screen.getByLabelText(FIELD_LABELS.apiKey)).toHaveValue(CREDENTIALS.apiKey);
@@ -258,10 +208,7 @@ describe('TwitterAPISettings (src/components/Configuration)', () => {
     const user = userEvent.setup();
     renderWithProviders(<TwitterAPISettings />);
 
-    /*
-     * `handleSubmit` validates nothing of its own, so the four `required` attributes are the entire guard: the
-     * submit algorithm a button click runs stops at the first invalid control and never dispatches the event.
-     */
+    /* The required attributes are the only validation; a button click blocks submit before the handler runs. */
     await submitForm(user);
 
     expect(screen.getByLabelText(FIELD_LABELS.apiKey)).toBeInvalid();

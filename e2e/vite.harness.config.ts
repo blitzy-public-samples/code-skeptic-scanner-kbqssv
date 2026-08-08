@@ -264,16 +264,13 @@ const API_NOT_INTERCEPTED_ERROR = 'harness-api-not-intercepted';
 
 /**
  * Icon path a browser requests on its own on a top-level navigation, answered
- * `204 No Content`.
+ * `204 No Content` with no body.
  *
  * The harness ships no icon and `e2e/harness/index.html` declares none, so no document
- * references this path. Left to Vite the request 404s, and a browser logs that at error
- * level on every load, which puts a false failure in the console and in the Playwright
- * network record. A `204` is a success status carrying no body, so nothing is logged and
- * no reference to a nonexistent asset is introduced.
+ * references this path. Matched exactly, as the keys of {@link HARNESS_API_SURFACE} are:
+ * any other unknown dotted path still 404s.
  *
- * Matched exactly, as the keys of {@link HARNESS_API_SURFACE} are: a browser only ever
- * requests this spelling, and any other unknown dotted path still 404s.
+ * @see docs/testing/DECISION-LOG.md - row D147.
  */
 const FAVICON_PATH = '/favicon.ico';
 

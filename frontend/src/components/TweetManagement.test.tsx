@@ -1,72 +1,29 @@
-/**
- * Colocated suite for `frontend/src/components/TweetManagement`, an extension-less module whose only
- * export is `TweetList` - a named export, with no default export, that requires a `filters` prop.
- *
- * Three properties of that module shape every case below.
- *
- * 1. It imports `getTweets` from `@/services/twitterService`. That module exports `getLatestTweets`
- *    and `getTweetDetails` and nothing else, so `getTweets` is `undefined` and the mount-time
- *    `await getTweets(filters, page)` throws a `TypeError` before any transport is reached. Under
- *    this suite's CommonJS emit its message is
- *    `(0 , twitterService_1.getTweets) is not a function`.
- * 2. It imports `TweetCard` from itself. No module in the repository defines or exports that symbol,
- *    so every element the list builds for a tweet has an `undefined` type.
- * 3. `fetchTweets` catches whatever the call throws, records it as
- *    `console.error('Error fetching tweets:', error)` and clears `loading` in `finally`. The failure
- *    is swallowed rather than propagated: the component stays mounted and its markup settles at
- *    `<div class="tweet-list"></div>`.
- *
- * `handleScroll` calls `setPage` only while
- * `window.innerHeight + document.documentElement.scrollTop === document.documentElement.offsetHeight`.
- * jsdom runs no layout engine, so `innerHeight` is 768 while both document measurements are 0 and
- * that equality does not hold until a test makes it hold.
- *
- * @see frontend/TESTING.md - adding a colocated component suite, and the pitfalls this module's
- *   shape creates.
- * @see docs/testing/DECISION-LOG.md - the single source of truth for why this suite is built as it is.
- */
-
 import { act, waitFor } from '@testing-library/react';
 
 import { TweetList } from '@/components/TweetManagement';
 import { makeFeedTweet } from '@/test-utils/factories';
 import { renderWithProviders } from '@/test-utils/render';
 
-/*
- * `@/services/twitterService` is replaced by a spread of its own exports: the same two functions on a
- * plain object whose properties are writable. `getTweets` is absent from the spread exactly as it is
- * absent from the module, so the component's call to it throws in every case that does not attach
- * one; the compiled component reads `twitterService_1.getTweets` at call time, so a property attached
- * for one case is what that render calls.
- */
+/* Keep a writable mock namespace so tests can attach the otherwise-missing getTweets export. */
 jest.mock('@/services/twitterService', () => ({
   ...jest.requireActual('@/services/twitterService'),
 }));
 
-/*
- * The mocked module object itself, which is the object the compiled component reads `getTweets` from.
- * `require` hands back that object. The spread above drops the non-enumerable `__esModule` flag, and
- * the interop helper a namespace import compiles to copies a module object that lacks that flag, so
- * `import * as` would name a copy no render ever reads.
- */
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+/* Use require to access the exact CommonJS object the compiled component reads at call time. */
 const twitterService = require('@/services/twitterService') as { getTweets?: jest.Mock };
 
-/**
- * The `filters` prop, one object for the whole file. The component's fetch effect depends on
- * `[filters, page]`, so a fresh literal per render would present a new identity on every render and
- * refetch without end; this object's identity never changes, and a mount produces exactly one fetch.
- */
+/** Reuse one filters object; a new identity on every render would retrigger the effect indefinitely. */
 const filters = {};
 
-/** The page `handleScroll` has not yet advanced past, and the second argument of the mount fetch. */
 const FIRST_PAGE = 1;
 
-/**
- * Makes the document exactly as tall as the viewport is deep, which is the equality `handleScroll`
- * tests and, in a browser, the moment the reader reaches the bottom of the page. Written as a
- * configurable own property so {@link releaseDocumentBottom} can remove it.
- */
+/** The event type the component's own listener is registered under. */
+const SCROLL_EVENT = 'scroll';
+
+/** Text of the element the component renders while a fetch is in flight. */
+const LOADING_TEXT = 'Loading...';
+
+/** Override offsetHeight to satisfy the component's exact bottom-of-page equality. */
 function holdDocumentAtBottom(): void {
   Object.defineProperty(document.documentElement, 'offsetHeight', {
     configurable: true,
@@ -74,25 +31,24 @@ function holdDocumentAtBottom(): void {
   });
 }
 
-/**
- * Removes the own property {@link holdDocumentAtBottom} defines, restoring the inherited accessor
- * that reports 0. A no-op when no case defined it, so it is safe to call after every test.
- */
+/** Remove the temporary offsetHeight property after each test. */
 function releaseDocumentBottom(): void {
   delete (document.documentElement as unknown as { offsetHeight?: number }).offsetHeight;
 }
 
 describe('TweetList (src/components/TweetManagement)', () => {
-  /*
-   * The application's own `console.error` at line 35 of the component is this suite's primary
-   * observable. `src/test-utils/setup-jest.ts` intercepts no console method and installs no spy of
-   * any kind, so both spies below belong to this suite alone and are created and restored per test.
-   */
   let errorSpy: jest.SpyInstance;
+  let addEventListenerSpy: jest.SpyInstance;
   let removeEventListenerSpy: jest.SpyInstance;
 
   beforeEach(() => {
     errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    /*
+     * Both listener spies call through, so registration and removal still take effect on the real
+     * `window` and every case that dispatches a `'scroll'` event exercises the real listener set. They
+     * record the arguments alone, which is what the cleanup case compares.
+     */
+    addEventListenerSpy = jest.spyOn(window, 'addEventListener');
     removeEventListenerSpy = jest.spyOn(window, 'removeEventListener');
   });
 
@@ -100,20 +56,82 @@ describe('TweetList (src/components/TweetManagement)', () => {
     releaseDocumentBottom();
     delete twitterService.getTweets;
     removeEventListenerSpy.mockRestore();
+    addEventListenerSpy.mockRestore();
     errorSpy.mockRestore();
   });
 
-  /** Every `'scroll'` removal recorded so far, whoever asked for it. */
-  function scrollListenerRemovals(): unknown[][] {
-    return removeEventListenerSpy.mock.calls.filter(([type]) => type === 'scroll');
+  /** Every `'scroll'` registration recorded so far, whoever asked for it. */
+  function scrollListenerRegistrations(): unknown[][] {
+    return addEventListenerSpy.mock.calls.filter(([type]) => type === SCROLL_EVENT);
   }
 
-  /** Mounts the list and returns once the mount fetch has failed and been recorded. */
+  /** Every `'scroll'` removal recorded so far, whoever asked for it. */
+  function scrollListenerRemovals(): unknown[][] {
+    return removeEventListenerSpy.mock.calls.filter(([type]) => type === SCROLL_EVENT);
+  }
+
   async function mountAfterFirstFetch() {
     const rendered = renderWithProviders(<TweetList filters={filters} />);
     await waitFor(() => expect(errorSpy).toHaveBeenCalledTimes(1));
     return rendered;
   }
+
+  it('renders the loading indicator while a supplied getTweets is still in flight', async () => {
+    /*
+     * A promise this test holds open. Attaching it is the only way to observe the component
+     * mid-fetch: with `getTweets` absent the call throws synchronously and `finally` clears
+     * `loading` in the same turn, so the loading state is never on screen long enough to see.
+     */
+    let resolveFetch: (tweets: unknown[]) => void = () => undefined;
+    const inFlight = new Promise<unknown[]>((resolve) => {
+      resolveFetch = resolve;
+    });
+
+    twitterService.getTweets = jest.fn().mockReturnValue(inFlight);
+
+    const { container, getByText } = renderWithProviders(<TweetList filters={filters} />);
+
+    /* `setLoading(true)` ran before the await, so the indicator is rendered inside the container. */
+    expect(getByText(LOADING_TEXT)).toBeInTheDocument();
+    expect(container.querySelector('div.tweet-list')?.textContent).toBe(LOADING_TEXT);
+
+    /* Nothing has failed: the default path's log is absent because this call has not settled. */
+    expect(errorSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveFetch([]);
+      await inFlight;
+    });
+
+    /* `finally` cleared `loading`, so the indicator is gone. */
+    expect(container.querySelector('div.tweet-list')?.textContent).toBe('');
+  });
+
+  it('renders an empty container and no error when a supplied getTweets resolves with []', async () => {
+    /*
+     * The reachable success path. An empty resolution is the only one that survives it: the append
+     * at line 33 then produces an empty list, and the `TweetCard` element the map would build for a
+     * tweet is undefined, which the last case in this file asserts.
+     */
+    twitterService.getTweets = jest.fn().mockResolvedValue([]);
+
+    const { container } = renderWithProviders(<TweetList filters={filters} />);
+
+    await waitFor(() => expect(twitterService.getTweets).toHaveBeenCalledTimes(1));
+
+    const list = container.querySelector('div.tweet-list');
+
+    expect(list).toBeInTheDocument();
+    expect(list).toBeEmptyDOMElement();
+
+    /* Distinct from the default path, whose identical markup is reached through a logged failure. */
+    expect(errorSpy).not.toHaveBeenCalled();
+
+    const [forwardedFilters, forwardedPage] = twitterService.getTweets.mock.calls[0];
+
+    expect(forwardedFilters).toBe(filters);
+    expect(forwardedPage).toBe(FIRST_PAGE);
+  });
 
   it('renders an empty tweet-list container once the mount fetch has settled', async () => {
     const { container } = await mountAfterFirstFetch();
@@ -122,7 +140,6 @@ describe('TweetList (src/components/TweetManagement)', () => {
 
     expect(list).not.toBeNull();
     expect(list).toBeInTheDocument();
-    /* No tweet was appended, and `finally` cleared `loading`, so "Loading..." is gone as well. */
     expect(list).toBeEmptyDOMElement();
     expect(list?.textContent).toBe('');
   });
@@ -134,15 +151,9 @@ describe('TweetList (src/components/TweetManagement)', () => {
     expect(errorSpy.mock.calls[0]).toHaveLength(2);
     expect(errorSpy).toHaveBeenCalledWith('Error fetching tweets:', expect.any(TypeError));
 
-    /*
-     * The message is `(0 , twitterService_1.getTweets) is not a function`. `getTweets` is the symbol
-     * the component named; the `twitterService_1` qualifier and the parentheses V8 reports the callee
-     * inside are both emitted by the transform.
-     */
     const recorded = errorSpy.mock.calls[0][1] as TypeError;
     expect(recorded.message).toMatch(/\bgetTweets\)? is not a function/);
 
-    /* Swallowed, not propagated: the render survived the failure. */
     expect(container.querySelector('div.tweet-list')).toBeInTheDocument();
   });
 
@@ -154,10 +165,7 @@ describe('TweetList (src/components/TweetManagement)', () => {
       window.dispatchEvent(new Event('scroll'));
     });
 
-    /*
-     * `page` has no projection in the markup, so the refetch the `[filters, page]` effect performs -
-     * and the second failure it records - is what the increment is observed through.
-     */
+    /* page is not rendered, so the refetch/error record is the observable effect of incrementing it. */
     await waitFor(() => expect(errorSpy).toHaveBeenCalledTimes(2));
     expect(errorSpy).toHaveBeenNthCalledWith(2, 'Error fetching tweets:', expect.any(TypeError));
   });
@@ -176,31 +184,75 @@ describe('TweetList (src/components/TweetManagement)', () => {
     expect(errorSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('removes its scroll listener on unmount and refetches no further', async () => {
+  it('removes on unmount the very scroll callback it registered, once, with matching options', async () => {
     const { unmount } = await mountAfterFirstFetch();
+
+    /* One registration, from the single mount pass of the listener effect. */
+    const registrations = scrollListenerRegistrations();
+    expect(registrations).toHaveLength(1);
+
+    /*
+     * Registered with two arguments and no third: no capture boolean and no options object. Removal
+     * matches a listener on type, callback and capture flag together, so the third argument is part of
+     * the identity being compared and its absence on both sides is asserted rather than assumed.
+     */
+    const [registration] = registrations;
+    expect(registration).toHaveLength(2);
+    expect(registration[0]).toBe('scroll');
+    expect(typeof registration[1]).toBe('function');
+
+    const registeredCallback = registration[1] as EventListener;
 
     /* The listener effect has an empty dependency list, so nothing is removed before unmount. */
     expect(scrollListenerRemovals()).toHaveLength(0);
 
     unmount();
 
-    expect(scrollListenerRemovals()).toHaveLength(1);
-    expect(removeEventListenerSpy).toHaveBeenCalledWith('scroll', expect.any(Function));
+    const removals = scrollListenerRemovals();
 
+    expect(removals).toHaveLength(1);
+
+    /*
+     * The oracle is object identity, not `expect.any(Function)`. `window.removeEventListener`
+     * silently ignores a callback that was never registered, so removing a different function -
+     * a fresh closure, or the wrong one of two - would leave the real listener attached and every
+     * assertion below would still hold: React discards state updates after unmount without
+     * complaint, so the leak has no other visible symptom in this environment.
+     */
+    expect(removals[0][1]).toBe(registeredCallback);
+    expect(removeEventListenerSpy).toHaveBeenCalledWith(SCROLL_EVENT, registeredCallback);
+
+    /*
+     * Identity, not shape. `handleScroll` is a fresh function on every render while the effect that
+     * registers it has an empty dependency list, so its cleanup closes over the mount pass's copy.
+     * `expect.any(Function)` is satisfied by any of those copies, and removal only takes effect for the
+     * exact callback that was registered - so the same reference, and a matching argument list, is what
+     * establishes that no listener is left behind.
+     */
+    const [removal] = removals;
+    expect(removal[1]).toBe(registeredCallback);
+    expect(removal).toHaveLength(registration.length);
+    expect(removal[0]).toBe(registration[0]);
+    expect(removal[2]).toBe(registration[2]);
+    expect(removeEventListenerSpy).toHaveBeenCalledWith('scroll', registeredCallback);
+
+    /*
+     * A corollary of the removal rather than a second proof of it: React discards a state update from
+     * an unmounted tree, so a leaked listener would also record no further fetch here. It is asserted
+     * because a refetch at this point would mean the component kept working after unmount.
+     */
     holdDocumentAtBottom();
     await act(async () => {
-      window.dispatchEvent(new Event('scroll'));
+      window.dispatchEvent(new Event(SCROLL_EVENT));
     });
 
     expect(errorSpy).toHaveBeenCalledTimes(1);
+    /* Unmounting registers nothing new either. */
+    expect(scrollListenerRegistrations()).toHaveLength(1);
   });
 
   it('fails on the undefined TweetCard element type once getTweets resolves with a tweet', async () => {
-    /*
-     * `getTweets` is attached for this case alone and removed in `afterEach`. It is the only way the
-     * append at line 33 and the `TweetCard` element at line 60 are reached: no module exports
-     * `getTweets`, and none defines `TweetCard`, so in the application both lines are unreachable.
-     */
+    /* Attach getTweets only for this case to reach the otherwise-unreachable TweetCard branch. */
     twitterService.getTweets = jest.fn().mockResolvedValue([makeFeedTweet()]);
 
     let container: HTMLElement | undefined;
@@ -210,7 +262,6 @@ describe('TweetList (src/components/TweetManagement)', () => {
       });
     };
 
-    /* React rethrows the invalid element type out of the flush rather than only recording it. */
     await expect(mountAndFlush()).rejects.toThrow(
       /Element type is invalid: .+ but got: undefined\./,
     );
@@ -219,6 +270,70 @@ describe('TweetList (src/components/TweetManagement)', () => {
     const [forwardedFilters, forwardedPage] = twitterService.getTweets.mock.calls[0];
     expect(forwardedFilters).toBe(filters);
     expect(forwardedPage).toBe(FIRST_PAGE);
+
+    /*
+     * React's own diagnostics, recorded by the spy that keeps them out of the run's output. They are
+     * asserted rather than merely silenced: they are the only place the *name* of the invalid element
+     * appears, and they are how a change in the way React reports it would be noticed.
+     *
+     * Two validation records, not one. React re-runs the render synchronously after the throw to build
+     * a component stack, and the element is validated again on that pass.
+     */
+    const records = errorSpy.mock.calls;
+    const invalidElementRecords = records.filter(
+      (call) => typeof call[0] === 'string' && call[0].includes('React.jsx: type is invalid'),
+    );
+    expect(invalidElementRecords).toHaveLength(2);
+    invalidElementRecords.forEach((call) => {
+      /* The format string plus its three substitutions, passed unformatted to `console.error`. */
+      expect(call).toHaveLength(4);
+      expect(call[0]).toContain('expected a string (for built-in components)');
+      expect(call[0]).toContain('but got: %s.%s%s');
+      /* The substitution for the element type: the value `TweetCard` resolved to. */
+      expect(call[1]).toBe('undefined');
+      expect(call[2]).toContain('You likely forgot to export your component');
+      /* The component that built the element, named by React itself. */
+      expect(call[2]).toContain('Check the render method of `TweetList`.');
+      /*
+       * The component stack, whose top frame is the module that built the element. Matched by module
+       * and position rather than by frame name: coverage instrumentation rewrites the function whose
+       * name V8 infers, so the same frame reads `at TweetList` under `npm test` and `at filters` under
+       * `npm run test:ci`, while the file and line stay put.
+       */
+      expect(call[3]).toMatch(/^\s+at \S+ \(.*components[\\/]TweetManagement:\d+:\d+\)/);
+    });
+
+    /* The single record React writes once it gives up on the tree, carrying the same stack. */
+    const teardownRecords = records.filter(
+      (call) => typeof call[0] === 'string' && call[0].includes('The above error occurred'),
+    );
+    expect(teardownRecords).toHaveLength(1);
+    expect(teardownRecords[0]).toHaveLength(1);
+    expect(teardownRecords[0][0]).toContain('<Fragment> component:');
+    /* Through the rendered container, then into the module that built the element. */
+    expect(teardownRecords[0][0]).toContain('at div');
+    expect(teardownRecords[0][0]).toMatch(/at \S+ \(.*components[\\/]TweetManagement:\d+:\d+\)/);
+
+    /*
+     * jsdom forwarding the same uncaught error through its virtual console - once per render pass - as
+     * an object rather than a string.
+     */
+    const forwardedRecords = records.filter((call) => typeof call[0] === 'object' && call[0] !== null);
+    expect(forwardedRecords).toHaveLength(2);
+    forwardedRecords.forEach((call) => {
+      expect(call).toHaveLength(1);
+      const forwarded = call[0] as { type: unknown; detail: unknown };
+      expect(forwarded.type).toBe('unhandled exception');
+      expect(forwarded.detail).toBeInstanceOf(Error);
+      expect((forwarded.detail as Error).message).toMatch(
+        /Element type is invalid: .+ but got: undefined\./,
+      );
+    });
+
+    /* Those three groups are the whole census, so a fourth kind of record cannot appear unnoticed. */
+    expect(records).toHaveLength(
+      invalidElementRecords.length + teardownRecords.length + forwardedRecords.length,
+    );
 
     /* React tears the tree down: the container the list rendered into is left empty. */
     expect(container).toBeDefined();

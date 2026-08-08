@@ -11,11 +11,9 @@ Isolation
 ``app.db.firestore.get_db`` is replaced in every test in this module through the
 ``firestore_client`` fixture in ``backend/tests/conftest.py``, which patches the
 attribute on this subject — the boundary the wrappers themselves read.
-Unpatched, ``get_db`` resolves ambient Google credentials and constructs a real
-client, and a wrapper call then performs a live Cloud Firestore round trip.
 :func:`test_every_test_requests_the_firestore_client_fixture` is the structural
-gate that keeps that guarantee true for tests added later.  No test in this
-module constructs a client, and none calls ``get_db`` in an unpatched state.
+gate that keeps that true for tests added later.  No test in this module
+constructs a client, and none calls ``get_db`` in an unpatched state.
 
 What this suite asserts
 -----------------------
@@ -33,6 +31,11 @@ What this suite asserts
   applied the update payload exactly once.
 * ``update_tweet`` returns ``False``, and raises nothing, when ``doc_ref.update``
   raises — for a bare ``Exception`` and for a narrower type alike.
+* ``add_tweet`` and ``get_tweet`` propagate a failure raised at **any** link of
+  the chain they drive — client acquisition, ``collection``, ``add``,
+  ``document``, ``get`` and ``to_dict`` — as the very instance that was raised,
+  and neither produces a return value on that path.
+* A propagating link stops the chain: no later call on it is made.
 * Each wrapper acquires its client through exactly one ``get_db`` call.
 * The module exposes ``db``, ``get_db``, ``add_tweet``, ``get_tweet`` and
   ``update_tweet``, and ``db`` is a ``google.cloud.firestore.Client`` distinct
@@ -51,82 +54,102 @@ A failing write makes ``update_tweet`` return ``False``.  The bare
 emits no diagnostic output, binds no exception name and performs no chaining, so
 the ``False`` return is the only observable evidence that anything went wrong.
 ``insert_tweet_analytics`` in ``app/db/bigquery.py`` propagates the equivalent
-failure instead.  Both dispositions are asserted in their own suites, exactly as
-production behaves.
+failure instead; each disposition is asserted in its own suite.
+
+That clause is the module's **only** ``except``, and it guards one statement.
+``add_tweet`` and ``get_tweet`` hold none at all, so every failure they meet
+reaches the caller unchanged — including a bare ``Exception``, the very type the
+``update_tweet`` clause names.  The suite asserts that link by link rather than
+once at the boundary, because the two dispositions are one line apart in the
+same module and a clause added to the wrong function would otherwise turn a
+propagated failure into a silent ``None``: ``get_tweet`` already returns ``None``
+for an absent document, so a swallowed read failure would be indistinguishable
+from a miss.  Every propagation case therefore asserts the exception's identity,
+its type and its message, and that no later link of the chain was reached.
 
 ``add_response`` is imported from this module by
-``app/tasks/response_generator.py`` line 1 and defined here by nothing, which is
-why ``backend/tests/conftest.py`` stands up a fail-closed shim for it.  That
-shim binds the name onto this module only for the lifetime of the
-``response_generator_module`` fixture and deletes it again on teardown, so the
-absence asserted here is the module's real production shape at any other time.
+``app/tasks/response_generator.py`` line 1 and defined here by nothing.  The
+fail-closed shim in ``backend/tests/conftest.py`` binds that name onto this
+module for the lifetime of the ``response_generator_module`` fixture and deletes
+it again on teardown, so the absence asserted here is the module's shape at any
+other time.
 
-``get_tweet`` being synchronous is what makes ``await get_tweet(...)`` at
+``get_tweet`` is synchronous, which is what makes ``await get_tweet(...)`` at
 ``app/tasks/response_generator.py`` line 12 a ``TypeError``.  That call is
 asserted in the response-generator suite; the fact it rests on is pinned here.
 
 Coverage
 --------
 Lines 8-10, the body of ``get_db``, are executed by no test in this module:
-every test replaces that function.  ``docs/testing/DECISION-LOG.md`` records the
-decision and the gate this module is measured against.
+every test replaces that function.
 
 Scope
 -----
 Every test calls a wrapper directly against a mock client.  The
 ``Depends(get_db)`` wiring on the tweets router and the
 ``app.dependency_overrides`` path belong to ``backend/tests/integration/``.
-"""
 
+.. seealso::
+
+   ``docs/testing/DECISION-LOG.md`` rows D149 (the patch boundary), D25-D27 and
+   D105 (the credential neutraliser and egress guard behind it), D106 (the
+   fail-closed shims), D53 (production defects are pinned, not repaired) and
+   D70 (the coverage gate this module is measured against).
+   ``docs/testing/TRACEABILITY-MATRIX.md`` section G for the ``get_db`` ceiling.
+"""
 import inspect
 from unittest.mock import MagicMock
-
 import pytest
 from google.cloud.firestore import Client
-
 import app.db.firestore as firestore
 from tests.factories import make_tweet
-
 pytestmark = pytest.mark.unit
 
 
-# --------------------------------------------------------------------------- #
-# Oracles.  Every expected value below is either read from the subject or
-# established by a mock this module configures.
-# --------------------------------------------------------------------------- #
-
-#: The single collection name the subject hardcodes, at lines 16, 21 and 32.
 TWEETS_COLLECTION = "tweets"
-
-#: ``id`` carried by element 1 of the ``add()`` result — the document reference.
-#: ``add_tweet`` returns this, because line 17 reads ``doc_ref[1].id``.
 EXPECTED_DOCUMENT_ID = "doc123"
-
-#: ``id`` carried by element 0 of the ``add()`` result — the write timestamp.
-#: Distinct from :data:`EXPECTED_DOCUMENT_ID`, so a return that indexed element
-#: 0 would be observable rather than merely equal.
 UNRETURNED_ELEMENT_ID = "write-time-not-a-document-id"
-
-#: Document id passed to ``get_tweet`` and ``update_tweet``.
 TWEET_ID = "1"
-
-#: Payload for the ``add_tweet`` call-shape cases.  The subject passes it to the
-#: client without inspecting it.
-#: :func:`test_add_tweet_accepts_a_schema_valid_payload` covers the full
-#: ten-field payload instead.
 MINIMAL_TWEET_PAYLOAD = {"a": 1}
-
-#: Payload for ``update_tweet``.
 UPDATE_PAYLOAD = {"x": 2}
-
-#: Failures handed to ``doc_ref.update``.  ``Exception`` is the type the bare
-#: ``except`` at line 36 names; ``RuntimeError`` and ``ValueError`` are
-#: subclasses, and each is caught by the same clause.
 UPDATE_FAILURES = (
     pytest.param(Exception, "boom", id="exception"),
     pytest.param(RuntimeError, "transport failure", id="runtimeerror"),
     pytest.param(ValueError, "malformed update", id="valueerror"),
 )
+
+#: Failures injected at the unguarded links of ``add_tweet`` and ``get_tweet``.
+#: ``Exception`` is first and is the case that matters most: it is the type the
+#: bare clause in ``update_tweet`` names, so a clause of that shape added to
+#: either of these two functions would stop the exception this parametrisation
+#: expects to arrive.  The narrower types are subclasses of it and none is
+#: caught either.
+PROPAGATED_FAILURES = (
+    pytest.param(Exception, id="exception"),
+    pytest.param(RuntimeError, id="runtimeerror"),
+    pytest.param(ConnectionError, id="connectionerror"),
+)
+
+PROPAGATED_FAILURES_WITH_MESSAGE = (
+    pytest.param(RuntimeError, "transport failure", id="runtimeerror"),
+    pytest.param(ValueError, "malformed document", id="valueerror"),
+    pytest.param(Exception, "boom", id="exception"),
+)
+
+#: Messages carried by the injected failures, one per link.  Each is distinct,
+#: so a propagated exception identifies the link it was raised at rather than
+#: merely being of the expected type.
+ACQUISITION_FAILURE_MESSAGE = "credentials could not be resolved"
+COLLECTION_FAILURE_MESSAGE = "collection lookup failed"
+ADD_FAILURE_MESSAGE = "the write was rejected"
+DOCUMENT_FAILURE_MESSAGE = "document reference could not be built"
+SNAPSHOT_FETCH_FAILURE_MESSAGE = "the snapshot could not be read"
+SNAPSHOT_CONVERSION_FAILURE_MESSAGE = "the snapshot could not be converted"
+
+#: Initial value of a variable a completed call would overwrite.  A propagation
+#: case finding it still in place has established that the wrapper produced no
+#: value at all — neither a document id, nor ``None``, nor ``False``.
+UNREACHED = object()
 
 #: Values of ``doc.exists`` that send ``get_tweet`` down the ``else`` branch at
 #: lines 25-26.  ``False`` is what a real absent snapshot reports; the rest
@@ -137,57 +160,36 @@ FALSY_DOCUMENT_EXISTS = (
     pytest.param(0, id="zero"),
     pytest.param("", id="empty-string"),
 )
-
-#: Every name the subject is expected to expose.
 PUBLIC_SURFACE = ("db", "get_db", "add_tweet", "get_tweet", "update_tweet")
-
-#: The subject's wrappers, which no fixture here replaces.  ``get_db`` is not
-#: among them: it is bound to a stand-in for the duration of every test in this
-#: module.
 UNPATCHED_WRAPPERS = ("add_tweet", "get_tweet", "update_tweet")
-
-#: Names production imports from this module and this module does not define.
-#: ``app/tasks/response_generator.py`` line 1 imports ``add_response``.
 UNDEFINED_IMPORTED_NAMES = ("add_response",)
-
-#: The fixture that must be in the closure of every test in this module.
 REQUIRED_ISOLATION_FIXTURE = "firestore_client"
 
-#: Attributes ``@pytest.fixture`` leaves on the object it returns.  pytest 8.4
-#: returns a ``FixtureFunctionDefinition`` carrying ``_fixture_function_marker``;
-#: earlier releases return the function itself carrying
-#: ``_pytestfixturefunction``.  Either identifies a fixture.
+#: Recognize both fixture-marker attributes exposed by supported pytest wrapper
+#: shapes.
 FIXTURE_MARKER_ATTRIBUTES = (
     "_fixture_function_marker",
     "_pytestfixturefunction",
 )
 
 
-# --------------------------------------------------------------------------- #
-# Fixtures.  The client patch comes from backend/tests/conftest.py; the mocks
-# below shape the call chains the three wrappers drive against it.
-# --------------------------------------------------------------------------- #
+WRITE_CAPABLE_METHODS = ("add", "set", "update", "delete", "create")
+
+GET_TWEET_CALL_LEDGER = (
+    "collection",
+    "collection().document",
+    "collection().document().get",
+    "collection().document().get().to_dict",
+)
 
 
 @pytest.fixture
 def mock_tweets_collection(firestore_client):
-    """Return the collection mock ``client.collection(...)`` resolves to.
-
-    A ``MagicMock`` returns the same child for every argument, so this is the
-    object the subject reaches whichever collection name it asks for; the name
-    it actually asked for is asserted separately.
-    """
     return firestore_client.collection.return_value
 
 
 @pytest.fixture
 def mock_document_reference():
-    """Return element 1 of the ``add()`` result, carrying the id oracle.
-
-    ``id`` is assigned after construction rather than through the constructor,
-    so it is unambiguously the string :data:`EXPECTED_DOCUMENT_ID` and not an
-    auto-created child mock.
-    """
     reference = MagicMock(name="document_reference")
     reference.id = EXPECTED_DOCUMENT_ID
     return reference
@@ -195,12 +197,6 @@ def mock_document_reference():
 
 @pytest.fixture
 def mock_write_result():
-    """Return element 0 of the ``add()`` result, the write timestamp.
-
-    It carries an ``id`` too, set to :data:`UNRETURNED_ELEMENT_ID`, so the
-    element the subject indexes is decided by the assertion rather than by
-    which element happens to have an ``id`` at all.
-    """
     write_result = MagicMock(name="write_result")
     write_result.id = UNRETURNED_ELEMENT_ID
     return write_result
@@ -210,13 +206,6 @@ def mock_write_result():
 def mock_add_result(
     mock_tweets_collection, mock_write_result, mock_document_reference
 ):
-    """Configure ``.add()`` to report the two-element pair and return it.
-
-    ``add_tweet`` line 17 subscripts the result, so the value is a real
-    :class:`tuple` of ``(write_result, document_reference)``.  A bare
-    ``MagicMock`` also satisfies a subscript, answering with a fresh auto-mock
-    whose ``id`` is a mock and not a string.
-    """
     result = (mock_write_result, mock_document_reference)
     mock_tweets_collection.add.return_value = result
     return result
@@ -224,37 +213,20 @@ def mock_add_result(
 
 @pytest.fixture
 def mock_tweet_document(mock_tweets_collection):
-    """Return the document mock ``.document(...)`` resolves to."""
     return mock_tweets_collection.document.return_value
 
 
 @pytest.fixture
 def mock_snapshot(mock_tweet_document):
-    """Return the snapshot ``doc_ref.get()`` resolves to, marked as present.
-
-    ``exists`` is set to ``True`` explicitly.  Left alone it would be a truthy
-    auto-mock, which reaches the same branch without stating that it did.
-    """
+    """Set exists explicitly; an unset MagicMock is truthy."""
     snapshot = mock_tweet_document.get.return_value
     snapshot.exists = True
     return snapshot
 
 
-# --------------------------------------------------------------------------- #
-# add_tweet -- lines 12-17.
-# --------------------------------------------------------------------------- #
-
-
 def test_add_tweet_returns_the_generated_document_id(
     firestore_client, mock_add_result
 ):
-    """``add_tweet`` returns the document id, and it is a ``str``.
-
-    Both the type and the value are asserted.  Subscripting anything other than
-    a genuine two-element sequence yields an auto-created mock whose ``id`` is
-    itself a mock, which the type assertion reports and an equality assertion
-    alone would not.
-    """
     returned = firestore.add_tweet(MINIMAL_TWEET_PAYLOAD)
 
     assert isinstance(returned, str)
@@ -264,12 +236,6 @@ def test_add_tweet_returns_the_generated_document_id(
 def test_add_tweet_returns_the_id_of_the_second_element(
     firestore_client, mock_add_result, mock_document_reference
 ):
-    """The id comes from element 1 of the pair, never from element 0.
-
-    Both elements carry an ``id``, and the two strings differ, so indexing the
-    write timestamp instead of the document reference would surface
-    :data:`UNRETURNED_ELEMENT_ID` here.
-    """
     returned = firestore.add_tweet(MINIMAL_TWEET_PAYLOAD)
 
     assert returned == mock_document_reference.id
@@ -287,12 +253,6 @@ def test_add_tweet_writes_to_the_tweets_collection(
 def test_add_tweet_passes_the_payload_to_add_unchanged(
     mock_tweets_collection, mock_add_result
 ):
-    """``.add`` receives the caller's own object, exactly once.
-
-    Identity is asserted, not equality: the subject performs no copy and no
-    serialization, so the dict the caller passed is the dict the client is
-    handed.
-    """
     payload = dict(MINIMAL_TWEET_PAYLOAD)
 
     firestore.add_tweet(payload)
@@ -304,12 +264,6 @@ def test_add_tweet_passes_the_payload_to_add_unchanged(
 def test_add_tweet_accepts_a_schema_valid_payload(
     mock_tweets_collection, mock_add_result
 ):
-    """A full ten-field tweet payload reaches ``.add`` unmodified.
-
-    Equality against a freshly built payload is what establishes "unmodified":
-    ``make_tweet`` is deterministic and returns fresh containers, so a subject
-    that mutated its argument would break the comparison.
-    """
     payload = make_tweet()
 
     returned = firestore.add_tweet(payload)
@@ -322,28 +276,12 @@ def test_add_tweet_accepts_a_schema_valid_payload(
 def test_add_tweet_does_not_read_the_document_snapshot(
     mock_tweets_collection, mock_add_result
 ):
-    """``add_tweet`` writes through ``.add`` only.
-
-    It never resolves a document reference of its own, so nothing on the
-    ``.document(...)`` chain that ``get_tweet`` and ``update_tweet`` use is
-    touched.
-    """
     firestore.add_tweet(MINIMAL_TWEET_PAYLOAD)
 
     mock_tweets_collection.document.assert_not_called()
 
 
-# --------------------------------------------------------------------------- #
-# get_tweet -- lines 19-26.
-# --------------------------------------------------------------------------- #
-
-
 def test_get_tweet_returns_the_document_dictionary(mock_snapshot):
-    """A present document yields the object ``to_dict()`` produced.
-
-    Identity is asserted because line 24 returns that object directly, without
-    copying or reshaping it.
-    """
     stored = make_tweet()
     mock_snapshot.to_dict.return_value = stored
 
@@ -364,7 +302,6 @@ def test_get_tweet_reads_from_the_tweets_collection(
 def test_get_tweet_looks_up_the_requested_document_id(
     mock_tweets_collection, mock_snapshot
 ):
-    """The id the caller passed is the id the document lookup uses."""
     firestore.get_tweet(TWEET_ID)
 
     mock_tweets_collection.document.assert_called_once_with(TWEET_ID)
@@ -382,12 +319,6 @@ def test_get_tweet_retrieves_the_snapshot_once(
 def test_get_tweet_returns_none_when_the_document_is_absent(
     mock_snapshot, exists
 ):
-    """An absent document yields ``None``; the subject does not raise.
-
-    Production returns ``None`` rather than signalling the miss, which is the
-    divergence this case captures.  A caller therefore cannot distinguish an
-    absent document from one whose contents are empty.
-    """
     mock_snapshot.exists = exists
 
     returned = firestore.get_tweet(TWEET_ID)
@@ -396,7 +327,6 @@ def test_get_tweet_returns_none_when_the_document_is_absent(
 
 
 def test_get_tweet_does_not_read_an_absent_document(mock_snapshot):
-    """The ``else`` branch returns without consulting the snapshot's contents."""
     mock_snapshot.exists = False
 
     firestore.get_tweet(TWEET_ID)
@@ -405,12 +335,6 @@ def test_get_tweet_does_not_read_an_absent_document(mock_snapshot):
 
 
 def test_get_tweet_returns_a_falsy_dictionary_unchanged(mock_snapshot):
-    """A present document whose contents are empty yields that empty ``dict``.
-
-    The branch at line 23 tests ``doc.exists``, not the contents, so an empty
-    mapping is returned as itself and is distinguishable from the ``None`` an
-    absent document produces only by identity.
-    """
     stored = {}
     mock_snapshot.to_dict.return_value = stored
 
@@ -420,31 +344,23 @@ def test_get_tweet_returns_a_falsy_dictionary_unchanged(mock_snapshot):
     assert returned is not None
 
 
-def test_get_tweet_does_not_write(mock_tweet_document, mock_snapshot):
-    """``get_tweet`` is read-only: neither ``.add`` nor ``.update`` is called."""
+@pytest.mark.parametrize("method_name", WRITE_CAPABLE_METHODS)
+def test_get_tweet_does_not_write(
+    mock_tweets_collection, mock_tweet_document, mock_snapshot, method_name
+):
     firestore.get_tweet(TWEET_ID)
 
-    mock_tweet_document.update.assert_not_called()
-
-
-# --------------------------------------------------------------------------- #
-# update_tweet -- lines 28-37.
-# --------------------------------------------------------------------------- #
+    getattr(mock_tweets_collection, method_name).assert_not_called()
+    getattr(mock_tweet_document, method_name).assert_not_called()
 
 
 def test_update_tweet_returns_true_on_success(mock_tweet_document):
-    """A returning ``doc_ref.update`` yields ``True``.
-
-    ``is True`` rather than a truthiness check, because line 35 returns the
-    literal.
-    """
     returned = firestore.update_tweet(TWEET_ID, UPDATE_PAYLOAD)
 
     assert returned is True
 
 
 def test_update_tweet_applies_the_update_payload(mock_tweet_document):
-    """``.update`` receives the caller's own mapping, exactly once."""
     payload = dict(UPDATE_PAYLOAD)
 
     firestore.update_tweet(TWEET_ID, payload)
@@ -473,17 +389,6 @@ def test_update_tweet_targets_the_requested_document_id(
 def test_update_tweet_returns_false_when_the_update_fails(
     mock_tweet_document, failure_type, message
 ):
-    """A raising ``doc_ref.update`` yields ``False`` and nothing escapes.
-
-    No ``pytest.raises`` guards this call: the assertion is that the exception
-    does not propagate at all.  Were it to escape, the test would end in an
-    error rather than a failure, which is the same signal.
-
-    The bare ``except Exception`` at line 36 catches the narrower types as well
-    as ``Exception`` itself, and discards each one silently — the subject logs
-    nothing, binds no exception name and chains nothing, so the ``False`` return
-    is the only observable evidence of the failure.
-    """
     mock_tweet_document.update.side_effect = failure_type(message)
 
     returned = firestore.update_tweet(TWEET_ID, UPDATE_PAYLOAD)
@@ -492,7 +397,6 @@ def test_update_tweet_returns_false_when_the_update_fails(
 
 
 def test_update_tweet_attempts_the_write_before_failing(mock_tweet_document):
-    """The ``False`` return follows a real attempt, not a short circuit."""
     mock_tweet_document.update.side_effect = Exception("boom")
 
     firestore.update_tweet(TWEET_ID, UPDATE_PAYLOAD)
@@ -501,14 +405,200 @@ def test_update_tweet_attempts_the_write_before_failing(mock_tweet_document):
 
 
 def test_update_tweet_does_not_read_the_document(mock_tweet_document):
-    """``update_tweet`` writes blind: it never fetches the snapshot first.
-
-    There is no read-modify-write and no existence check, so updating an id
-    that does not exist is left entirely to the client's own behaviour.
-    """
     firestore.update_tweet(TWEET_ID, UPDATE_PAYLOAD)
 
     mock_tweet_document.get.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# Error disposition of the two unguarded wrappers -- lines 12-17 and 19-26.
+#
+# ``update_tweet`` holds the module's only ``except``, around one statement.
+# These two functions hold none, so each link of the chain they drive is a
+# boundary at which a failure reaches the caller unchanged.  Every case below
+# injects at one link, asserts the identity, type and message of what escaped,
+# and asserts that the next link was not reached.
+# --------------------------------------------------------------------------- #
+
+
+def test_add_tweet_propagates_a_client_acquisition_failure(firestore_client):
+    """A failure acquiring the client reaches the caller from ``add_tweet``.
+
+    ``get_db`` resolves credentials and constructs a client, so this is the
+    first link that can fail.  Nothing on the client is touched afterwards.
+    """
+    failure = ConnectionError(ACQUISITION_FAILURE_MESSAGE)
+    firestore.get_db.side_effect = failure
+
+    with pytest.raises(ConnectionError) as excinfo:
+        firestore.add_tweet(MINIMAL_TWEET_PAYLOAD)
+
+    assert excinfo.value is failure
+    assert str(excinfo.value) == ACQUISITION_FAILURE_MESSAGE
+    firestore_client.collection.assert_not_called()
+
+
+def test_add_tweet_propagates_a_collection_lookup_failure(
+    firestore_client, mock_tweets_collection
+):
+    """A failure resolving the collection reaches the caller unchanged.
+
+    ``.add`` is never reached, so nothing is written on this path.
+    """
+    failure = RuntimeError(COLLECTION_FAILURE_MESSAGE)
+    firestore_client.collection.side_effect = failure
+
+    with pytest.raises(RuntimeError) as excinfo:
+        firestore.add_tweet(MINIMAL_TWEET_PAYLOAD)
+
+    assert excinfo.value is failure
+    assert str(excinfo.value) == COLLECTION_FAILURE_MESSAGE
+    mock_tweets_collection.add.assert_not_called()
+
+
+@pytest.mark.parametrize("failure_type", PROPAGATED_FAILURES)
+def test_add_tweet_propagates_a_write_failure(
+    mock_tweets_collection, mock_add_result, failure_type
+):
+    """A failing ``.add`` reaches the caller, whatever its type.
+
+    ``Exception`` is among the cases, which is what distinguishes this
+    disposition from ``update_tweet``'s: the same failure that function
+    converts into ``False`` escapes here.  The write was attempted, and the
+    document id line 17 would have returned is never produced.
+    """
+    failure = failure_type(ADD_FAILURE_MESSAGE)
+    mock_tweets_collection.add.side_effect = failure
+    returned = UNREACHED
+
+    with pytest.raises(failure_type) as excinfo:
+        returned = firestore.add_tweet(MINIMAL_TWEET_PAYLOAD)
+
+    assert excinfo.value is failure
+    assert str(excinfo.value) == ADD_FAILURE_MESSAGE
+    assert returned is UNREACHED
+    mock_tweets_collection.add.assert_called_once_with(MINIMAL_TWEET_PAYLOAD)
+
+
+def test_get_tweet_propagates_a_client_acquisition_failure(firestore_client):
+    """A failure acquiring the client reaches the caller from ``get_tweet``.
+
+    The ``None`` an absent document produces is not what a caller sees here:
+    the exception arrives instead, so the two outcomes stay distinguishable.
+    """
+    failure = ConnectionError(ACQUISITION_FAILURE_MESSAGE)
+    firestore.get_db.side_effect = failure
+
+    with pytest.raises(ConnectionError) as excinfo:
+        firestore.get_tweet(TWEET_ID)
+
+    assert excinfo.value is failure
+    assert str(excinfo.value) == ACQUISITION_FAILURE_MESSAGE
+    firestore_client.collection.assert_not_called()
+
+
+def test_get_tweet_propagates_a_collection_lookup_failure(
+    firestore_client, mock_tweets_collection
+):
+    """A failure resolving the collection reaches the caller unchanged.
+
+    The document reference is never resolved, so no read is issued.
+    """
+    failure = RuntimeError(COLLECTION_FAILURE_MESSAGE)
+    firestore_client.collection.side_effect = failure
+
+    with pytest.raises(RuntimeError) as excinfo:
+        firestore.get_tweet(TWEET_ID)
+
+    assert excinfo.value is failure
+    assert str(excinfo.value) == COLLECTION_FAILURE_MESSAGE
+    mock_tweets_collection.document.assert_not_called()
+
+
+def test_get_tweet_propagates_a_document_lookup_failure(
+    mock_tweets_collection, mock_tweet_document
+):
+    """A failure building the document reference reaches the caller.
+
+    The snapshot is never fetched, so ``doc.exists`` is never consulted and the
+    ``None`` branch cannot be reached.
+    """
+    failure = ValueError(DOCUMENT_FAILURE_MESSAGE)
+    mock_tweets_collection.document.side_effect = failure
+
+    with pytest.raises(ValueError) as excinfo:
+        firestore.get_tweet(TWEET_ID)
+
+    assert excinfo.value is failure
+    assert str(excinfo.value) == DOCUMENT_FAILURE_MESSAGE
+    mock_tweet_document.get.assert_not_called()
+
+
+@pytest.mark.parametrize("failure_type", PROPAGATED_FAILURES)
+def test_get_tweet_propagates_a_snapshot_read_failure(
+    mock_tweet_document, mock_snapshot, failure_type
+):
+    """A failing ``doc_ref.get()`` reaches the caller, whatever its type.
+
+    The snapshot's contents are never read, and no value -- ``None`` included
+    -- is produced, so a read failure and a missing document remain two
+    distinguishable outcomes.
+    """
+    failure = failure_type(SNAPSHOT_FETCH_FAILURE_MESSAGE)
+    mock_tweet_document.get.side_effect = failure
+    returned = UNREACHED
+
+    with pytest.raises(failure_type) as excinfo:
+        returned = firestore.get_tweet(TWEET_ID)
+
+    assert excinfo.value is failure
+    assert str(excinfo.value) == SNAPSHOT_FETCH_FAILURE_MESSAGE
+    assert returned is UNREACHED
+    mock_snapshot.to_dict.assert_not_called()
+
+
+@pytest.mark.parametrize("failure_type", PROPAGATED_FAILURES)
+def test_get_tweet_propagates_a_snapshot_conversion_failure(
+    mock_snapshot, failure_type
+):
+    """A failing ``doc.to_dict()`` reaches the caller, whatever its type.
+
+    This is the last link, reached only once ``doc.exists`` was truthy, so the
+    subject has already committed to the ``return`` branch when the failure
+    arrives and still produces no value.
+    """
+    failure = failure_type(SNAPSHOT_CONVERSION_FAILURE_MESSAGE)
+    mock_snapshot.to_dict.side_effect = failure
+    returned = UNREACHED
+
+    with pytest.raises(failure_type) as excinfo:
+        returned = firestore.get_tweet(TWEET_ID)
+
+    assert excinfo.value is failure
+    assert str(excinfo.value) == SNAPSHOT_CONVERSION_FAILURE_MESSAGE
+    assert returned is UNREACHED
+    mock_snapshot.to_dict.assert_called_once_with()
+
+
+def test_a_read_failure_is_not_converted_into_the_absent_document_result(
+    mock_snapshot,
+):
+    """A failed read is not reported as ``None``.
+
+    ``get_tweet`` has one falsy return, and it means "no such document".  This
+    case drives the same function to failure with ``doc.exists`` truthy and
+    asserts an exception rather than that value, which is the assertion a
+    swallowing clause added to this function would break.
+    """
+    mock_snapshot.to_dict.side_effect = Exception(
+        SNAPSHOT_CONVERSION_FAILURE_MESSAGE
+    )
+
+    with pytest.raises(Exception) as excinfo:
+        firestore.get_tweet(TWEET_ID)
+
+    assert excinfo.value.__class__ is Exception
+    assert str(excinfo.value) == SNAPSHOT_CONVERSION_FAILURE_MESSAGE
 
 
 # --------------------------------------------------------------------------- #
@@ -539,25 +629,14 @@ def test_update_tweet_acquires_its_client_once(
 def test_wrappers_drive_the_acquired_client_not_the_module_level_one(
     firestore_client, mock_snapshot
 ):
-    """The wrappers drive the client ``get_db()`` returned.
-
-    ``db`` at line 5 is a distinct object that no wrapper consults, which is
-    what makes the patched factory the only boundary a test has to control.
-    """
     firestore.get_tweet(TWEET_ID)
 
     assert firestore_client.collection.called
     assert firestore.db is not firestore_client
 
 
-# --------------------------------------------------------------------------- #
-# Module contract and recorded absences.
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize("name", PUBLIC_SURFACE)
 def test_module_exposes_its_public_surface(firestore_client, name):
-    """Each documented name is present on the subject."""
     assert hasattr(firestore, name)
 
 
@@ -565,81 +644,37 @@ def test_module_exposes_its_public_surface(firestore_client, name):
 def test_module_does_not_define_the_names_production_imports_from_it(
     firestore_client, name
 ):
-    """``add_response`` is absent, although production imports it from here.
-
-    ``app/tasks/response_generator.py`` line 1 does
-    ``from app.db.firestore import get_tweet, add_response``, so that import
-    resolves only under the fail-closed shim ``backend/tests/conftest.py``
-    installs.  The shim binds the name onto this module for the lifetime of the
-    ``response_generator_module`` fixture and deletes it on teardown, which is
-    what makes this assertion independent of test order.
-
-    Defining it is out of scope; this case is the gate that reports it if it
-    ever appears.
-    """
     assert not hasattr(firestore, name)
 
 
 def test_module_level_client_is_a_firestore_client(firestore_client):
-    """``db`` is a real client, constructed at import and used by nothing.
-
-    ``google.cloud.firestore.Client`` defers every connection to its first RPC,
-    so building it at module scope opens no socket and importing this subject is
-    safe.  No test constructs one; this asserts the instance the import already
-    produced.
-    """
     assert isinstance(firestore.db, Client)
 
 
 def test_get_tweet_is_not_a_coroutine_function(firestore_client):
-    """``get_tweet`` is synchronous.
-
-    ``app/tasks/response_generator.py`` line 12 awaits its result, which is a
-    ``TypeError``; that suite asserts the error and this case pins the fact it
-    depends on.
-    """
     assert inspect.iscoroutinefunction(firestore.get_tweet) is False
 
 
 @pytest.mark.parametrize("name", UNPATCHED_WRAPPERS)
 def test_module_wrappers_are_synchronous(firestore_client, name):
-    """No wrapper on the subject's surface is a coroutine function.
-
-    The cases are :data:`UNPATCHED_WRAPPERS`.  ``get_db`` is not among them; the
-    name is bound to a stand-in while every test in this module runs.
-    """
     assert inspect.iscoroutinefunction(getattr(firestore, name)) is False
 
 
-# --------------------------------------------------------------------------- #
-# Structural gate.  Keeps the isolation guarantee true for tests added later.
-# --------------------------------------------------------------------------- #
-
-
 def _fixture_parameter_names(target):
-    """Return the parameter names of a test function or fixture definition.
-
-    ``@pytest.fixture`` returns a wrapper object rather than the function in
-    pytest 8.4, and :func:`inspect.signature` reports the underlying parameters
-    for both shapes.
+    """Return fixture parameter names; inspect.signature unwraps pytest's
+    fixture wrapper.
     """
     return tuple(inspect.signature(target).parameters)
 
 
 def _is_fixture(candidate):
-    """Return whether ``candidate`` is a fixture defined in this module."""
     return any(
         hasattr(candidate, attribute) for attribute in FIXTURE_MARKER_ATTRIBUTES
     )
 
 
 def _resolves_to_required_fixture(name, namespace, visited):
-    """Return whether ``name`` is, or transitively requests, the client patch.
-
-    A name that resolves to no fixture in ``namespace`` is a leaf: either a
-    parametrised argument or a fixture defined in a conftest, neither of which
-    can reach :data:`REQUIRED_ISOLATION_FIXTURE` through this module.
-    """
+    """Return whether a fixture dependency chain reaches firestore_client."""
     if name == REQUIRED_ISOLATION_FIXTURE:
         return True
     if name in visited:
@@ -657,17 +692,8 @@ def _resolves_to_required_fixture(name, namespace, visited):
 
 
 def test_every_test_requests_the_firestore_client_fixture(firestore_client):
-    """Every test in this module has the client patch in its fixture closure.
-
-    ``app.db.firestore.get_db`` resolves ambient credentials and constructs a
-    real client, so a test that reached a wrapper without the patch would issue
-    a live Cloud Firestore request rather than fail offline.  The egress guard in
-    ``backend/tests/conftest.py`` is the backstop for that; this case is the
-    gate, and it covers a test added later that forgets the fixture.
-
-    The closure is computed transitively, so requesting ``mock_snapshot`` — or
-    anything else in this module that leads to it — satisfies the requirement
-    just as an explicit ``firestore_client`` parameter does.
+    """Guard that every wrapper test transitively requests firestore_client,
+    preventing live Firestore egress.
     """
     namespace = dict(globals())
     tests = {
@@ -692,3 +718,142 @@ def test_every_test_requests_the_firestore_client_fixture(firestore_client):
             REQUIRED_ISOLATION_FIXTURE, ", ".join(unguarded)
         )
     )
+
+
+def test_get_tweet_makes_only_the_four_calls_of_the_read_path(
+    firestore_client, mock_snapshot
+):
+    """The client sees exactly the read path's four calls, in order.
+
+    This is the whole-ledger counterpart of
+    :func:`test_get_tweet_does_not_write`: rather than naming the methods a
+    write would use, it names every call the subject is allowed to make, so a
+    write issued through any method at all — including one
+    :data:`WRITE_CAPABLE_METHODS` does not list — appears as an extra entry.
+    """
+    firestore.get_tweet(TWEET_ID)
+
+    ledger = tuple(name for name, _, _ in firestore_client.mock_calls)
+
+    assert ledger == GET_TWEET_CALL_LEDGER
+
+
+@pytest.mark.parametrize("failure_type, message", PROPAGATED_FAILURES_WITH_MESSAGE)
+def test_add_tweet_propagates_a_failing_write(
+    mock_tweets_collection, failure_type, message
+):
+    """A raising ``collection.add`` reaches the caller unchanged.
+
+    ``add_tweet`` holds no ``try``, so the object the client raised is the object
+    the caller catches — asserted by identity, which a same-type-and-message
+    replacement would not satisfy.  Contrast ``update_tweet``, whose failure is
+    swallowed into a ``False``.
+    """
+    failure = failure_type(message)
+    mock_tweets_collection.add.side_effect = failure
+
+    with pytest.raises(failure_type) as excinfo:
+        firestore.add_tweet(MINIMAL_TWEET_PAYLOAD)
+
+    assert excinfo.value is failure
+    assert type(excinfo.value) is failure_type
+    assert excinfo.value.args == (message,)
+
+
+def test_add_tweet_stops_at_a_failing_write(
+    mock_tweets_collection, mock_document_reference
+):
+    """The failure ends the call: nothing after ``.add`` is reached.
+
+    Line 17 would subscript the result and read ``.id`` off element 1.  The
+    prepared reference records neither, so the exception left the function before
+    the return value was built, and no document reference was resolved either.
+    """
+    mock_tweets_collection.add.side_effect = RuntimeError("transport failure")
+
+    with pytest.raises(RuntimeError):
+        firestore.add_tweet(MINIMAL_TWEET_PAYLOAD)
+
+    mock_tweets_collection.add.assert_called_once_with(MINIMAL_TWEET_PAYLOAD)
+    mock_tweets_collection.document.assert_not_called()
+
+
+@pytest.mark.parametrize("failure_type, message", PROPAGATED_FAILURES_WITH_MESSAGE)
+def test_get_tweet_propagates_a_failing_snapshot_retrieval(
+    mock_tweet_document, failure_type, message
+):
+    """A raising ``doc_ref.get`` reaches the caller unchanged.
+
+    Line 22 sits outside every handler, so a retrieval failure is *not* the
+    ``None`` an absent document produces: the caller sees the exception the
+    client raised, by identity.  This is the difference the ``None`` return of
+    :func:`test_get_tweet_returns_none_when_the_document_is_absent` would
+    otherwise hide.
+    """
+    failure = failure_type(message)
+    mock_tweet_document.get.side_effect = failure
+
+    with pytest.raises(failure_type) as excinfo:
+        firestore.get_tweet(TWEET_ID)
+
+    assert excinfo.value is failure
+    assert type(excinfo.value) is failure_type
+    assert excinfo.value.args == (message,)
+
+
+def test_get_tweet_stops_at_a_failing_snapshot_retrieval(
+    mock_tweet_document, mock_snapshot
+):
+    """The failure ends the call before the snapshot is read or written.
+
+    ``exists`` is never consulted and ``to_dict`` is never called, so the
+    ``if`` at line 23 is not reached; the document is not written to either.
+    """
+    mock_tweet_document.get.side_effect = RuntimeError("transport failure")
+
+    with pytest.raises(RuntimeError):
+        firestore.get_tweet(TWEET_ID)
+
+    mock_tweet_document.get.assert_called_once_with()
+    mock_snapshot.to_dict.assert_not_called()
+    mock_tweet_document.update.assert_not_called()
+
+
+@pytest.mark.parametrize("failure_type, message", PROPAGATED_FAILURES_WITH_MESSAGE)
+def test_get_tweet_propagates_a_failing_deserialization(
+    mock_snapshot, failure_type, message
+):
+    """A raising ``doc.to_dict`` reaches the caller unchanged.
+
+    Line 24 is the last statement of the truthy branch and is unguarded, so a
+    document that cannot be deserialized is an exception rather than a ``None``
+    or an empty mapping.  The snapshot reported ``exists`` truthy, so the branch
+    was entered and the failure is the conversion itself.
+    """
+    failure = failure_type(message)
+    mock_snapshot.to_dict.side_effect = failure
+
+    with pytest.raises(failure_type) as excinfo:
+        firestore.get_tweet(TWEET_ID)
+
+    assert excinfo.value is failure
+    assert type(excinfo.value) is failure_type
+    assert excinfo.value.args == (message,)
+
+
+def test_get_tweet_stops_at_a_failing_deserialization(
+    mock_tweet_document, mock_snapshot
+):
+    """The conversion is attempted once and nothing follows it.
+
+    There is no retry, no fallback to the raw snapshot and no write: the single
+    ``to_dict`` call is the whole of the subject's attempt.
+    """
+    mock_snapshot.to_dict.side_effect = RuntimeError("transport failure")
+
+    with pytest.raises(RuntimeError):
+        firestore.get_tweet(TWEET_ID)
+
+    mock_snapshot.to_dict.assert_called_once_with()
+    mock_tweet_document.get.assert_called_once_with()
+    mock_tweet_document.update.assert_not_called()

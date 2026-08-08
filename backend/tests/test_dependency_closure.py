@@ -19,9 +19,12 @@ here: ``docs/testing/DECISION-LOG.md`` §10, rows D100 and D101.
 
 Pins whose exact version is security-relevant, so a mismatch is not cosmetic:
 
-* ``python-jose[cryptography]==3.3.0`` — ``app/core/security.py`` line 2 imports
+* ``python-jose[cryptography]==3.5.0`` — ``app/core/security.py`` line 2 imports
   ``jwt`` from it, so it is the JWT implementation the whole token surface runs
-  on.
+  on. 3.5.0 rather than the 3.3.0 the AAP named: 3.3.0 is affected by
+  CVE-2024-33663 (algorithm and key confusion) and CVE-2024-33664
+  (compressed-JWE decompression bomb), and a version below 3.4.0 reaching an
+  environment is exactly what this gate exists to catch.
 * ``bcrypt==4.0.1`` — ``passlib`` 1.7.4 cannot drive the 5.x line, so a silent
   upgrade breaks every password assertion rather than merely changing it.
 
@@ -30,7 +33,7 @@ What is asserted
 For every ``name==version`` line in the manifest: the distribution is installed,
 and its installed version string equals the pinned one exactly. Extras are part
 of the requirement syntax rather than of the distribution name, so
-``python-jose[cryptography]==3.3.0`` is checked as ``python-jose`` at ``3.3.0``;
+``python-jose[cryptography]==3.5.0`` is checked as ``python-jose`` at ``3.5.0``;
 whether the extra's own dependency is present is what ``pip check`` covers.
 
 Scope

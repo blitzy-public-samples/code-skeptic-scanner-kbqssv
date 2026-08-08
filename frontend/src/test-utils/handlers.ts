@@ -512,11 +512,21 @@ export function resetRecordedRequests(): void {
 
 /* ------------------------------------------------------------------------------------------------------ *
  * Test correlation. Every recorded request and every violation log line carries the id of the test that
- * emitted it, which is the same value jest-junit writes as the `<testcase>` classname and name.
+ * emitted it, in the one canonical form `frontend/jest.config.js` also emits into the JUnit report at
+ * `frontend/reports/jest-junit.xml` - so a `<testcase>` and the requests it made match by string equality.
  * ------------------------------------------------------------------------------------------------------ */
 
 /** Value {@link currentTestId} reports when no test is running, or when Jest exposes no state. */
 export const UNATTRIBUTED_TEST_ID = 'no-test';
+
+/** Joins the two halves of a {@link currentTestId}; the same separator `jest.config.js` documents. */
+export const TEST_ID_SEPARATOR = ' > ';
+
+/** Reported as the name half for a request emitted while a test module is still being evaluated. */
+export const MODULE_SCOPE_TEST_NAME = '(module scope)';
+
+/** Directory every test file in this suite sits under, and the point the file half is cut from. */
+const ROOT_RELATIVE_MARKER = '/src/';
 
 /** The Jest globals this module reads, declared so it also loads outside a test run. */
 interface JestExpectState {
@@ -524,12 +534,23 @@ interface JestExpectState {
 }
 
 /**
- * Identifier of the test currently executing, as `<test file> > <full test name>`.
+ * Identifier of the test currently executing, as `<test file>` + {@link TEST_ID_SEPARATOR} +
+ * `<full test name>` - for example
+ * `src/services/api.test.ts > fetchTweets propagates the rejection instance unchanged`.
  *
- * The file is `<rootDir>`-relative with forward slashes, matching `jest-junit`'s `{filepath}` template, and
- * the name is Jest's `currentTestName`, matching its `{title}` with `ancestorSeparator`. A request emitted
- * outside a test - from a module body, or after the test that started it has finished - reports
- * {@link UNATTRIBUTED_TEST_ID}, which is what makes a leaked request visible as such.
+ * The file half is `<rootDir>`-relative with forward slashes, which is `jest-junit`'s `{filepath}`
+ * normalised the way `frontend/jest.config.js` normalises it for `<testcase classname>`. The name half is
+ * Jest's `currentTestName` - every enclosing `describe` title and the leaf title, joined by a single space -
+ * which is what that config emits as `<testcase name>`. So `classname` + `' > '` + `name` from the report is
+ * this string, and two tests sharing a leaf title under different `describe` blocks are distinguished by
+ * both.
+ *
+ * A request emitted outside a test reports {@link MODULE_SCOPE_TEST_NAME} as its name half while a module is
+ * being evaluated, and {@link UNATTRIBUTED_TEST_ID} when Jest exposes no state at all - which is what makes
+ * a leaked request visible as such.
+ *
+ * @see frontend/src/test-utils/junit-correlation.test.ts - the suite that holds this and the reporter to the
+ *   same form.
  */
 export function currentTestId(): string {
   const jestExpect = (globalThis as { expect?: JestExpectState }).expect;
@@ -540,11 +561,12 @@ export function currentTestId(): string {
 
   const name = state.currentTestName ?? '';
   const path = (state.testPath ?? '').replace(/\\/g, '/');
-  const file = path.slice(path.indexOf('/src/') + 1) || path;
+  const marker = path.lastIndexOf(ROOT_RELATIVE_MARKER);
+  const file = marker === -1 ? path : path.slice(marker + 1);
   if (name === '' && file === '') {
     return UNATTRIBUTED_TEST_ID;
   }
-  return file === '' ? name : `${file} > ${name || '(module scope)'}`;
+  return file === '' ? name : `${file}${TEST_ID_SEPARATOR}${name || MODULE_SCOPE_TEST_NAME}`;
 }
 
 /* ------------------------------------------------------------------------------------------------------ *

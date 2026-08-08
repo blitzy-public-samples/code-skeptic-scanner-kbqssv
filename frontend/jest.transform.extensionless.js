@@ -1,20 +1,25 @@
 /**
  * Jest transformer for the extension-less component modules.
  *
- * Delegates every call to ts-jest under the synthetic name `<sourcePath>.tsx`,
- * from which ts-jest infers its loader, and passes the source text through
- * unchanged. The synthetic name is never returned to Jest's module resolver,
- * but ts-jest does write it into the source map it emits, and Jest hands that
- * map to babel-plugin-istanbul as `inputSourceMap` - from which the coverage
- * reporters take each module's identity. `process` therefore restores the real
- * extension-less path in the emitted map's `file` and `sources` before
- * returning, leaving the compiled code and the mappings exactly as ts-jest
- * produced them. Resolving these modules is a separate concern this file does
- * not address.
+ * Contract of every `process` call:
+ *
+ * 1. ts-jest compiles the source text unchanged, under the synthetic name
+ *    `<sourcePath>.tsx`, from which it infers its loader.
+ * 2. The synthetic name is never returned to Jest's module resolver, and never
+ *    survives in the emitted source map: `file` and every `sources` entry naming
+ *    it are restored to the real extension-less path, in an inline data-URL
+ *    payload and in a separate `map` field alike.
+ * 3. The compiled code, `mappings`, `names` and `sourcesContent` are returned
+ *    exactly as ts-jest produced them, so every coverage count derived from the
+ *    map is unchanged.
+ *
+ * Resolving these modules is a separate concern, handled by `moduleNameMapper`
+ * and `moduleFileExtensions` in `frontend/jest.config.js`.
  *
  * @see https://jestjs.io/docs/code-transformation#writing-custom-transformers
- * @see docs/testing/DECISION-LOG.md - section 12, why the synthetic name is
- *   confined to loader inference rather than allowed to name the module.
+ * @see frontend/src/test-utils/jest-transform-extensionless.test.ts - the
+ *   contract suite over this file.
+ * @see docs/testing/DECISION-LOG.md - rows D30-D32 and D138-D140.
  */
 
 'use strict';
@@ -23,7 +28,12 @@ const { TsJestTransformer } = require('ts-jest');
 
 const SYNTHETIC_EXTENSION = '.tsx';
 
-/* Bumped whenever the emitted output changes shape, so no earlier cache entry is reused. */
+/*
+ * Namespace appended to the inner cache key. Bump it whenever `process` changes
+ * what it returns: an entry written before the change is otherwise reused.
+ *
+ * @see docs/testing/DECISION-LOG.md - row D139.
+ */
 const CACHE_KEY_SUFFIX = ':extensionless:real-source-identity';
 
 /* `//# sourceMappingURL=` comment carrying a JSON source map: prefix, media parameters, payload. */
@@ -31,10 +41,11 @@ const INLINE_SOURCE_MAP_PATTERN =
   /(\/\/[#@]\s*sourceMappingURL=data:application\/json)([^,]*),(\S+)/g;
 
 /*
- * Compiler options passed inline to ts-jest; no tsconfig file is read.
- * `isolatedModules` is a TypeScript compiler option here rather than a ts-jest
- * transform option, matching `frontend/tsconfig.json`. The remaining entries
- * mirror the primary transform in `frontend/jest.config.js`.
+ * Compiler options passed inline to ts-jest; no tsconfig file is read. Every
+ * entry but `isolatedModules` mirrors the primary transform in
+ * `frontend/jest.config.js`.
+ *
+ * @see docs/testing/DECISION-LOG.md - row D32.
  */
 const TSCONFIG = {
   jsx: 'react-jsx',
