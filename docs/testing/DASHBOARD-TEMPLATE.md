@@ -43,6 +43,12 @@ write their **configured reporters**, so either will overwrite a real result str
 discovery stub. Readiness therefore runs *before* the suite it reports on, in exactly the order
 `.github/workflows/ci.yml` uses.
 
+Order is no longer the *only* protection, and it should not be. Each readiness command below carries its
+own neutraliser — the backend probe repeats `--junitxml` to a separate file, `test:load` pins
+`--reporters=default`, `test:list` pins `--reporter=line` — so running one out of order costs nothing.
+Independently of that, the backend result stream's case count is required to equal the collected count
+this step records; a partial run is named and refused rather than published (`D355`).
+
 Every command below is one a CI step also runs, and every one **creates the artifact §2 names** —
 including the three readiness text files, which nothing else produces. Both shells are given because
 the redirection differs and a POSIX-only instruction is not a cross-platform instruction.
@@ -52,7 +58,8 @@ the redirection differs and a POSIX-only instruction is not a cross-platform ins
 ```bash
 # 1. Readiness - creates the three .txt artifacts §2 requires
 mkdir -p backend/reports frontend/reports e2e/reports
-(cd backend  && pytest --collect-only -q          | tee reports/collect-only.txt)
+(cd backend  && pytest --collect-only -q --junitxml=reports/collect-only-junit.xml \
+                  | tee reports/collect-only.txt)
 (cd frontend && npm run --silent test:load 2>&1   | tee reports/load-tests.txt)
 (cd e2e      && npm run --silent test:list        | tee reports/list-tests.txt)
 
@@ -73,7 +80,7 @@ mkdir -p backend/reports frontend/reports e2e/reports
 ```powershell
 # 1. Readiness
 New-Item -ItemType Directory -Force backend\reports, frontend\reports, e2e\reports | Out-Null
-cd backend;  cmd /c "pytest --collect-only -q 2>&1"        | Tee-Object reports\collect-only.txt; cd ..
+cd backend;  cmd /c "pytest --collect-only -q --junitxml=reports/collect-only-junit.xml 2>&1" | Tee-Object reports\collect-only.txt; cd ..
 cd frontend; cmd /c "npm run --silent test:load 2>&1"      | Tee-Object reports\load-tests.txt;   cd ..
 cd e2e;      cmd /c "npm run --silent test:list 2>&1"      | Tee-Object reports\list-tests.txt;   cd ..
 
@@ -245,7 +252,8 @@ files fall outside the four gated packages, which is what stops a whole-tree tot
 | `backend/coverage.json` | Coverage JSON | `--cov-report=json` | §6.1 and §6.2, **per-module and per-package**; the exact gate | yes — `build-test-evidence` |
 | `backend/coverage.lcov` | lcov tracefile | `--cov-report=lcov` | external lcov viewers | **no** — local only; the canonical command does not request this reporter |
 | `backend/reports/junit.xml` | JUnit XML, `xunit2` | `--junitxml=reports/junit.xml` in `addopts`, with `junit_family = xunit2` | K3, K7, §6.3 | yes — `build-test-evidence` and `backend-junit` |
-| `backend/reports/collect-only.txt` | text | the readiness step, `pytest --collect-only -q \| tee reports/collect-only.txt` | K5, §6.4 | yes — `build-test-evidence` |
+| `backend/reports/collect-only.txt` | text | the readiness step, `pytest --collect-only -q --junitxml=reports/collect-only-junit.xml \| tee reports/collect-only.txt` | K5, §6.4, and the case-count comparison that guards the row above | yes — `build-test-evidence` |
+| `backend/reports/collect-only-junit.xml` | JUnit XML, `xunit2` | the same readiness step, which repeats `--junitxml` so the `addopts` value cannot send a zero-case discovery stub to `reports/junit.xml` | nothing — it exists so that the canonical stream is not overwritten | yes — `build-test-evidence`, as a by-product of the directory upload |
 | `backend/reports/coverage-gate.txt` | text | `tests/coverage_gate.py`, the second command above | **K5b** and the §6.4 exact-gate row | yes — `build-test-evidence` |
 | terminal summary | text | `--cov-report=term-missing` | human reading of a local run | no — the log only |
 
@@ -578,6 +586,13 @@ this change.
   `if-no-files-found` policy and a 30-day retention (§2.4); two workflow steps that read the JUnit
   streams and fail visibly when a report is missing, empty or declares zero test cases; and
   `dashboard-extract.py`, which is what turns those files into the panels in §6.
+- **A case-count comparison between the backend result stream and the collected count**, in
+  `dashboard-extract.py` and in the workflow's verify step, plus a separate `--junitxml` path on the
+  readiness probe. A zero-case stub was already refused; a *partial* run — one file, one `-k` filter —
+  leaves a non-zero count that no presence or non-zero check can distinguish from a full run, and
+  `--junitxml` living in `addopts` makes every invocation a writer of the canonical stream. The
+  readiness artifact's collected count is the independent witness, so a stream that disagrees with it
+  is withdrawn, named on stderr and fatal under `--require-all` (`D355`).
 - **The new `e2e` job**, running the package-local pinned runner against a pre-provisioned browser.
 
 ### 5.3 CHECKED, and found absent
@@ -883,20 +898,29 @@ Each item below was produced and inspected. The delivered-suite rows supersede t
 demonstration figures that this section previously carried; the demonstration numbers survive only in
 §1.2, labelled as the floors they were.
 
-Read the two kinds of number in these rows differently. The **counts** — 1015 backend cases with 3 skips,
+Read the two kinds of number in these rows differently. The **counts** — 1068 backend cases with 3 skips,
 371 frontend cases with 24 skips, 31 E2E tests with no skip, and zero failures anywhere — are properties of the
 suite, and a re-run reproduces them exactly; the reproduction below is the evidence for that. Every
 **`time` attribute** is a property of the one invocation that wrote the file, so a later run overwrites it
 with its own figure. Quote the counts as facts about the suite; quote a duration only as what that run took
 on that host.
 
+One consequence of that split is worth stating, because it is the one way these rows can go stale in a
+working tree rather than in CI. `backend/pytest.ini` carries `--junitxml` in `addopts`, so *every* pytest
+invocation writes `backend/reports/junit.xml` — including a single-file run, a `-k` filtered run, and the
+readiness probe. A partial run therefore leaves a non-zero case count where the suite's count belongs. That
+is now compared rather than trusted: the readiness probe writes its own `--junitxml` path, and both
+`dashboard-extract.py` and the workflow's verify step require the stream's case count to equal the collected
+count, naming both figures when they differ (`D355`). If you see that message, re-run the canonical gated
+command in §2.1; the counts below are what it reproduces.
+
 | Evidence | What was observed |
 |---|---|
-| Backend artifacts | `backend/reports/junit.xml` (`<testsuite name="pytest" errors="0" failures="0" skipped="3" tests="1015">`, that run's `time="11.702"`) plus the Cobertura, JSON and lcov coverage files, from the gated run on CPython 3.9.13: **1012 passed, 3 skipped, exit 0, 93.33% (182/195)** over `app/core` 100.00% (47/47), `app/db` 100.00% (45/45), `app/services` 94.12% (48/51) and `app/tasks` 80.77% (42/52). The exact gate's own reading is retained beside them as `backend/reports/coverage-gate.txt`: `182 of 195 statements covered = 93.3333% exact, threshold 90%` / `9 file(s) measured` / `coverage gate PASSED` |
-| Frontend artifacts | `frontend/reports/jest-junit.xml` (`<testsuites tests="371" failures="0" errors="0">`, that run's `time="62.41"`, 24 `<testsuite>` children, `skipped` summing to 24 across them) and all five configured coverage reporters, from `jest --ci --coverage`: **21 suites passed / 3 skipped, 347 passed / 24 skipped, exit 0** |
-| E2E artifacts | `e2e/reports/e2e-junit.xml` (`tests="31" failures="0" skipped="0" errors="0"`, that run's `time="13.030053"`; per spec `analytics` 4, `configuration` 6, `dashboard` 3, `isolation` 15, `tweets` 3), `e2e/playwright-report/index.html` (about 456 KB; its exact size moves with the run) and `e2e/test-results/.last-run.json` = `{"status":"passed","failedTests":[]}` |
-| Reproduction | All three suites were re-run end to end after the last change in this checkpoint, on the same host. Backend **1015 collected / 0 collection errors, 1012 passed, 3 skipped, exit 0, 93.33%**; frontend **21 suites passed / 3 skipped, 347 passed / 24 skipped, exit 0**, gated scopes `src/store` 100 / `src/schema` 100 / `src/services` 100 against an 80 bar, and the worst of the twelve gates 100.00%; e2e **31 passed, 0 skipped, 0 failed, 0 flaky, exit 0**. Identical counts, different durations — which is exactly the split described above. Two consecutive gated backend runs read `11.65 s` and `11.71 s`, and the same suite under `pytest -n auto` read `103.29 s` for the identical `1012 passed, 3 skipped`, which is the same point about durations |
-| Test identity | Across both artifacts every `<testcase>` is uniquely identified: 1015 of 1015 distinct `classname`+`name` pairs on the backend, 371 of 371 on the frontend, and not one `classname` or suite name containing a backslash |
+| Backend artifacts | `backend/reports/junit.xml` (`<testsuite name="pytest" errors="0" failures="0" skipped="3" tests="1068">`, that run's `time="12.988"`) plus the Cobertura and JSON coverage files — the two the canonical gated command requests; `backend/coverage.lcov` is the local measurement command's, as §2.1 records — from the gated run on CPython 3.9.13: **1065 passed, 3 skipped, exit 0, 93.33% (182/195)** over `app/core` 100.00% (47/47), `app/db` 100.00% (45/45), `app/services` 94.12% (48/51) and `app/tasks` 80.77% (42/52). The exact gate's own reading is retained beside them as `backend/reports/coverage-gate.txt`: `182 of 195 statements covered = 93.3333% exact, threshold 90%` / `9 file(s) measured` / `coverage gate PASSED` |
+| Frontend artifacts | `frontend/reports/jest-junit.xml` (`<testsuites tests="371" failures="0" errors="0">`, that run's `time="54.122"`, 24 `<testsuite>` children, `skipped` summing to 24 across them) and all five configured coverage reporters, from `jest --ci --coverage`: **21 suites passed / 3 skipped, 347 passed / 24 skipped, exit 0** |
+| E2E artifacts | `e2e/reports/e2e-junit.xml` (`tests="31" failures="0" skipped="0" errors="0"`, that run's `time="19.096366"`; per spec `analytics` 4, `configuration` 6, `dashboard` 3, `isolation` 15, `tweets` 3), `e2e/playwright-report/index.html` (about 456 KB; its exact size moves with the run) and `e2e/test-results/.last-run.json` = `{"status":"passed","failedTests":[]}` |
+| Reproduction | All three suites were re-run end to end after the last change in this checkpoint, on the same host. Backend **1068 collected / 0 collection errors, 1065 passed, 3 skipped, exit 0, 93.33%**; frontend **21 suites passed / 3 skipped, 347 passed / 24 skipped, exit 0**, gated scopes `src/store` 100 / `src/schema` 100 / `src/services` 100 against an 80 bar, and the worst of the twelve gates 100.00%; e2e **31 passed, 0 skipped, 0 failed, 0 flaky, exit 0**. Identical counts, different durations — which is exactly the split described above. Two consecutive gated backend runs read `12.24 s` and `12.09 s`, and the same suite under `pytest -n auto` read `106.81 s` for the identical `1065 passed, 3 skipped`, which is the same point about durations |
+| Test identity | Across both artifacts every `<testcase>` is uniquely identified: 1068 of 1068 distinct `classname`+`name` pairs on the backend, 371 of 371 on the frontend, and not one `classname` or suite name containing a backslash |
 | E2E harness | All four routes served, with an error-free dev-server log, under Vite 4.5.14 on `127.0.0.1:<4173 + CLONE_INDEX>` |
 
 ### 7.2 Implementation-time acceptance steps — performed
@@ -906,7 +930,7 @@ claim is checkable rather than asserted.
 
 | # | Step | Performed | Evidence |
 |---|---|---|---|
-| A1 | Execute the Playwright suite in a real browser | **Yes** — `npm test` from `e2e/`, `@playwright/test` 1.44.1 driving system **Google Chrome 151.0.7922.76**, resolved and recorded by `browsers:require` rather than by a hardcoded path, harness on `127.0.0.1:<4173 + CLONE_INDEX>`, Node v22.23.1 | Exit 0. **31 tests over 5 spec files: 31 passed, 0 skipped, 0 failed, 0 flaky, 13.03 s** — per spec `analytics` 4, `configuration` 6, `dashboard` 3, `isolation` 15, `tweets` 3. `e2e/reports/e2e-junit.xml` (`tests="31" failures="0" skipped="0" errors="0"`), `e2e/playwright-report/index.html`, `.last-run.json`, and `e2e/reports/browser.txt` carrying the resolved executable, `Browser version: 151.0.7922.76 (from the install layout)` and `Version 1.44.1`. Nothing is skipped: the chart-construction case runs and asserts the ceiling §3.3 records rather than being skipped for it. Retention on failure is observed rather than only configured — see the A1b row |
+| A1 | Execute the Playwright suite in a real browser | **Yes** — `npm test` from `e2e/`, `@playwright/test` 1.44.1 driving system **Google Chrome 151.0.7922.76**, resolved by `browsers:require` rather than by a hardcoded path, harness on `127.0.0.1:<4173 + CLONE_INDEX>`, Node v22.23.1. Resolved **by path**: `browsers:require` recorded the executable's SHA-256 into the artifact, and the run was **not digest-bound**, because binding the launch to that digest requires `PLAYWRIGHT_CHROMIUM_EXECUTABLE_SHA256` to be set and it was unset — which is what the artifact's own closing line says, together with two warnings that the executable and its directory are writable by this user | Exit 0. **31 tests over 5 spec files: 31 passed, 0 skipped, 0 failed, 0 flaky, 19.10 s** — per spec `analytics` 4, `configuration` 6, `dashboard` 3, `isolation` 15, `tweets` 3. `e2e/reports/e2e-junit.xml` (`tests="31" failures="0" skipped="0" errors="0"`), `e2e/playwright-report/index.html`, `.last-run.json`, and `e2e/reports/browser.txt` carrying the resolved executable, `Browser version: 151.0.7922.76 (from the install layout)` and `Version 1.44.1`. Nothing is skipped: the chart-construction case runs and asserts the ceiling §3.3 records rather than being skipped for it. Retention on failure is observed rather than only configured — see the A1b row |
 | A1b | Induce a failure and confirm `e2e/test-results/` carries a trace, a screenshot and a video for it | **Yes — performed as a by-product of A3.** The negative validation of the route anchoring failed four `isolation.spec.ts` tests deliberately, and each produced `test-failed-1.png`, `video.webm` and `trace.zip` under its own `e2e/test-results/` subdirectory named after the spec and test title. Those artifacts were deleted with the perturbation | Retention is therefore observed, not merely configured |
 | A2 | Render `blitzy-deck/executive-summary.html` in a browser | **Yes, repeatedly — and re-performed against the compressed deck** — headless Chrome 151 at a 1920×1080 viewport, all 16 slides visited individually via `Reveal.slide(N)`: two independent passes over the compressed bytes and one confirmation pass after the headline KPI was restamped | `Reveal.VERSION "5.1.0"`, `isReady() true`, **16** sections, config read back as `{width:1920, height:1080, hash:true, transition:"slide", controlsTutorial:false}`; **6 of 6** Mermaid diagrams `data-processed="true"` with exactly one non-zero-sized `<svg>` each and real node geometry, including the subgraph-anchored edge on slide 2; **19 of 19** Lucide icons rendered with **zero** surviving `i[data-lucide]` placeholders and none of zero size on its own slide; **9 of 9** network requests HTTP 200, the four integrity-pinned CDN assets among them with decoded byte sizes matching their sha384 declarations exactly; **zero** console messages of any type and **zero** CSP violations, both proven by instruments validated against deliberate violations rather than merely installed; and no clipping or overflow on any slide. Screenshots and recordings survive in the working tree under the git-ignored `blitzy/screenshots/` and `blitzy/screen_recordings/`, one capture per slide and one per diagram; what is committed is the measured table in §7.4, re-measured whenever the deck changes |
 | A3 | Demonstrate the negative validations | **Yes** — **28 critical-path production modules, one primary probe each** (14 backend, 14 frontend; `src/app.tsx` and `src/index.tsx` are excluded as the unmountable ceilings §3.3 records), plus **14 additional probes** on 13 of the same modules and on one harness module — each perturbing exactly one threshold, string or return value, running only the covering target, then restoring the file and re-verifying its sha256 | **42 of 42 probes turned the covering target red** and **42 of 42 restorations were byte-exact**. Nothing was committed: `git status` over `backend/app` and every frontend production path is clean and all nine `# TESTING:` markers are unchanged. The complete ledger, primary and additional, is §7.3. Separately, each fix in this checkpoint carries its own performed-and-reverted negative validation — the coverage precision gate, the dependency-pin grammar, the socket-ownership registry (twice), the spec-bound Firestore client, and the integer-coercion domain. The **security checkpoint's** eleven fail-closed demonstrations are §7.3.4 and are counted separately from the 42, because they perturb a control rather than a production module (D328) |
@@ -1081,12 +1105,12 @@ the live DOM, not inferred from the source, and each was taken after the slide c
 so unlike the previous revision of this section it describes the deck as it ships.
 
 **One number changed after those passes, and a further pass confirmed it.** The headline KPI moved
-from `1,273` to the `1,390` this checkpoint measures — the sum of the three result streams, 1012
+from `1,390` to the `1,443` this checkpoint measures — the sum of the three result streams, 1065
 backend, 347 frontend and 31 browser — so the deck was reloaded cache-ignoring, twice, and re-read over
 a full sixteen-slide traversal each time: the four `.kpi-value` elements of the KPI slide read `0%`,
-**`1,390`**, `93%`, `42`, with `1,390` still paired to its `Tests passing now` label in card two of
-four, and `1,273` appears in no markup, no attribute, no injected SVG or style content, no slide’s
-painted text on any of the sixteen, and no on-disk byte — nor in un-comma’d form as `1273`. Every
+**`1,443`**, `93%`, `42`, with `1,443` still paired to its `Tests passing now` label in card two of
+four, and `1,390` appears in no markup, no attribute, no injected SVG or style content, no slide’s
+painted text on any of the sixteen, and no on-disk byte — nor in un-comma’d form as `1390`. Every
 structural figure in the table below re-measured identically: 16 sections, 6 of 6 diagrams each holding
 exactly one rendered `<svg>` marked `data-processed`, 19 distinct icons with 0 placeholders left
 unreplaced, an empty console on both loads — one of them a cold load addressed straight at the closing

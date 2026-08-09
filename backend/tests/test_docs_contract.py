@@ -39,6 +39,18 @@ One provenance hash across every document
     The commit a figure was measured against is quoted in several files; they must
     quote the same one.
 
+Cross-references to a wholly superseded decision
+    ``DECISION-LOG.md`` appends rather than rewrites, so a downstream document can
+    cite a row whose ruling has since been reversed and read as current. Where the
+    log declares a row superseded **in whole**, a document citing it must cite its
+    superseder as well. Rows superseded only in part are excluded by construction:
+    citing the half that still stands is correct, and 21 such citations exist.
+
+A marker a document invites the reader to grep for
+    ``SECURITY-GAPS.md`` describes annotations that live in the backend manifest.
+    A quoted marker that the manifest does not carry defeats the check the row
+    invites, so each is required to be present verbatim.
+
 What is not asserted
 --------------------
 Anything requiring a subprocess. The conftest guards refuse a child process while a
@@ -68,10 +80,127 @@ REPOSITORY_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspat
 MATRIX_PATH = os.path.join(REPOSITORY_ROOT, "docs", "testing", "TRACEABILITY-MATRIX.md")
 DASHBOARD_PATH = os.path.join(REPOSITORY_ROOT, "docs", "testing", "DASHBOARD-TEMPLATE.md")
 DECISION_LOG_PATH = os.path.join(REPOSITORY_ROOT, "docs", "testing", "DECISION-LOG.md")
+SECURITY_GAPS_PATH = os.path.join(REPOSITORY_ROOT, "docs", "testing", "SECURITY-GAPS.md")
 EXTRACTOR_PATH = os.path.join(REPOSITORY_ROOT, "docs", "testing", "dashboard-extract.py")
 GITIGNORE_PATH = os.path.join(REPOSITORY_ROOT, ".gitignore")
 MANIFEST_PATH = os.path.join(REPOSITORY_ROOT, "backend", "requirements-dev.txt")
 DECK_PATH = os.path.join(REPOSITORY_ROOT, "blitzy-deck", "executive-summary.html")
+
+#: Documents that cite decision rows and are read as current rather than as history.
+#: ``DECISION-LOG.md`` itself is excluded: it *is* the history, and a row is expected to
+#: name the row it replaced.
+CITING_DOCUMENTS = (
+    os.path.join("docs", "testing", "TRACEABILITY-MATRIX.md"),
+    os.path.join("docs", "testing", "DASHBOARD-TEMPLATE.md"),
+    os.path.join("docs", "testing", "SECURITY-GAPS.md"),
+    "README.md",
+    os.path.join("backend", "tests", "README.md"),
+    os.path.join("frontend", "TESTING.md"),
+    os.path.join("e2e", "README.md"),
+    os.path.join("blitzy-deck", "executive-summary.html"),
+)
+
+#: Rows the log declares superseded **in whole**, mapped to the rows that replace them.
+#: Twelve are re-derived from the log below; the last three are stated only in the
+#: supersession index, so they are listed here and each is asserted to be stated there.
+WHOLE_ROW_SUPERSESSIONS = {
+    "D7": ("D103", "D136"),
+    "D8": ("D170",),
+    "D43": ("D126",),
+    "D116": ("D136",),
+    "D137": ("D170",),
+    "D163": ("D196",),
+    "D166": ("D171",),
+    "D167": ("D172",),
+    "D192": ("D208",),
+    "D234": ("D235",),
+    "D266": ("D308",),
+    "D339": ("D292",),
+    "D270": ("D292",),
+    "D271": ("D293",),
+    "D273": ("D285",),
+}
+
+#: Documents that publish the backend suite's size. ``DECISION-LOG.md`` is excluded: its rows
+#: state the figure each earlier checkpoint measured, and D354 freezes those as history.
+COUNT_PUBLISHING_DOCUMENTS = (
+    "README.md",
+    os.path.join("backend", "tests", "README.md"),
+    os.path.join("docs", "testing", "DASHBOARD-TEMPLATE.md"),
+    os.path.join("docs", "testing", "TRACEABILITY-MATRIX.md"),
+)
+
+#: Every phrasing a document uses to state how many backend cases the suite collects.
+COLLECTED_PATTERNS = (
+    r"all (\d{3,5}) tests are collected",
+    r"\*\*Current state:\*\* (\d{3,5}) tests collected",
+    r"collects all (\d{3,5}) tests",
+    r"`(\d{3,5}) tests collected`",
+    r"\*\*counts\*\* \u2014 (\d{3,5}) backend cases",
+    r'tests="(\d{3,5})">',
+    r"Backend \*\*(\d{3,5}) collected",
+    r"(\d{3,5}) of \d{3,5} distinct",
+)
+
+#: Every phrasing a document uses to state how many of them pass. Each pattern is anchored to
+#: a whole-suite statement: a per-suite figure such as the ``tests/unit`` row is a different
+#: number and must not be dragged into the comparison.
+PASSED_PATTERNS = (
+    r"(\d{3,5}) passing, 3 skipped",
+    r"\*\*(\d{3,5}) passed / 3 reasoned skips\*\* on the backend",
+    r"\| `pytest` \| `(\d{3,5}) passed, 3 skipped` \|",
+    r"the same `(\d{3,5}) passed, 3 skipped`",
+    r"identical `(\d{3,5}) passed, 3 skipped`",
+    r"\*\*(\d{3,5}) passed, 3 skipped, exit 0",
+    r"errors, (\d{3,5}) passed, 3 skipped",
+    r"\((\d{3,5}) backend, \d+ frontend",
+)
+
+#: Review findings the log's §40 register puts to an owner, whether to ratify a deviation
+#: from the frozen plan's literal text or to record that a scope clause already allows it.
+ESCALATED_DEVIATIONS = ("F3", "F4", "F5", "F6", "F12", "F17", "F21")
+
+#: The JWT pin as delivered. A backlog entry describing this change as unattempted is a
+#: document contradicting the manifest beside it, which is the failure this pair catches.
+DELIVERED_PIN = "python-jose[cryptography]==3.5.0"
+
+#: Markers ``SECURITY-GAPS.md`` states the backend manifest carries, each required in it.
+MANIFEST_MARKERS = (
+    "# SECURITY: above CVE-2024-33663 / CVE-2024-33664, fixed in 3.4.0.",
+    "python-jose[cryptography]==3.5.0",
+)
+
+#: The end-to-end census every document publishes: cases, then spec files. One number in
+#: one place, so a document that states a different one is a failure rather than a reading.
+E2E_PUBLISHED_TESTS = 31
+E2E_PUBLISHED_SPECS = 5
+
+#: Number words the documents spell out in an E2E census claim. The stale value is kept in
+#: the map deliberately: a regression to it then fails on its *value* rather than by
+#: falling out of the pattern and passing unnoticed.
+NUMBER_WORDS = {
+    "nineteen": 19, "twenty-one": 21, "thirty-one": 31, "twelve": 12, "eighty-five": 85,
+}
+
+#: Parametrisation ids for :data:`CITING_DOCUMENTS`: the relative path, because three of
+#: the documents are named ``README.md`` and a basename id would collide.
+CITING_DOCUMENT_IDS = [path.replace(os.sep, "/") for path in CITING_DOCUMENTS]
+
+#: Claim shapes that carry the E2E case count. The first is the artifact-shaped form, the
+#: second the discovery-listing form; both are what a reader copies into a report.
+E2E_NUMERIC_CLAIMS = (
+    r'tests="(\d+)" failures="0" skipped="0" errors="0"',
+    r"Total: (\d+) tests in (\d+) files",
+)
+
+#: Claim shapes that spell the count out in prose.
+E2E_WORD_CLAIMS = (
+    r"([A-Za-z-]+) browser flows passed",
+    r"([A-Za-z-]+) tests across five specs",
+)
+
+#: The retained E2E result stream, when a suite has been run in this working tree.
+E2E_JUNIT_PATH = os.path.join(REPOSITORY_ROOT, "e2e", "reports", "e2e-junit.xml")
 
 #: Directories whose every file is part of the delivered suite.
 SCOPE_DIRECTORIES = (
@@ -299,6 +428,28 @@ def _deck_slide_ids(kind):
     return ["slide{0}".format(index) for index, _markup in _deck_slides_of_kind(kind)]
 
 
+def _self_declared_whole_supersessions():
+    """Return ``{row id: (superseder, …)}`` for rows whose own head declares it.
+
+    The pattern is deliberately narrow: the Decision cell has to *open* with
+    ``Superseded by``, optionally inside the log's square-bracket annotation. Every row
+    superseded only in part opens with ``[The <something> half is superseded by …``
+    instead, so the two forms are distinguishable without reading the qualifier.
+    """
+    found = {}
+    for line in _read(DECISION_LOG_PATH).split("\n"):
+        match = re.match(
+            r"^\|\s*(D\d+)\s*\|\s*\*\*\[?Superseded by ((?:D\d+[, ]*(?:and )?)+)", line)
+        if match:
+            found[match.group(1)] = tuple(re.findall(r"D\d+", match.group(2)))
+    return found
+
+
+def _cited_rows(line):
+    """Return the decision-row ids a single line of prose cites."""
+    return {"D" + number for number in re.findall(r"\bD(\d+)\b", line)}
+
+
 def _stated(document, pattern):
     """Return the single capture of ``pattern`` in ``document``, asserting uniqueness."""
     found = re.findall(pattern, document)
@@ -517,6 +668,316 @@ def test_dashboard_names_every_required_artifact_the_extractor_requires():
         value = re.search(r'^{0} = "([^"]+)"'.format(constant), extractor, re.M)
         assert value is not None, constant
         assert value.group(1) in dashboard, value.group(1)
+
+
+# --------------------------------------------------------------------------- #
+# One end-to-end census, published identically everywhere                     #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("relative", CITING_DOCUMENTS, ids=CITING_DOCUMENT_IDS)
+def test_every_numeric_e2e_census_claim_states_the_published_count(relative):
+    """A count copied into a second document and never re-swept is the defect here."""
+    path = os.path.join(REPOSITORY_ROOT, relative)
+    if not os.path.isfile(path):
+        pytest.skip("{0} is not present".format(relative))
+    document = _read(path)
+
+    wrong = []
+    for pattern in E2E_NUMERIC_CLAIMS:
+        for found in re.finditer(pattern, document):
+            if int(found.group(1)) != E2E_PUBLISHED_TESTS:
+                wrong.append((pattern, found.group(0)))
+            if len(found.groups()) > 1 and int(found.group(2)) != E2E_PUBLISHED_SPECS:
+                wrong.append((pattern, found.group(0)))
+
+    assert wrong == [], "{0} publishes an E2E census other than {1} in {2} files: {3}".format(
+        relative, E2E_PUBLISHED_TESTS, E2E_PUBLISHED_SPECS, wrong)
+
+
+@pytest.mark.parametrize("relative", CITING_DOCUMENTS, ids=CITING_DOCUMENT_IDS)
+def test_every_spelled_out_e2e_census_claim_states_the_published_count(relative):
+    """The same rule for the prose form, which is where the deck stated it wrongly."""
+    path = os.path.join(REPOSITORY_ROOT, relative)
+    if not os.path.isfile(path):
+        pytest.skip("{0} is not present".format(relative))
+    document = _read(path)
+
+    wrong = []
+    for pattern in E2E_WORD_CLAIMS:
+        for found in re.finditer(pattern, document):
+            word = found.group(1).lower()
+            assert word in NUMBER_WORDS, "unrecognised number word {0!r} in {1}".format(
+                word, relative)
+            if NUMBER_WORDS[word] != E2E_PUBLISHED_TESTS:
+                wrong.append(found.group(0))
+
+    assert wrong == [], "{0} spells the E2E census as something other than {1}: {2}".format(
+        relative, E2E_PUBLISHED_TESTS, wrong)
+
+
+def test_the_published_e2e_census_is_the_retained_streams_own_count():
+    """When a run's evidence is present, the published number is bound to it."""
+    if not os.path.isfile(E2E_JUNIT_PATH):
+        pytest.skip("e2e/reports/e2e-junit.xml is gitignored and absent in a fresh clone")
+
+    root = re.search(r'<testsuites[^>]*\stests="(\d+)"', _read(E2E_JUNIT_PATH))
+
+    assert root is not None, "the retained E2E stream declares no root case count"
+    assert int(root.group(1)) == E2E_PUBLISHED_TESTS
+
+
+# --------------------------------------------------------------------------- #
+# The completeness prose, against the table beside it                         #
+# --------------------------------------------------------------------------- #
+
+def test_the_completeness_prose_states_the_gated_operation_total():
+    """The prose figure and the machine-checked table have to be the same number."""
+    matrix = _read(MATRIX_PATH)
+
+    prose = int(_stated(matrix, r"reports \*\*(\d+)\n?\s*operations:"))
+    denominator = int(_stated(matrix, r"That (\d+) is the denominator"))
+    table = int(_stated(matrix, r"\| Logical operations \| \*\*(\d+)\*\* \|"))
+
+    assert prose == denominator == table
+
+
+def test_the_completeness_prose_operation_split_sums_to_its_total():
+    """Additions plus modifications plus deletions is the total it is stated beside."""
+    matrix = _read(MATRIX_PATH)
+
+    total = int(_stated(matrix, r"reports \*\*(\d+)\n?\s*operations:"))
+    additions, modifications, deletions = _stated(
+        matrix, r"operations: (\d+) additions, (\d+) modifications, (\d+) deletions\*\*")
+
+    assert int(additions) + int(modifications) + int(deletions) == total
+
+
+def test_the_completeness_prose_accounts_for_every_operation():
+    """The frozen-plan paths plus the remediation extras are the whole change set."""
+    matrix = _read(MATRIX_PATH)
+
+    total = int(_stated(matrix, r"reports \*\*(\d+)\n?\s*operations:"))
+    planned = NUMBER_WORDS[
+        _stated(matrix, r"([A-Za-z-]+) of those paths are the frozen plan").lower()]
+    extras = NUMBER_WORDS[_stated(matrix, r"the remaining ([a-z-]+) are artifacts").lower()]
+
+    assert planned + extras == total
+
+
+# --------------------------------------------------------------------------- #
+# Cross-references to a wholly superseded decision                            #
+# --------------------------------------------------------------------------- #
+
+def test_every_wholly_superseded_row_the_log_declares_is_registered():
+    """The map cannot silently miss a supersession the log states in the usual form."""
+    declared = _self_declared_whole_supersessions()
+
+    assert declared, "the head pattern matched no row - the log's convention changed"
+    missing = sorted(set(declared) - set(WHOLE_ROW_SUPERSESSIONS))
+    assert missing == [], "not registered in WHOLE_ROW_SUPERSESSIONS: {0}".format(missing)
+    for row_id, superseders in declared.items():
+        registered = WHOLE_ROW_SUPERSESSIONS[row_id]
+        assert set(superseders).issubset(set(registered)), row_id
+
+
+def test_every_registered_supersession_is_stated_by_the_log():
+    """A pair in the map that the log does not state would be an invented reversal."""
+    log = _read(DECISION_LOG_PATH)
+    declared = _self_declared_whole_supersessions()
+
+    for row_id, superseders in sorted(WHOLE_ROW_SUPERSESSIONS.items()):
+        if row_id in declared:
+            continue
+        # Stated only in the supersession index, in the form "D273's suite half by D285".
+        supported = any(
+            re.search(re.escape(row_id) + r"[^.|]{0,160}?" + re.escape(superseder), log)
+            for superseder in superseders)
+        assert supported, "{0} is registered as superseded but the log never says so".format(
+            row_id)
+
+
+@pytest.mark.parametrize("relative", CITING_DOCUMENTS, ids=CITING_DOCUMENT_IDS)
+def test_no_document_cites_a_wholly_superseded_row_without_its_superseder(relative):
+    """A reversed ruling cited alone reads as current - the defect this exists to catch."""
+    path = os.path.join(REPOSITORY_ROOT, relative)
+    if not os.path.isfile(path):
+        pytest.skip("{0} is not present".format(relative))
+
+    unreconciled = []
+    for number, line in enumerate(_read(path).split("\n"), 1):
+        cited = _cited_rows(line)
+        for row_id in sorted(cited & set(WHOLE_ROW_SUPERSESSIONS), key=lambda i: int(i[1:])):
+            if not cited & set(WHOLE_ROW_SUPERSESSIONS[row_id]):
+                unreconciled.append((number, row_id, WHOLE_ROW_SUPERSESSIONS[row_id]))
+
+    assert unreconciled == [], (
+        "{0} cites a wholly superseded row without its superseder: {1}".format(
+            relative, unreconciled))
+
+
+# --------------------------------------------------------------------------- #
+# A marker a document invites the reader to grep for                          #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("marker", MANIFEST_MARKERS)
+def test_the_security_register_quotes_a_marker_the_manifest_carries(marker):
+    """The register and the manifest have to agree on the annotation, verbatim."""
+    quoted_by_register = marker in _read(SECURITY_GAPS_PATH)
+    carried_by_manifest = marker in _read(MANIFEST_PATH)
+
+    assert quoted_by_register, "the security register no longer quotes {0!r}".format(marker)
+    assert carried_by_manifest, "the manifest does not carry {0!r}".format(marker)
+
+
+def test_the_withdrawn_exception_wording_appears_nowhere():
+    """`D339`'s four-line block was withdrawn by `D292`; nothing may still promise it."""
+    for relative in CITING_DOCUMENTS + (os.path.join("backend", "requirements-dev.txt"),):
+        path = os.path.join(REPOSITORY_ROOT, relative)
+        if os.path.isfile(path):
+            assert "SECURITY EXCEPTION" not in _read(path), relative
+
+
+# --------------------------------------------------------------------------- #
+# The deviations put to an owner, and the backlog that must not contradict     #
+# --------------------------------------------------------------------------- #
+
+def _deviation_register():
+    """Return ``{finding id: (adjudication cell, owner-ask cell)}`` for the §40 register."""
+    rows = {}
+    pattern = (r"^\|\s*\d+\s*\|\s*(F\d+)\s*\u2014[^|]*\|"
+               r"[^|]*\|[^|]*\|([^|]*)\|([^|]*)\|\s*$")
+    for line in _read(DECISION_LOG_PATH).split("\n"):
+        match = re.match(pattern, line)
+        if match:
+            rows[match.group(1)] = (match.group(2).strip(), match.group(3).strip())
+    return rows
+
+
+def test_the_deviation_register_carries_exactly_the_escalated_findings():
+    """One row per deviation, and no row for anything else."""
+    assert sorted(_deviation_register()) == sorted(ESCALATED_DEVIATIONS)
+
+
+@pytest.mark.parametrize("finding", ESCALATED_DEVIATIONS)
+def test_every_deviation_states_an_adjudication_and_an_owner_ask(finding):
+    """A register entry is only useful if it says which way it went and what is owed."""
+    adjudication, owner_ask = _deviation_register()[finding]
+
+    assert any(word in adjudication for word in ("Ratify", "Authorised")), (
+        "{0} states no adjudication: {1!r}".format(finding, adjudication))
+    assert re.search(r"D\d+", adjudication), (
+        "{0} cites no decision row: {1!r}".format(finding, adjudication))
+    assert len(owner_ask.split()) >= 8, (
+        "{0} does not say what an owner signs off: {1!r}".format(finding, owner_ask))
+
+
+def test_the_readme_routes_the_deviations_to_the_register():
+    """The one list a new developer reads has to reach the register, by count and by link."""
+    readme = _read(os.path.join(REPOSITORY_ROOT, "README.md"))
+
+    assert "Owner decision, not a task" in readme
+    assert "the seven places where a delivered detail differs" in readme
+    assert "docs/testing/DECISION-LOG.md" in readme
+
+
+def test_the_readme_backlog_agrees_with_the_delivered_pin():
+    """No backlog entry may call unattempted a change the manifest already carries."""
+    assert DELIVERED_PIN in _read(MANIFEST_PATH)
+    version = DELIVERED_PIN.split("==")[1]
+    entries = [line for line
+               in _read(os.path.join(REPOSITORY_ROOT, "README.md")).split("\n")
+               if line.startswith("- ") and "python-jose" in line]
+
+    assert entries, "no backlog entry names the pin at all"
+    for entry in entries:
+        assert "Not attempted" not in entry, (
+            "a backlog entry still calls the pin unattempted while the manifest carries "
+            + DELIVERED_PIN)
+    stating = [entry for entry in entries if version in entry]
+    assert len(stating) == 1, (
+        "expected exactly one entry to state the delivered version {0}, found {1}".format(
+            version, len(stating)))
+
+
+
+# --------------------------------------------------------------------------- #
+# One suite size, published in one place at a time                            #
+# --------------------------------------------------------------------------- #
+
+def _published_figures(patterns):
+    """Return ``{figure: [documents stating it]}`` across the count-publishing set."""
+    stated = {}
+    for relative in COUNT_PUBLISHING_DOCUMENTS:
+        path = os.path.join(REPOSITORY_ROOT, relative)
+        if not os.path.isfile(path):
+            continue
+        text = _read(path)
+        for pattern in patterns:
+            for figure in re.findall(pattern, text):
+                stated.setdefault(int(figure), []).append(relative)
+    return stated
+
+
+def test_every_document_publishes_the_same_backend_collected_figure():
+    """A document left behind by a growing suite is the defect this catches."""
+    stated = _published_figures(COLLECTED_PATTERNS)
+
+    assert stated, "no document states how many backend cases are collected"
+    assert len(stated) == 1, "documents disagree on the collected count: {0}".format(
+        {figure: sorted(set(docs)) for figure, docs in stated.items()})
+
+
+def test_every_document_publishes_the_same_backend_passing_figure():
+    """The same, for the number that passes rather than the number collected."""
+    stated = _published_figures(PASSED_PATTERNS)
+
+    assert stated, "no document states how many backend cases pass"
+    assert len(stated) == 1, "documents disagree on the passing count: {0}".format(
+        {figure: sorted(set(docs)) for figure, docs in stated.items()})
+
+
+def test_the_collected_figure_is_not_below_the_passing_figure():
+    """Collected has to account for the passes and the skips, never fewer."""
+    collected = list(_published_figures(COLLECTED_PATTERNS))[0]
+    passing = list(_published_figures(PASSED_PATTERNS))[0]
+
+    assert collected >= passing
+    assert collected - passing == 3, (
+        "{0} collected minus {1} passing is not the 3 reasoned skips the documents "
+        "describe".format(collected, passing))
+
+
+def _deck_headline_kpi():
+    """Return the deck's headline KPI string, read through its own label."""
+    match = re.search(
+        r'<span class="kpi-value">([\d,]+)</span>\s*'
+        r'<span class="kpi-label">Tests passing now</span>', _read(DECK_PATH))
+    assert match, "the deck has no KPI value paired with a 'Tests passing now' label"
+    return match.group(1)
+
+
+def test_the_deck_headline_kpi_is_the_sum_of_the_three_streams():
+    """The KPI is defined as a sum, so it is checkable rather than assertable."""
+    matrix = _read(MATRIX_PATH)
+    triple = re.search(r"\((\d{3,5}) backend, (\d+) frontend, (\d+) browser\)", matrix)
+
+    assert triple, "the matrix no longer states the three stream figures"
+    backend, frontend, browser = (int(group) for group in triple.groups())
+    kpi = _deck_headline_kpi()
+
+    assert int(kpi.replace(",", "")) == backend + frontend + browser, (
+        "the deck publishes {0} where the three streams sum to {1}".format(
+            kpi, backend + frontend + browser))
+    assert browser == E2E_PUBLISHED_TESTS
+    assert backend == list(_published_figures(PASSED_PATTERNS))[0]
+
+
+def test_every_document_quoting_the_headline_kpi_quotes_the_same_one():
+    """The KPI appears in three files; a stale copy is the failure mode."""
+    kpi = _deck_headline_kpi()
+    for path in (MATRIX_PATH, DASHBOARD_PATH):
+        assert "`{0}`".format(kpi) in _read(path), (
+            "{0} does not quote the deck's KPI {1}".format(path, kpi))
 
 
 # --------------------------------------------------------------------------- #

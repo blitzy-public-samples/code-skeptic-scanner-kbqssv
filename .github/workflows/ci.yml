@@ -53,13 +53,19 @@ jobs:
     # without masking it - the job still ends red - and stops on cancellation.
     # See docs/testing/DECISION-LOG.md row D256.
 
+    # `--junitxml` is repeated here, and the repetition is the point: backend/pytest.ini
+    # carries `--junitxml=reports/junit.xml` in `addopts`, so every pytest invocation is a
+    # writer of the canonical result stream, and the value given on the command line wins.
+    # Naming a separate file keeps this probe from replacing a run's results with a
+    # zero-case discovery stub - the same neutraliser the frontend and e2e probes apply.
+    # See docs/testing/DECISION-LOG.md row D355.
     - name: Check backend collection integrity
       if: ${{ !cancelled() }}
       working-directory: backend
       run: |
         set -o pipefail
         mkdir -p reports
-        pytest --collect-only -q | tee reports/collect-only.txt
+        pytest --collect-only -q --junitxml=reports/collect-only-junit.xml | tee reports/collect-only.txt
 
     # The discovery census: which files a run would pick up. It imports none of them,
     # so it is a census and not a gate - which is why the load step below exists as well.
@@ -133,20 +139,34 @@ jobs:
       run: |
         npm run test:ci
 
+    # The last check is an equality, not a non-zero test. A zero-case stub is only the
+    # loudest way this stream can be wrong; a partial run - one file, one `-k` filter -
+    # leaves a non-zero count that no presence or non-zero check can tell apart from a
+    # full run, and every figure the dashboard publishes off it is then wrong while
+    # everything reports success. The collected count from the readiness step above is the
+    # independent witness, so the two are compared.
+    # See docs/testing/DECISION-LOG.md row D355.
     - name: Verify backend report artifacts
       if: ${{ !cancelled() && steps.backend_tests.outcome == 'success' }}
       run: |
-        for f in backend/coverage.xml backend/coverage.json backend/reports/junit.xml; do
+        for f in backend/coverage.xml backend/coverage.json backend/reports/junit.xml backend/reports/collect-only.txt; do
           if [ ! -s "$f" ]; then
             echo "::error file=$f::report missing or empty - the upload below would have carried nothing"
             exit 1
           fi
           echo "ok $f ($(wc -c < "$f") bytes)"
         done
-        if ! grep -Eq 'tests="[1-9][0-9]*"' backend/reports/junit.xml; then
-          echo "::error file=backend/reports/junit.xml::result stream declares no test cases - the collection step's stub was never replaced by a run"
+        declared="$(grep -Eo 'tests="[0-9]+"' backend/reports/junit.xml | head -1 | grep -Eo '[0-9]+')"
+        collected="$(grep -Eo '[0-9]+ tests? collected' backend/reports/collect-only.txt | tail -1 | grep -Eo '[0-9]+')"
+        if [ -z "$declared" ] || [ -z "$collected" ]; then
+          echo "::error file=backend/reports/junit.xml::could not read a case count from the result stream (${declared:-none}) or a collected count from the readiness output (${collected:-none})"
           exit 1
         fi
+        if [ "$declared" != "$collected" ]; then
+          echo "::error file=backend/reports/junit.xml::result stream declares $declared test cases while collection found $collected - a partial, filtered or collection-only run overwrote the canonical stream"
+          exit 1
+        fi
+        echo "ok backend/reports/junit.xml declares $declared cases, equal to the $collected collected"
 
     - name: Verify frontend report artifacts
       if: ${{ !cancelled() && steps.frontend_tests.outcome == 'success' }}
@@ -368,3 +388,10 @@ jobs:
         # somewhere this file cannot see. The result stream carries no attachment
         # body, so 30 days matches the other result artifacts.
         retention-days: 30
+
+# HUMAN ASSISTANCE NEEDED
+# Please review the following:
+# 1. Ensure that the Python and Node.js versions are appropriate for your project.
+# 2. Verify that the file paths for requirements.txt, test files, and coverage reports are correct.
+# 3. Confirm that the linting, type checking, and testing commands match your project's setup.
+# 4. Check if additional environment variables or secrets are needed for the workflow.

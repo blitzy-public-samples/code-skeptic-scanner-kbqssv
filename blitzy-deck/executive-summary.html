@@ -1075,6 +1075,31 @@
       font-size: 26px;
       line-height: 1.3;
     }
+
+    /* Reduced motion. The reveal configuration keeps the mandated slide
+       transition; this suppresses the movement itself for a viewer whose
+       operating system asks for it, leaving every slide reachable and
+       identical in content. Only `transition` and `animation` are cleared:
+       reveal carries the stage scale-and-centre on a transform of
+       `.reveal .slides` and positions each section with a transform of its
+       own, so clearing `transform` here would move content rather than
+       still it. See docs/testing/DECISION-LOG.md row D362. */
+
+    @media (prefers-reduced-motion: reduce) {
+      .reveal,
+      .reveal .slides,
+      .reveal .slides section,
+      .reveal .slides > section.stack,
+      .reveal .backgrounds .slide-background,
+      .reveal .progress span,
+      .reveal .controls button,
+      .reveal .controls .controls-arrow,
+      .reveal .controls .controls-arrow::before,
+      .reveal .controls .controls-arrow::after {
+        transition: none !important;
+        animation: none !important;
+      }
+    }
   </style>
 </head>
 <body>
@@ -1103,7 +1128,7 @@
           </div>
           <div class="kpi-card">
             <span class="kpi-icon" aria-hidden="true"><i data-lucide="list-checks" aria-hidden="true" focusable="false"></i></span>
-            <span class="kpi-value">1,390</span>
+            <span class="kpi-value">1,443</span>
             <span class="kpi-label">Tests passing now</span>
           </div>
           <div class="kpi-card">
@@ -1160,8 +1185,8 @@
             <table>
               <thead>
                 <tr>
-                  <th>Outcome</th>
-                  <th>Tests</th>
+                  <th scope="col">Outcome</th>
+                  <th scope="col">Tests</th>
                 </tr>
               </thead>
               <tbody>
@@ -1206,8 +1231,8 @@
         <table class="deck-table-compact">
           <thead>
             <tr>
-              <th>Change</th>
-              <th>Why unavoidable</th>
+              <th scope="col">Change</th>
+              <th scope="col">Why unavoidable</th>
             </tr>
           </thead>
           <tbody>
@@ -1283,8 +1308,8 @@
             <table>
               <thead>
                 <tr>
-                  <th>Scope</th>
-                  <th>Bar</th>
+                  <th scope="col">Scope</th>
+                  <th scope="col">Bar</th>
                 </tr>
               </thead>
               <tbody>
@@ -1365,7 +1390,7 @@
         <ul>
           <li>From zero executed tests to a green suite.</li>
           <li>Coverage bars enforced at 90 and 80.</li>
-          <li>Nineteen browser flows passed, none skipped.</li>
+          <li>Thirty-one browser flows passed, none skipped.</li>
         </ul>
         <p class="deck-note">This file loads three pinned third-party libraries, one of them
           advisory-affected. Nothing it shows comes from outside the file, so that exposure is

@@ -210,7 +210,7 @@ its own port (`4173 + CLONE_INDEX`).
 
 Run every backend command from `backend/`, so that `backend/pytest.ini` is the configuration file pytest loads. A **bare** `pytest` from the repository root fails in a way that is easy to misread, and worth stating precisely because the failure does not look like a configuration problem:
 
-- Collection **succeeds** — all 1015 tests are collected, and imports resolve, because pytest inserts each test file's rootdir on `sys.path` regardless.
+- Collection **succeeds** — all 1068 tests are collected, and imports resolve, because pytest inserts each test file's rootdir on `sys.path` regardless.
 - But `rootdir` becomes the repository root and **no `configfile` is loaded**, so `asyncio_mode = auto` is off. pytest reports `asyncio: mode=strict`, and every `async def` test errors for want of a decorator: **21 failed, 991 passed, 3 skipped**.
 
 So a root run produces a plausible-looking collection followed by 21 failures that say nothing about the code under test. Passing an explicit path — `pytest backend/tests` — *does* find the ini, because pytest walks up from the argument; the reliable habit is simply to `cd backend` first, which is what every command below assumes and what CI does through `working-directory: backend`.
@@ -256,7 +256,7 @@ Every end-to-end command runs from `e2e/` through that package's own scripts, so
 from the repository root: there is no root manifest and no root `node_modules`, so `npx` would fetch an
 unpinned runner from the registry.
 
-The three suites report **1012 passed / 3 reasoned skips** on the backend, **347 passed / 24 reasoned skips across 24 suites** on the frontend, and **31 passed / no skip across 5 spec files** end to end. The collection-integrity gate expects **zero errors**. It is the meaningful readiness check here, because this suite's historical failure mode was import errors rather than failed assertions: a clean collection proves every test module is importable before any assertion is evaluated.
+The three suites report **1065 passed / 3 reasoned skips** on the backend, **347 passed / 24 reasoned skips across 24 suites** on the frontend, and **31 passed / no skip across 5 spec files** end to end. The collection-integrity gate expects **zero errors**. It is the meaningful readiness check here, because this suite's historical failure mode was import errors rather than failed assertions: a clean collection proves every test module is importable before any assertion is evaluated.
 
 Use `npm test` for the end-to-end suite rather than `npx playwright test`. Both resolve the pinned local
 runner from inside `e2e/`, but `npx` is online-capable by design, and a script that names the binary fails
@@ -275,7 +275,7 @@ unresolvable import: `test:list` exited 0 and `test:load` exited 1.
 
 | Layer | Command | Expects |
 | --- | --- | --- |
-| Backend | `cd backend && pytest --collect-only -q` | **zero errors** |
+| Backend | `cd backend && pytest --collect-only -q --junitxml=reports/collect-only-junit.xml` | **zero errors** |
 | Frontend, discovery | `cd frontend && npm run test:list` | every collectable test file listed, exit 0; imports nothing |
 | Frontend, readiness | `cd frontend && npm run test:load` | every listed module loaded and transformed, 0 failed, 0 test bodies run, exit 0 |
 | End-to-end | `cd e2e && npm run test:list` | every test listed, exit 0; launches no browser |
@@ -308,7 +308,8 @@ files, so redirect them — these are the same commands CI runs, with the same r
 ```bash
 # POSIX shells
 mkdir -p backend/reports frontend/reports e2e/reports
-(cd backend  && pytest --collect-only -q        | tee reports/collect-only.txt)
+(cd backend  && pytest --collect-only -q --junitxml=reports/collect-only-junit.xml \
+                  | tee reports/collect-only.txt)
 (cd frontend && npm run --silent test:list      | tee reports/list-tests.txt)
 (cd frontend && npm run --silent test:load 2>&1 | tee reports/load-tests.txt)
 (cd e2e      && npm run --silent test:list      | tee reports/list-tests.txt)
@@ -317,7 +318,7 @@ mkdir -p backend/reports frontend/reports e2e/reports
 ```powershell
 # PowerShell
 New-Item -ItemType Directory -Force backend\reports, frontend\reports, e2e\reports | Out-Null
-cd backend;  cmd /c "pytest --collect-only -q 2>&1"   | Tee-Object reports\collect-only.txt; cd ..
+cd backend;  cmd /c "pytest --collect-only -q --junitxml=reports/collect-only-junit.xml 2>&1" | Tee-Object reports\collect-only.txt; cd ..
 cd frontend; cmd /c "npm run --silent test:list 2>&1" | Tee-Object reports\list-tests.txt;   cd ..
 cd frontend; cmd /c "npm run --silent test:load 2>&1" | Tee-Object reports\load-tests.txt;   cd ..
 cd e2e;      cmd /c "npm run --silent test:list 2>&1" | Tee-Object reports\list-tests.txt;   cd ..
@@ -338,8 +339,15 @@ leave a zero-case stub exactly where a result stream belongs. CI runs readiness 
 verification steps reject a zero-case stream outright, and the extractor refuses one rather than rendering
 it as zeros (`D254`, `D258`); `e2e`'s `test:list` script additionally pins `--reporter=line`. The frontend
 probe is a real Jest run and would have had the same defect, so `test:load` pins `--reporters=default`
-instead — verified by hashing `frontend/reports/jest-junit.xml` either side of a probe. Locally, if you run
-a backend or end-to-end readiness command last, re-run the suite before trusting the artifacts.
+instead — verified by hashing `frontend/reports/jest-junit.xml` either side of a probe.
+
+The backend probe now carries its own neutraliser as well, which is why the command above repeats
+`--junitxml`: the value given on the command line wins over the one `backend/pytest.ini` puts in `addopts`,
+so the probe writes `backend/reports/collect-only-junit.xml` and leaves the run's stream alone. A zero-case
+stub was never the only way that stream could be wrong, though — a **partial** run leaves a non-zero count
+that no presence check can tell from a full one. So the stream's case count is required to equal the
+collected count this readiness step records, in the extractor and in CI's verify step, and a difference
+names both figures instead of publishing the smaller one (`D355`).
 
 ### Coverage gates
 
@@ -497,12 +505,13 @@ partial dashboard.
 
 ### Suggested next tasks
 
-Improvements discovered while building the test suite. **None of them was attempted here** — each falls outside the scope of adding tests, and each is left exactly as it was found.
+Improvements discovered while building the test suite. Almost none of them was attempted here — each falls outside the scope of adding tests, and each is left exactly as it was found. Three entries read differently and say so in their own opening words: two record work that *was* closed because it fell inside the authorized surface, and the first asks for a decision rather than describing work.
 
+- **Owner decision, not a task** — ratify or reverse the seven places where a delivered detail differs from the literal text of the agreed plan. They are: the `python-jose` pin described below; two `grpcio` pins the agreed inventory does not list, which the test guards patch by name; two extra `test:` scripts in `frontend/package.json` beyond the five the plan enumerates, both of them pipeline readiness gates; twenty-one test-side files beyond the plan's transformation map, all inside the directories it declares in scope; a Playwright trace kept on every failing test rather than only on a retry; an unhandled-request ledger in place of a literal `'error'` setting, which is what makes an unmocked call fail loudly in a codebase whose callers all swallow; and an end-to-end job that resolves a pre-installed browser instead of downloading one, through a runner release whose downloader carries CVE-2025-59288. Every one is recorded with its alternatives and its risks in [`docs/testing/DECISION-LOG.md`](docs/testing/DECISION-LOG.md), whose §40 closes with a register stating, item by item, what an owner is being asked to sign off and what reversing it would cost. Four of the seven make the delivery stronger than the plan and none is a defect, so nothing needs changing to keep the suite green — but until they are ratified, every future review raises them again.
 - **Not attempted** — correct the stale product identity in this README, which describes an unrelated static-analysis tool rather than the Twitter-monitoring service this repository implements.
 - **Not attempted** — reconcile the port mismatch between this README, `infrastructure/docker/docker-compose.yml` and `infrastructure/docker/nginx.conf`.
 - **Done, within the authorized surface** — the five packages the source imports and no manifest declared (`react-router-dom`, `@reduxjs/toolkit`, `react-redux`, `zod`, `dayjs`) are now declared in `frontend/package.json`, at exact versions, because the suites cannot run without them. They sit in `devDependencies` alongside the other test dependencies, since AAP §0.5.3 scopes changes to that file to devDependencies and test scripts. **Still not attempted:** moving the four of them that are genuine *runtime* imports into `dependencies`, which is a packaging decision this work has no mandate to make.
-- **Not attempted** — raise `python-jose[cryptography]` above `3.3.0` in `backend/requirements-dev.txt`. That version is the one the agreed dependency inventory fixes, and it is affected by CVE-2024-33663 and CVE-2024-33664, both fixed in 3.4.0. No test here reaches either — the suite round-trips one HS256 token with an explicit key and never decrypts a JWE or loads an OpenSSH ECDSA key — so the exposure is to future production use of this dependency, and changing an agreed pin is a decision for the repository's owners.
+- **Done, within the authorized surface** — `python-jose[cryptography]` is pinned at `3.5.0` in `backend/requirements-dev.txt`, above CVE-2024-33663 and CVE-2024-33664, both of which affect the `3.3.0` the agreed dependency inventory names and are fixed in 3.4.0. No test here reaches either — the suite round-trips one HS256 token with an explicit key and never decrypts a JWE or loads an OpenSSH ECDSA key — so what the pin removes is a future production exposure rather than a present test one. Because the delivered manifest therefore differs from the agreed inventory by one line, it is the first of the seven items in the frozen-plan deviation register described in the bullet above, and it is that register, not this bullet, that asks the owners to ratify it.
 - **Not attempted** — commit lockfiles for `frontend/` and `e2e/` so that installs are reproducible and `npm ci` becomes usable.
 - **Not attempted** — raise the Node floor and move `@playwright/test` past 1.44.1, which is the last release supporting the declared Node 16.x and carries the browser-downloader CVE that forces the out-of-band browser provisioning described above. A newer runner would let a script obtain the browser again.
 - **Not attempted** — run `.github/workflows/ci.yml` on GitHub Actions from a branch and confirm it there. Every statement about CI in this repository's documentation describes the workflow file; the pipeline itself has never executed.
@@ -511,6 +520,7 @@ Improvements discovered while building the test suite. **None of them was attemp
 - **Not attempted** — repair the invalid reducer imports in `frontend/src/store/index.ts`, and export the `useAppDispatch` and `useAppSelector` hooks that three page modules import.
 - **Not attempted** — implement the missing `TweetCard` component, the `getTweets` and `setupInterceptors` exports, and the `Chart.register` call that chart construction requires. Note that chart construction is wrapped by nothing, so supplying the registration makes a failure there propagate out of the effect and unmount the component.
 - **Not attempted** — give the analytics chart canvas an accessible name and description, or a table or textual summary of the series. It is a bare `<canvas>` today, so the whole of the analytics content is absent from the accessibility tree.
+- **Not attempted** — give each routed screen a level-one heading. Every routed component's own heading is an `<h2>` (`components/Analytics`, `components/Configuration`, `components/Dashboard`), and neither `frontend/src/app.tsx` nor the end-to-end harness supplies an `<h1>`, so a screen reader's outline of any screen has no level-one entry. Neither place can be fixed within this delivery: the application entry is production code outside the two authorized touches, and the harness deliberately adds no page chrome so that a spec observes the component unaltered.
 - **Not attempted** — announce loading and live updates: the tweet-list loading indicator is a plain `div` in a container that is not a live region, and the 30-second polled feed declares no live region either, so neither is audible to a screen reader.
 - **Not attempted** — give the Twitter credential save a pending state. The control is never disabled and never carries `aria-busy`, so a second activation while the first write is open issues a second credential write and opens a second dialog.
 - **Not attempted** — mask every credential field and state an intentional autofill policy. `API Key` and `Access Token` render as `type="text"` today, so both are on screen in clear text while only the `Secret`-suffixed fields are masked.
@@ -519,7 +529,7 @@ Improvements discovered while building the test suite. **None of them was attemp
 - **Not attempted** — repair the `flake8 .`, `mypy .` and `npm run lint` steps in `.github/workflows/ci.yml`; no linter is declared and the sources do not typecheck. Until they pass, the `build` job's overall conclusion stays red even though both test steps succeed.
 - **Not attempted** — raise the declared Node ceiling so `@playwright/test` >= 1.55.1 becomes available. That release carries the fix for CVE-2025-59288, which is the only reason the `e2e` job must be handed a browser provisioned out of band instead of installing one.
 - **Not attempted** — align the `/health` health checks in `infrastructure/docker/docker-compose.yml` and `.github/workflows/cd.yml` with a route that actually exists.
-- **Not attempted, and the highest-value group here** — the security exposures a whole-project assessment found and this delivery could not close, because they live in production code, in pinned dependency versions, and in the infrastructure and deployment files that the plan places off-limits. There are twenty-one of them, and the three that matter most are that all three implemented HTTP operations have no authentication or authorization of any kind, that `backend/app/services/analytics_service.py` builds both BigQuery queries by f-string interpolation of caller-supplied date strings, and that `infrastructure/terraform/main.tf` provisions network and storage without the access restrictions and in-transit encryption those resources support. Each one is written up individually — stated as a fact about the code, with the clause that put it out of reach, what it is worth to an attacker, and what has to be done — in [`docs/testing/SECURITY-GAPS.md`](docs/testing/SECURITY-GAPS.md). Read that before scheduling anything else on this list.
+- **Not attempted, and the highest-value group here** — the security exposures a whole-project assessment found and this delivery could not close, because they live in production code, in pinned dependency versions, and in the infrastructure and deployment files that the plan places off-limits. There are twenty-three of them in those three categories — twenty-five rows in the register in total, the last two being about this delivery's own documentation and executive deck rather than the application — and the three that matter most are that all three implemented HTTP operations have no authentication or authorization of any kind, that `backend/app/services/analytics_service.py` builds both BigQuery queries by f-string interpolation of caller-supplied date strings, and that `infrastructure/terraform/main.tf` provisions network and storage without the access restrictions and in-transit encryption those resources support. Each one is written up individually — stated as a fact about the code, with the clause that put it out of reach, what it is worth to an attacker, and what has to be done — in [`docs/testing/SECURITY-GAPS.md`](docs/testing/SECURITY-GAPS.md). Read that before scheduling anything else on this list.
 - **Not attempted** — remove the `postgres:13` service and the `DATABASE_URL` variable, neither of which the Firestore and BigQuery application uses.
 
 The complete register, together with the reasoning behind every item, is in [`docs/testing/DECISION-LOG.md`](docs/testing/DECISION-LOG.md).

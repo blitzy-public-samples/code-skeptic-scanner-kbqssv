@@ -7,7 +7,7 @@ production code **actually does today**, including the places where that diverge
 documents, because a test that asserts an intention the code does not implement fails for the wrong
 reason and teaches nobody anything.
 
-**Current state:** 1015 tests collected, 1012 passing, 3 skipped with reasons, 93.33% line coverage on
+**Current state:** 1068 tests collected, 1065 passing, 3 skipped with reasons, 93.33% line coverage on
 the four gated packages. `pytest --collect-only -q` reports zero errors.
 
 Those are measurements from CPython 3.9.13 with `backend/requirements-dev.txt` installed, read out of
@@ -130,7 +130,7 @@ PytestConfigWarning: Unknown config option: rootdir
 It is a computed value, not a declarable one. So the invocation directory is the mechanism, and
 getting it wrong is not a subtle failure. Imports themselves do resolve from the repository root —
 `tests/` is a package, so pytest's prepend import mode puts `backend/` on `sys.path` — and that is what
-makes the failure quiet rather than obvious: a root-level `pytest` collects all 1015 tests and then
+makes the failure quiet rather than obvious: a root-level `pytest` collects all 1068 tests and then
 **fails 21 of them** with warnings on every marker, because `backend/pytest.ini` is not the active
 config file at that level, so `asyncio_mode = auto` is not in effect and every async test is
 mis-handled. Always:
@@ -220,11 +220,11 @@ the extractor reports them together as the `Backend other` layer:
 
 | Suite | Subject | Cases |
 |---|---|---|
-| `test_dependency_closure.py` | `backend/requirements-dev.txt` — every active line an exact pin, every pin the installed version | 41 |
-| `test_coverage_gate.py` | `backend/.coveragerc` — the `precision` `--cov-fail-under` compares at, and the band it admits | 20 |
-| `test_guard_contract.py` | `conftest.py`'s own guards — credential non-disclosure, endpoint ownership, child-process refusal | 146 |
-| `test_dashboard_extract.py` | `docs/testing/dashboard-extract.py` — its `REQUIRED` contract and its twelve-gate frontend minimum | 26 |
-| `test_docs_contract.py` | the arithmetic `docs/testing/TRACEABILITY-MATRIX.md` and `docs/testing/DASHBOARD-TEMPLATE.md` state, and Rule 4's word and bullet caps on `blitzy-deck/executive-summary.html` | 42 |
+| `test_dependency_closure.py` | `backend/requirements-dev.txt` — every active line an exact pin, every pin the installed version | 72 |
+| `test_coverage_gate.py` | `backend/.coveragerc` — the `precision` `--cov-fail-under` compares at, and the band it admits | 62 |
+| `test_guard_contract.py` | `conftest.py`'s own guards — credential non-disclosure, endpoint ownership, child-process refusal | 168 |
+| `test_dashboard_extract.py` | `docs/testing/dashboard-extract.py` — its `REQUIRED` contract and its twelve-gate frontend minimum | 31 |
+| `test_docs_contract.py` | the arithmetic `docs/testing/TRACEABILITY-MATRIX.md` and `docs/testing/DASHBOARD-TEMPLATE.md` state, and Rule 4's word and bullet caps on `blitzy-deck/executive-summary.html` | 90 |
 
 `test_guard_contract.py` is worth reading first. Every other suite here rests on three promises — that a
 failure message never prints a credential, that a loopback port is authorized only while this process holds
@@ -684,7 +684,7 @@ exactly what stops a whole-tree total being labelled G1.
 | Single parametrised case | `pytest "tests/unit/test_tasks_tweet_processor.py::test_on_status_skips_below_popularity_threshold[50-49]"` |
 | Debug | `pytest -vv -s --log-cli-level=DEBUG --showlocals --tb=long` |
 | Stop at first failure | `pytest -x --tb=short` |
-| **Collection gate** | `pytest --collect-only -q` |
+| **Collection gate** | `pytest --collect-only -q --junitxml=reports/collect-only-junit.xml` |
 | Parallel — **does not start on Windows**, see below | `pytest -n auto` |
 
 Quote a parametrised node id — the `[` and `]` are shell metacharacters in most shells.
@@ -698,16 +698,18 @@ first run after an install is slower — about nineteen seconds here — because
 
 | Command | Expected outcome |
 |---|---|
-| `pytest` | `1012 passed, 3 skipped` |
-| `pytest tests/unit -m unit` | `483 passed, 3 skipped` |
+| `pytest` | `1065 passed, 3 skipped` |
+| `pytest tests/unit -m unit` | `492 passed, 3 skipped` |
 | `pytest tests/integration -m integration` | `150 passed` |
 | `pytest tests/test_dependency_closure.py` | `72 passed` |
 | `pytest tests/test_coverage_gate.py` | `62 passed` |
-| `pytest tests/test_guard_contract.py` | `77 passed` |
-| `pytest --collect-only -q` | `1015 tests collected`, **zero errors** |
+| `pytest tests/test_guard_contract.py` | `168 passed` |
+| `pytest tests/test_dashboard_extract.py` | `31 passed` |
+| `pytest tests/test_docs_contract.py` | `90 passed` |
+| `pytest --collect-only -q` | `1068 tests collected`, **zero errors** |
 | The gate | `Required test coverage of 90% reached. Total coverage: 93.33%`, then the exact gate's `PASSED` |
 
-The counts close on the whole: 483 + 3 + 150 + 72 + 62 + 77 = 847.
+The counts close on the whole: 492 + 3 + 150 + 72 + 62 + 168 + 31 + 90 = 1068, the collected total above.
 
 Provenance for the table, in the same form used throughout this document:
 
@@ -722,7 +724,7 @@ Provenance for the table, in the same form used throughout this document:
 ### Collection integrity is a gate in its own right
 
 ```bash
-cd backend && pytest --collect-only -q      # must report ZERO errors
+cd backend && pytest --collect-only -q --junitxml=reports/collect-only-junit.xml   # ZERO errors
 ```
 
 For most suites this would be a curiosity. For this one it is *the* meaningful readiness check,
@@ -741,15 +743,20 @@ count back out of it, so the readiness result survives the run instead of scroll
 is the difference between a documented check and an enforced one. The frontend and end-to-end layers have
 the same arrangement, one step each; the root [`README.md`](../../README.md) tabulates all three.
 
-> **`--collect-only` overwrites `reports/junit.xml` with a zero-case stub.** `--junitxml` lives in
-> `addopts`, so it applies to *every* invocation — including a collection run, which writes a well-formed
-> report declaring `tests="0"`. Nothing warns you. Run the gate after a suite and your result stream is
-> replaced by a file that reads as a clean run of nothing.
+> **Every pytest invocation writes `reports/junit.xml`.** `--junitxml` lives in `addopts`, so it applies
+> to *every* run — a collection run, which writes a well-formed report declaring `tests="0"`, and equally
+> a single-file or `-k` filtered run, which writes a well-formed report declaring a **non-zero** count
+> that is not the suite's. Nothing warns you.
 >
-> Three things make that safe here rather than merely known. The workflow runs the readiness step
-> **before** the suite, so the real report is written last. The `Verify backend report artifacts` step
-> rejects a `tests="0"` stream outright, with an error message that names this cause. And the extractor
-> refuses the same stream rather than rendering it as zeros. Locally, just re-run the suite afterwards.
+> Five things make that safe here rather than merely known. The gate command above repeats `--junitxml`
+> to a separate file — the command-line value wins over the `addopts` one — so the probe no longer writes
+> the canonical stream at all. The workflow runs the readiness step **before** the suite in any case, so
+> the real report is written last. The `Verify backend report artifacts` step requires the stream's case
+> count to **equal** the collected count the readiness step recorded, which catches the partial run as
+> well as the empty one. The extractor applies the same comparison and withdraws a stream that fails it,
+> naming both figures, rather than rendering the smaller one as a measurement. And a zero-case stream is
+> still refused outright by both. Locally, if you have run anything narrower than the canonical command,
+> re-run it before quoting a figure (`D355`).
 >
 > `playwright test --list` has the identical defect, handled the same way — see
 > [`../../e2e/README.md`](../../e2e/README.md) §3. The frontend readiness command, `npm run test:load`,
@@ -760,7 +767,7 @@ the same arrangement, one step each; the root [`README.md`](../../README.md) tab
 
 ### On `-n auto`, and why it does not start on Windows
 
-`pytest-xdist` is installed and works — `pytest -n auto` reports the same `1012 passed, 3 skipped`, and
+`pytest-xdist` is installed and works — `pytest -n auto` reports the same `1065 passed, 3 skipped`, and
 `-n 2` reaches it in about 9 seconds. It is **not** enabled by default, and on a many-core machine it is
 markedly *slower*: on this host `-n auto` took 166 seconds against roughly 8 seconds serial, because
 process startup dominates a suite this fast. Nothing in the design depends on execution order, so
@@ -794,7 +801,7 @@ unauthorized production change.
 | Correlation identifiers | A log-record factory in `conftest.py`, printed by `log_cli_format` / `log_format` in `pytest.ini` | Every `logging.LogRecord` — from production code, from pytest, from any library — carries `test_id` (the node id) and `correlation_id` (a short stable 8-hex digest of it). Live log lines read `INFO [65ac3815] httpx: …`. The digest is a hash, so the same test yields the same id on every run and on every machine. A record emitted outside a test reads `session`. |
 | Captured logs on failures only | `junit_logging = log`, `junit_log_passing_tests = false` | A failing or skipped `<testcase>` carries its captured log; a passing one does not, so the artifact stays diagnostic without becoming a transcript. |
 | Extra coverage reporters | `--cov-report=json`, `--cov-report=lcov` at invocation | Machine-readable coverage beside the cobertura XML the Codecov step consumes. |
-| The collectability gate | `pytest --collect-only -q` | The readiness check described above. |
+| The collectability gate | `pytest --collect-only -q --junitxml=reports/collect-only-junit.xml` | The readiness check described above, writing its own result stream so it cannot replace the suite's. |
 | The exact coverage gate | `tests/coverage_gate.py`, run after the gated suite | Compares the integer counts in `coverage.json` — `covered * 100 >= 90 * statements`, exact rational arithmetic — and refuses a report measured over a scope other than the four gated packages. Its reading is retained as `reports/coverage-gate.txt` and is what the dashboard's K5b reports; `--cov-fail-under` rounds before it compares, so it is not the binding verdict. |
 
 Verify all of it on disk — the **Observability** rule is not satisfied by configuration alone. Run the
@@ -803,7 +810,7 @@ canonical producer command from §8, which is the one CI runs, and then list wha
 ```bash
 cd backend
 mkdir -p reports
-pytest --collect-only -q | tee reports/collect-only.txt
+pytest --collect-only -q --junitxml=reports/collect-only-junit.xml | tee reports/collect-only.txt
 pytest --cov=app/core --cov=app/services --cov=app/tasks --cov=app/db \
        --cov-report=term-missing --cov-report=xml --cov-report=json \
        --cov-precision=2 --cov-fail-under=90 --junitxml=reports/junit.xml
@@ -813,15 +820,17 @@ python tests/coverage_gate.py --coverage-json coverage.json --fail-under 90 \
 ls reports/junit.xml reports/collect-only.txt reports/coverage-gate.txt coverage.xml coverage.json
 ```
 
-Run the readiness command **first**, as above and as CI does: `--collect-only` writes the reporters
-named in `addopts`, so running it afterwards would leave a zero-case stub where `reports/junit.xml`
-belongs. Add `--cov-report=lcov` if an external lcov viewer needs `coverage.lcov`; the canonical
-command does not request it, and neither does CI.
+Run the readiness command **first**, as above and as CI does. `--collect-only` writes the reporters named
+in `addopts`, which is why the command repeats `--junitxml` to a separate file: with the redirect, running
+it afterwards costs nothing; without it, it would leave a zero-case stub where `reports/junit.xml` belongs.
+Add `--cov-report=lcov` if an external lcov viewer needs `coverage.lcov`; the canonical command does not
+request it, and neither does CI.
 
 | Artifact | Path | Written by | Retained by CI |
 |---|---|---|---|
-| JUnit XML | `backend/reports/junit.xml` | `addopts`, every run | yes — `build-test-evidence`, 30 days |
+| JUnit XML | `backend/reports/junit.xml` | `addopts`, every run that does not redirect it | yes — `build-test-evidence`, 30 days |
 | Collection summary | `backend/reports/collect-only.txt` | the readiness step's `tee` | yes — `build-test-evidence` |
+| Collection result stream | `backend/reports/collect-only-junit.xml` | the readiness step's own `--junitxml`, so the `addopts` value cannot reach `junit.xml` | yes — `build-test-evidence`, with the directory |
 | Exact-gate reading | `backend/reports/coverage-gate.txt` | `tests/coverage_gate.py` piped through `tee` | yes — `build-test-evidence` |
 | Cobertura XML | `backend/coverage.xml` | `--cov-report=xml` — also the file the `backend`-flagged Codecov step uploads | yes |
 | Coverage JSON | `backend/coverage.json` | `--cov-report=json` — the only per-module producer, so the dashboard depends on it | yes |
@@ -829,7 +838,8 @@ command does not request it, and neither does CI.
 | Coverage database | `backend/.coverage` | `pytest-cov` | no — an intermediate, not evidence |
 
 Two workflow steps read `junit.xml` before the Codecov upload and fail with an explicit annotation if it
-is missing, empty, or declares zero test cases, so a collection-time stub can never be published as a run.
+is missing, empty, or declares a case count other than the number of tests collection found — so neither a
+collection-time stub nor a partial run can be published as the suite.
 
 Every one of those paths is in `.gitignore`, so running the suite never dirties the working tree — a local
 run leaves them in your tree and nowhere else, which is the whole difference the last column records. A

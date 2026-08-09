@@ -19,6 +19,14 @@ A gate figure has to be the figure the runner fails on
     can sit above the threshold while one package sits below it, which would
     publish a pass for a run Jest fails.
 
+A partial result stream has to be refused, not published
+    ``backend/pytest.ini`` carries ``--junitxml`` in ``addopts``, so every pytest
+    invocation writes the canonical stream -- including a single-file or ``-k``
+    filtered run. The zero-case refusal cannot see that case, because a partial
+    run leaves a non-zero count, and a non-zero count reads to every consumer
+    exactly like a full one. The collected count in the readiness artifact is the
+    independent witness, so the two are compared.
+
 Scope
 -----
 This module imports no ``app`` module and reads no committed artifact: every case
@@ -108,6 +116,32 @@ def coverage_summary(store, schema, services):
 
 #: A usable lcov artifact: one source record carrying one uncovered line.
 USABLE_LCOV = "TN:\nSF:/repo/frontend/src/store/tweetSlice.ts\nDA:11,0\nDA:12,3\nend_of_record\n"
+
+def backend_junit(tests, skipped=0):
+    """A pytest ``xunit2`` stream declaring ``tests`` cases, ``skipped`` of them skipped."""
+    cases = []
+    for number in range(tests):
+        state = "<skipped message=\"reasoned\" />" if number < skipped else ""
+        cases.append(
+            '<testcase classname="tests.unit.test_subject" name="test_case_{0}" '
+            'time="0.001">{1}</testcase>'.format(number, state))
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<testsuites name="pytest tests">'
+        '<testsuite name="pytest" errors="0" failures="0" skipped="{0}" tests="{1}" '
+        'time="1.000">{2}</testsuite>'
+        "</testsuites>".format(skipped, tests, "".join(cases))
+    )
+
+
+def collect_only(collected):
+    """The tail of a retained ``pytest --collect-only -q`` run."""
+    return (
+        "tests/unit/test_subject.py::test_case_0\n"
+        "\n"
+        "{0} tests collected in 1.79s\n".format(collected)
+    )
+
 
 #: The summary a name-filtered Jest run prints when every module loaded.
 READY_SUMMARY = (
@@ -329,6 +363,101 @@ def test_require_all_fails_when_readiness_reports_a_failed_module(tmp_path, monk
     monkeypatch.setattr(extractor, "REQUIRED", (broken, lcov))
 
     assert extractor.main(["--require-all", "--json"]) == 1
+
+
+# --------------------------------------------------------------------------- #
+# A partial backend result stream: refused against the collected count.
+# --------------------------------------------------------------------------- #
+
+
+#: Path constants redirected to non-existent files, so a case reads only what it wrote.
+ISOLATED_CONSTANTS = (
+    "BACKEND_COVERAGE_XML", "BACKEND_COVERAGE_JSON", "BACKEND_COVERAGE_GATE",
+    "FRONTEND_COVERAGE_SUMMARY", "FRONTEND_LCOV", "FRONTEND_JUNIT",
+    "FRONTEND_LIST_TESTS", "FRONTEND_READINESS", "E2E_JUNIT", "E2E_LIST_TESTS",
+    "E2E_BROWSER", "E2E_TEST_RESULTS",
+)
+
+
+def _backend_only(tmp_path, monkeypatch, declared, collected, skipped=0):
+    """Point the extractor at one synthetic backend stream and readiness output."""
+    stream = _write(str(tmp_path / "reports" / "junit.xml"),
+                    backend_junit(declared, skipped=skipped))
+    readiness = _write(str(tmp_path / "reports" / "collect-only.txt"),
+                       collect_only(collected))
+    monkeypatch.setattr(extractor, "BACKEND_JUNIT", stream)
+    monkeypatch.setattr(extractor, "BACKEND_COLLECT_ONLY", readiness)
+    for constant in ISOLATED_CONSTANTS:
+        monkeypatch.setattr(extractor, constant, str(tmp_path / ("absent-" + constant)))
+    monkeypatch.setattr(extractor, "REQUIRED", (stream, readiness))
+    return stream, readiness
+
+
+def test_a_partial_backend_stream_is_withdrawn_rather_than_published(tmp_path, monkeypatch):
+    """The case the zero-case refusal cannot see: 405 cases where 1015 were collected."""
+    stream, _readiness = _backend_only(tmp_path, monkeypatch, declared=405, collected=1015)
+
+    data = extractor.collect()
+
+    assert data["backend_junit"]["available"] is False
+    assert data["backend_junit"]["source"] == stream
+    assert "declares 405 test cases while collection found 1015" in (
+        data["backend_junit"]["reason"])
+    assert data["backend_partial_stream"] is not None
+    # Nothing downstream may carry the partial figure.
+    assert data["trend"]["tests"] == 0
+
+
+def test_a_partial_backend_stream_is_named_on_stderr_and_is_fatal(
+    tmp_path, monkeypatch, capsys
+):
+    """A stream that parses, declares cases and is still wrong is reported and fatal."""
+    _backend_only(tmp_path, monkeypatch, declared=405, collected=1015)
+
+    status = extractor.main(["--require-all", "--json"])
+    reported = capsys.readouterr().err
+
+    assert status == 1
+    assert "artifact unusable: backend result stream" in reported
+    assert "declares 405 test cases while collection found 1015" in reported
+
+
+def test_a_complete_backend_stream_is_accepted(tmp_path, monkeypatch, capsys):
+    """The positive case, so the refusal above cannot pass by always refusing."""
+    _backend_only(tmp_path, monkeypatch, declared=1015, collected=1015, skipped=3)
+
+    data = extractor.collect()
+    extractor.main(["--require-all", "--json"])
+    reported = capsys.readouterr().err
+
+    assert data["backend_junit"]["available"] is True
+    assert data["backend_junit"]["tests"] == 1015
+    assert data["backend_junit"]["skipped"] == 3
+    assert data["backend_junit"]["passed"] == 1012
+    assert data["backend_partial_stream"] is None
+    assert data["trend"]["tests"] == 1015
+    assert "backend result stream" not in reported
+
+
+def test_the_mismatch_is_reported_as_a_failed_readiness_row(tmp_path, monkeypatch):
+    """6.4 states what went wrong, rather than falling back to "not produced"."""
+    _backend_only(tmp_path, monkeypatch, declared=405, collected=1015)
+
+    rendered = extractor.render(extractor.collect())
+
+    row = [line for line in rendered.split("\n")
+           if line.startswith("| Backend tests collected |")]
+    assert len(row) == 1
+    assert "declares 405 test cases while collection found 1015" in row[0]
+    assert row[0].rstrip().endswith("| FAIL |")
+
+
+def test_no_comparison_is_made_without_a_collected_count():
+    """An absent readiness artifact leaves the stream as it was, not refused."""
+    stream = {"available": True, "tests": 405}
+
+    assert extractor.partial_stream_reason(stream, None) is None
+    assert extractor.partial_stream_reason({"available": False}, 1015) is None
 
 
 def test_the_extractor_runs_on_the_pinned_interpreter():

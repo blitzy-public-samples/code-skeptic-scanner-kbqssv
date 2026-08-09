@@ -907,3 +907,27 @@
   font-size: 34px;
   letter-spacing: -0.01em;
 }
+
+/* Reduced motion. The reveal configuration keeps the mandated slide transition;
+   this suppresses the movement itself for a viewer whose operating system asks for
+   it, leaving every slide reachable and identical in content. Only transition and
+   animation are cleared: reveal carries the stage scale-and-centre on a transform
+   of .reveal .slides and positions each section with a transform of its own, so
+   clearing transform here would move content rather than still it. See
+   docs/testing/DECISION-LOG.md row D362. */
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal,
+  .reveal .slides,
+  .reveal .slides section,
+  .reveal .slides > section.stack,
+  .reveal .backgrounds .slide-background,
+  .reveal .progress span,
+  .reveal .controls button,
+  .reveal .controls .controls-arrow,
+  .reveal .controls .controls-arrow::before,
+  .reveal .controls .controls-arrow::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}

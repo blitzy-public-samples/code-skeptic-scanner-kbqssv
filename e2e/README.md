@@ -33,7 +33,7 @@ What `e2e/` does not own is the code under test. The harness imports the real co
 read-only build inputs**: `frontend` must be installed before this package, and with `frontend/`
 uninstalled no route renders. Section 2 states the order and lists the packages.
 
-Nineteen tests across five specs: four route specs covering the four routed workspaces, plus one that
+Thirty-one tests across five specs: four route specs covering the four routed workspaces, plus one that
 asserts the request-isolation property the other four rest on. Read section 1 first — it explains why
 this layer supplies its own entry point instead of starting the application, which is the single fact
 that makes the rest of the design legible.
@@ -387,8 +387,8 @@ dashboard's extractor reads.
 
 The script pins `--reporter=line`, and that matters: a plain `playwright test --list` writes the
 configured reporters, so it **overwrites** `reports/e2e-junit.xml` and `playwright-report/` with an
-all-skipped stub (`tests="19" skipped="19"`) that no consumer can distinguish from a run in which
-nothing executed. See `D254`.
+all-skipped stub — `tests="31" skipped="31"` on the current census — that no consumer can distinguish from
+a run in which nothing executed. See `D254`.
 
 The `frontend` form takes no extra arguments: `npm run test:e2e -- --list` is rewritten to
 `npm --prefix ../e2e run test --list`, npm consumes the flag itself, and the full suite runs instead of
@@ -820,7 +820,7 @@ assertion rather than evidence:
 | Browser | **Google Chrome 151.0.7922.76**, provisioned out of band, with `PLAYWRIGHT_CHROMIUM_EXECUTABLE_SHA256` bound to it, resolved by `browsers:require` and recorded as `Browser resolved from PLAYWRIGHT_CHROMIUM_EXECUTABLE: C:\Program Files\Google\Chrome\Application\chrome.exe`. Nothing in the run downloaded anything; the Playwright cache held no Chromium |
 | Runtime | Node v22.23.1 / npm 10.9.8, Windows; harness `VITE v4.5.14` on `127.0.0.1:<4173 + CLONE_INDEX>` |
 | Commit | Recorded by the tooling rather than written here — `python ../docs/testing/dashboard-extract.py` prints the branch and commit of the tree it read in its §1.0 block, so re-run it beside the suite and quote that |
-| Artifacts | `reports/e2e-junit.xml` (root `tests="31" failures="0" skipped="0" errors="0"`), `playwright-report/index.html` (about 456 KB, its exact size moving with the run), `test-results/.last-run.json` = `{"status":"passed","failedTests":[]}`, `reports/list-tests.txt` reporting `Total: 19 tests in 5 files`, and `reports/browser.txt` carrying the resolved executable, its version and the runner version |
+| Artifacts | `reports/e2e-junit.xml` (root `tests="31" failures="0" skipped="0" errors="0"`), `playwright-report/index.html` (about 456 KB, its exact size moving with the run), `test-results/.last-run.json` = `{"status":"passed","failedTests":[]}`, `reports/list-tests.txt` reporting `Total: 31 tests in 5 files`, and `reports/browser.txt` carrying the resolved executable, its version and the runner version |
 | Retention | All of them are uploaded by the `e2e` job — as `e2e-test-evidence` at 30 days and `playwright-report` at **7**, both `if-no-files-found: error`. A **local** run leaves them in the working tree only, where `.gitignore` keeps them out of version control, so they are not in this repository |
 
 **Where the failure evidence comes from.** `trace`, `screenshot` and `video` are all configured
@@ -1010,7 +1010,7 @@ its own HTTP. The rows this folder leans on most:
 | `D123` | Why the harness is started through the pinned local binary with an explicit port |
 | `D130`, `D276` | Why the host and port are resolved in exactly one module, and why that module is now the harness config |
 | `D264`, superseded by `D300`, `D301` and `D319` | Why `browsers:require` is the gate and `browsers:verify` the narrower reporter that also fails closed, why the cache route asks Playwright for its own executable path rather than scanning, why `CHROME_BIN` is honoured, and why CI sets a version floor instead of a hardcoded path |
-| `D327` | Why the Chart.js registration failure is asserted in this layer rather than recorded as an unverified ceiling, and why the census is nineteen tests with no skip |
+| `D308`, whose census figure is re-measured by `D353` | Why the Chart.js registration failure is asserted in this layer rather than recorded as an unverified ceiling, and why the spec census carries no skip at all |
 | `D277`, `D286` | Why the extended `test`/`expect` a spec imports live in one fixture module rather than in the runner config |
 | `D278` | Why the CI job resolves a preinstalled browser instead of installing one |
 

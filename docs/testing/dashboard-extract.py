@@ -30,9 +30,12 @@ Artifacts read, all relative to the repository root and all matched by ``.gitign
     e2e/test-results/                           failure evidence, present only on failure
 
 Exit status: 0 when every panel it was asked for could be produced, 1 under
-``--require-all`` when a contract artifact is absent. An absent artifact is always named
-on stderr rather than silently rendered as an empty cell, because an empty cell in a
-published dashboard reads as a measurement of zero.
+``--require-all`` when a contract artifact is absent or unusable. An absent artifact is
+always named on stderr rather than silently rendered as an empty cell, because an empty
+cell in a published dashboard reads as a measurement of zero. Three conditions count as
+unusable rather than absent: a result stream that parses but declares no cases, an lcov
+tracefile carrying no ``SF:``/``DA:`` pair, and a backend result stream whose case count
+disagrees with the collected count the readiness artifact records.
 
 Standard library only and Python 3.9 compatible, so it runs on the interpreter the
 backend suite already pins without adding a dependency to any manifest.
@@ -745,6 +748,29 @@ def junit(path: str) -> Dict[str, object]:
     }
 
 
+def partial_stream_reason(stream: Dict[str, object],
+                          collected: Optional[int]) -> Optional[str]:
+    """Return why ``stream`` is a partial run, or ``None`` when it is not one.
+
+    A zero-case stream is already refused as a discovery stub, and a *partial* one is the
+    case that check cannot see: one file, one ``-k`` filter or one re-run of a single test
+    leaves a non-zero count that is indistinguishable, to every consumer downstream, from
+    a full run. ``backend/pytest.ini`` carries ``--junitxml`` in ``addopts``, so any of
+    those invocations writes the canonical stream. The collected count from the readiness
+    artifact is an independent witness of how many cases the suite has, so the two are
+    compared and a difference is reported rather than published.
+    """
+    if collected is None or not stream.get("available"):
+        return None
+    tests = int(stream["tests"])   # type: ignore[arg-type]
+    if tests == collected:
+        return None
+    return ("declares {0} test cases while collection found {1} - this is a partial, "
+            "filtered or single-file run, not the suite. Re-run the canonical gated "
+            "command; every figure taken from it would otherwise understate the suite."
+            .format(tests, collected))
+
+
 def layer_rows(stream: Dict[str, object],
                classify: Callable[[Dict[str, str]], Optional[str]]) -> List[Dict[str, object]]:
     """Partition one aggregate stream into layers by a stated, reproducible rule."""
@@ -1273,6 +1299,7 @@ def render(data: Dict[str, object]) -> str:
     # 6.4 readiness ------------------------------------------------------- #
     out.append("## 6.4 Readiness")
     out.append("")
+    partial = data.get("backend_partial_stream")
     collected_matches = (ready.get("available") and be.get("available")
                          and ready.get("collected") == be.get("tests"))
     e2e_matches = (e2e_ready.get("available") and e2e.get("available")
@@ -1288,9 +1315,12 @@ def render(data: Dict[str, object]) -> str:
              if ready.get("available") else MISSING],
             ["Backend tests collected", BACKEND_COLLECT_ONLY,
              "equals the backend total in 6.3",
-             str(ready.get("collected")) if ready.get("available") else MISSING,
-             ("PASS" if collected_matches else "FAIL")
-             if ready.get("available") and be.get("available") else MISSING],
+             ("{0}; the result stream {1}".format(ready.get("collected"), partial)
+              if partial else
+              (str(ready.get("collected")) if ready.get("available") else MISSING)),
+             "FAIL" if partial else
+             (("PASS" if collected_matches else "FAIL")
+              if ready.get("available") and be.get("available") else MISSING)],
             ["Backend exact coverage gate", BACKEND_COVERAGE_GATE, "PASSED",
              "{0} ({1} of {2} statements = {3}% exact vs {4}%)".format(
                  exact_gate.get("verdict"), exact_gate.get("covered"),
@@ -1402,6 +1432,16 @@ def collect() -> Dict[str, object]:
     fe = junit(FRONTEND_JUNIT)
     e2e = junit(E2E_JUNIT)
     ready = backend_readiness()
+
+    # A partial backend stream is withdrawn here rather than reported beside the count it
+    # contradicts, so no panel, KPI or trend figure is built from it and `--require-all`
+    # exits non-zero. The reason travels separately, because the readiness row in 6.4 has
+    # to say what went wrong rather than fall back to "not produced".
+    partial = partial_stream_reason(
+        be, ready.get("collected") if ready.get("available") else None)   # type: ignore[arg-type]
+    if partial is not None:
+        be = {"available": False, "source": BACKEND_JUNIT, "reason": partial}
+
     streams = [s for s in (be, fe, e2e) if s.get("available")]
     coverage = backend_coverage()
     frontend = frontend_coverage()
@@ -1422,6 +1462,7 @@ def collect() -> Dict[str, object]:
         "frontend_junit": fe,
         "e2e_junit": e2e,
         "backend_readiness": ready,
+        "backend_partial_stream": partial,
         "backend_coverage_gate": exact_coverage_gate(),
         "frontend_discovery": listed_count(FRONTEND_LIST_TESTS, r"\.test\.tsx?$"),
         "frontend_readiness": jest_readiness(FRONTEND_READINESS),
