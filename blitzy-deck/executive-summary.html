@@ -1,0 +1,1557 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Code Skeptic Scanner - Test Suite Delivery - Executive Summary</title>
+  <link rel="icon" href="data:," />
+
+  <!-- Typography (CDN) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=Fira+Code:wght@400;500&display=swap"
+    rel="stylesheet" />
+
+  <!-- reveal.js 5.1.0 core stylesheet (CDN) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css" />
+
+  <style>
+    /* ======================================================================
+       Blitzy reveal.js theme - shipped copy
+       Block 1  Design tokens
+       Block 1b Derived tokens
+       Block 2  Base reveal.js typography and layout
+       Block 3  Slide types
+       Block 4  Components
+       Block 5  Mermaid container
+       Block 6  Tables
+       Block 7  Deck layout helpers
+       Stage: 1920 x 1080
+       ====================================================================== */
+
+
+    /* ---------------------------------------------------------------------
+       Block 1 - Design tokens
+       --------------------------------------------------------------------- */
+
+    :root {
+      --blitzy-primary: #5B39F3;
+      --blitzy-primary-dark: #2D1C77;
+      --blitzy-primary-navy: #1A105F;
+      --blitzy-primary-light: #7A6DEC;
+      --blitzy-primary-deep: #4101DB;
+      --blitzy-accent-teal: #94FAD5;
+      --blitzy-surface-0: #FFFFFF;
+      --blitzy-surface-1: #F4EFF6;
+      --blitzy-surface-2: #F2F0FE;
+      --blitzy-surface-3: #F5F5F5;
+      --blitzy-border: #D9D9D9;
+      --blitzy-border-soft: rgba(91, 57, 243, 0.18);
+      --blitzy-text: #333333;
+      --blitzy-text-muted: #999999;
+      --blitzy-text-invert: #FFFFFF;
+      --ff-body: 'Inter', system-ui, sans-serif;
+      --ff-display: 'Space Grotesk', 'Inter', sans-serif;
+      --ff-mono: 'Fira Code', 'Courier New', monospace;
+      --gradient-hero: linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%);
+      --gradient-divider: linear-gradient(135deg, #2D1C77 0%, #5B39F3 100%);
+      --gradient-accent-bar: linear-gradient(90deg, #5B39F3 0%, #94FAD5 100%);
+    }
+
+
+    /* ---------------------------------------------------------------------
+       Block 1b - Derived tokens
+       --------------------------------------------------------------------- */
+
+    :root {
+      --blitzy-text-muted-accessible: #5F5F5F;
+      --blitzy-shadow-card: 0 12px 30px rgba(0, 0, 0, 0.06);
+    }
+
+
+    /* ---------------------------------------------------------------------
+       Block 2 - Base reveal.js typography and layout
+       --------------------------------------------------------------------- */
+
+    /* Stage surface */
+
+    .reveal-viewport {
+      background: var(--blitzy-surface-0);
+    }
+
+    .reveal {
+      font-family: var(--ff-body);
+      font-size: 34px;
+      font-weight: 400;
+      line-height: 1.5;
+      color: var(--blitzy-text);
+      background: var(--blitzy-surface-0);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      font-variant-ligatures: none;
+    }
+
+    .reveal .slides {
+      text-align: left;
+    }
+
+    .reveal .slides section {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 72px 112px;
+      font-family: var(--ff-body);
+      font-size: 34px;
+      font-weight: 400;
+      line-height: 1.5;
+      color: var(--blitzy-text);
+      text-align: left;
+    }
+
+    .reveal .slides section > *:first-child {
+      margin-top: 0;
+    }
+
+    .reveal .slides section > *:last-child {
+      margin-bottom: 0;
+    }
+
+    /* Headings */
+
+    .reveal .slides section h1,
+    .reveal .slides section h2,
+    .reveal .slides section h3,
+    .reveal .slides section h4 {
+      font-family: var(--ff-display);
+      color: var(--blitzy-text);
+      text-transform: none;
+      text-shadow: none;
+      word-wrap: normal;
+      margin: 0 0 28px;
+    }
+
+    .reveal .slides section h1 {
+      font-size: 76px;
+      font-weight: 700;
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+    }
+
+    .reveal .slides section h2 {
+      font-size: 58px;
+      font-weight: 700;
+      line-height: 1.16;
+      letter-spacing: -0.015em;
+    }
+
+    .reveal .slides section h3 {
+      font-size: 42px;
+      font-weight: 600;
+      line-height: 1.24;
+      letter-spacing: -0.01em;
+    }
+
+    .reveal .slides section h4 {
+      font-size: 34px;
+      font-weight: 600;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+
+    /* Body copy */
+
+    .reveal .slides section p {
+      font-size: 34px;
+      font-weight: 400;
+      line-height: 1.5;
+      margin: 0 0 24px;
+      max-width: 1480px;
+    }
+
+    .reveal .slides section strong,
+    .reveal .slides section b {
+      font-weight: 600;
+    }
+
+    .reveal .slides section em,
+    .reveal .slides section i:not([data-lucide]) {
+      font-style: italic;
+    }
+
+    .reveal .slides section a {
+      color: var(--blitzy-primary);
+      text-decoration: none;
+      border-bottom: 2px solid var(--blitzy-border-soft);
+    }
+
+    .reveal .slides section a:hover,
+    .reveal .slides section a:focus-visible {
+      color: var(--blitzy-primary-light);
+      border-bottom-color: var(--blitzy-primary-light);
+    }
+
+    .reveal .slides section blockquote {
+      box-sizing: border-box;
+      width: 100%;
+      max-width: 1480px;
+      margin: 0 0 28px;
+      padding: 24px 36px;
+      font-size: 32px;
+      font-style: normal;
+      line-height: 1.45;
+      background: var(--blitzy-surface-1);
+      border-left: 8px solid var(--blitzy-primary);
+      border-radius: 4px;
+      box-shadow: none;
+    }
+
+    /* Lists */
+
+    .reveal .slides section ul,
+    .reveal .slides section ol {
+      display: block;
+      margin: 0 0 24px;
+      padding-left: 0;
+      max-width: 1480px;
+    }
+
+    .reveal .slides section ul {
+      list-style: none;
+    }
+
+    .reveal .slides section ol {
+      list-style: decimal;
+      padding-left: 52px;
+    }
+
+    .reveal .slides section li {
+      font-size: 34px;
+      font-weight: 400;
+      line-height: 1.42;
+      margin: 0 0 26px;
+    }
+
+    .reveal .slides section li:last-child {
+      margin-bottom: 0;
+    }
+
+    .reveal .slides section ul > li {
+      position: relative;
+      padding-left: 48px;
+    }
+
+    .reveal .slides section ul > li::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0.5em;
+      width: 16px;
+      height: 16px;
+      border-radius: 5px;
+      background: var(--gradient-accent-bar);
+    }
+
+    .reveal .slides section ol > li::marker {
+      font-family: var(--ff-display);
+      font-weight: 600;
+      color: var(--blitzy-primary);
+    }
+
+    .reveal .slides section li > ul,
+    .reveal .slides section li > ol {
+      margin: 20px 0 0;
+    }
+
+    /* Inline expressions */
+
+    .reveal .slides section code {
+      font-family: var(--ff-mono);
+      font-size: 0.84em;
+      font-weight: 500;
+      line-height: inherit;
+      padding: 0.1em 0.36em;
+      border-radius: 6px;
+      background: var(--blitzy-surface-2);
+      border: 1px solid var(--blitzy-border-soft);
+      color: var(--blitzy-primary-deep);
+      white-space: nowrap;
+    }
+
+    /* Reveal chrome */
+
+    .reveal .controls {
+      color: var(--blitzy-primary);
+    }
+
+    .reveal .controls button:focus-visible {
+      outline: 4px solid var(--blitzy-primary-deep);
+      outline-offset: 4px;
+      border-radius: 8px;
+      box-shadow: 0 0 0 4px var(--blitzy-surface-0);
+    }
+
+    .reveal .progress {
+      color: var(--blitzy-primary);
+      background: var(--blitzy-border);
+      height: 6px;
+    }
+
+    .reveal .slide-number {
+      font-family: var(--ff-mono);
+      font-size: 20px;
+      font-weight: 400;
+      color: var(--blitzy-text-invert);
+      background: var(--blitzy-primary-dark);
+      padding: 6px 12px;
+      border-radius: 6px;
+    }
+
+    .reveal ::selection {
+      background: var(--blitzy-border-soft);
+      color: var(--blitzy-text);
+    }
+
+
+    /* ---------------------------------------------------------------------
+       Block 3 - Slide types
+       Title, Section Divider and Closing. Content slides are the unclassed
+       default and inherit Block 2.
+       --------------------------------------------------------------------- */
+
+    /* Shared full-bleed frame and inverted text */
+
+    .reveal .slides section.slide-title,
+    .reveal .slides section.slide-divider,
+    .reveal .slides section.slide-closing {
+      box-sizing: border-box;
+      flex-direction: column;
+      width: 100%;
+      min-height: 1080px;
+      padding: 96px 128px;
+      color: var(--blitzy-text-invert);
+    }
+
+    /* Stage fill */
+
+    .reveal.center .slides section.slide-title,
+    .reveal.center .slides section.slide-divider,
+    .reveal.center .slides section.slide-closing {
+      min-height: 1080px !important;
+    }
+
+    .reveal .slides section.slide-title.present,
+    .reveal .slides section.slide-divider.present,
+    .reveal .slides section.slide-closing.present {
+      display: flex !important;
+    }
+
+    .reveal .slides section.slide-title h1,
+    .reveal .slides section.slide-title h2,
+    .reveal .slides section.slide-title h3,
+    .reveal .slides section.slide-title h4,
+    .reveal .slides section.slide-title p,
+    .reveal .slides section.slide-title li,
+    .reveal .slides section.slide-title strong,
+    .reveal .slides section.slide-title em,
+    .reveal .slides section.slide-title blockquote,
+    .reveal .slides section.slide-divider h1,
+    .reveal .slides section.slide-divider h2,
+    .reveal .slides section.slide-divider h3,
+    .reveal .slides section.slide-divider h4,
+    .reveal .slides section.slide-divider p,
+    .reveal .slides section.slide-divider li,
+    .reveal .slides section.slide-divider strong,
+    .reveal .slides section.slide-divider em,
+    .reveal .slides section.slide-divider blockquote,
+    .reveal .slides section.slide-closing h1,
+    .reveal .slides section.slide-closing h2,
+    .reveal .slides section.slide-closing h3,
+    .reveal .slides section.slide-closing h4,
+    .reveal .slides section.slide-closing p,
+    .reveal .slides section.slide-closing li,
+    .reveal .slides section.slide-closing strong,
+    .reveal .slides section.slide-closing em,
+    .reveal .slides section.slide-closing blockquote {
+      color: var(--blitzy-text-invert);
+    }
+
+    .reveal .slides section.slide-title blockquote,
+    .reveal .slides section.slide-divider blockquote,
+    .reveal .slides section.slide-closing blockquote {
+      background: none;
+      border-left-color: var(--blitzy-accent-teal);
+    }
+
+    .reveal .slides section.slide-title ul > li::before,
+    .reveal .slides section.slide-divider ul > li::before,
+    .reveal .slides section.slide-closing ul > li::before {
+      background: var(--blitzy-accent-teal);
+    }
+
+    .reveal .slides section.slide-title a,
+    .reveal .slides section.slide-divider a,
+    .reveal .slides section.slide-closing a {
+      color: var(--blitzy-accent-teal);
+      border-bottom-color: var(--blitzy-accent-teal);
+    }
+
+    .reveal .slides section.slide-title .eyebrow,
+    .reveal .slides section.slide-divider .eyebrow,
+    .reveal .slides section.slide-closing .eyebrow {
+      font-family: var(--ff-mono);
+      color: var(--blitzy-accent-teal);
+    }
+
+    .reveal .slides section.slide-title .hero-icon,
+    .reveal .slides section.slide-divider .hero-icon,
+    .reveal .slides section.slide-closing .hero-icon,
+    .reveal .slides section.slide-title .icon-row,
+    .reveal .slides section.slide-divider .icon-row,
+    .reveal .slides section.slide-closing .icon-row {
+      color: var(--blitzy-accent-teal);
+    }
+
+    .reveal .slides section.slide-title .kpi-card,
+    .reveal .slides section.slide-divider .kpi-card,
+    .reveal .slides section.slide-closing .kpi-card {
+      border-color: var(--blitzy-primary-light);
+    }
+
+    /* Title slide */
+
+    .reveal .slides section.slide-title {
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      background-color: var(--blitzy-primary);
+      background-image: var(--gradient-hero);
+    }
+
+    .reveal .slides section.slide-title .eyebrow {
+      margin: 0 0 32px;
+    }
+
+    .reveal .slides section.slide-title h1 {
+      font-size: 116px;
+      font-weight: 700;
+      line-height: 1.04;
+      letter-spacing: -0.025em;
+      margin: 0 0 28px;
+      max-width: 1560px;
+    }
+
+    .reveal .slides section.slide-title h2 {
+      font-size: 46px;
+      font-weight: 500;
+      line-height: 1.28;
+      letter-spacing: 0;
+      margin: 0 0 36px;
+      max-width: 1420px;
+    }
+
+    .reveal .slides section.slide-title p {
+      font-size: 32px;
+      margin: 0 auto 24px;
+      max-width: 1320px;
+    }
+
+    .reveal .slides section.slide-title .accent-bar {
+      margin: 8px auto 0;
+    }
+
+    /* Section divider slide */
+
+    .reveal .slides section.slide-divider {
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      background-color: var(--blitzy-primary-dark);
+      background-image: var(--gradient-divider);
+    }
+
+    .reveal .slides section.slide-divider .eyebrow {
+      margin: 0 0 24px;
+    }
+
+    .reveal .slides section.slide-divider h2 {
+      font-size: 88px;
+      font-weight: 700;
+      line-height: 1.08;
+      letter-spacing: -0.02em;
+      margin: 0 0 24px;
+      max-width: 1560px;
+    }
+
+    .reveal .slides section.slide-divider p {
+      font-size: 34px;
+      margin: 0 auto;
+      max-width: 1240px;
+    }
+
+    .reveal .slides section.slide-divider .hero-icon {
+      margin: 0 auto 44px;
+    }
+
+    .reveal .slides section.slide-divider .accent-bar {
+      margin: 40px auto 0;
+    }
+
+    /* Closing slide */
+
+    .reveal .slides section.slide-closing {
+      align-items: flex-start;
+      justify-content: center;
+      text-align: left;
+      background-color: var(--blitzy-primary-navy);
+    }
+
+    .reveal .slides section.slide-closing .eyebrow {
+      margin: 0 0 28px;
+    }
+
+    .reveal .slides section.slide-closing h2 {
+      font-size: 84px;
+      font-weight: 700;
+      line-height: 1.08;
+      letter-spacing: -0.02em;
+      margin: 0 0 32px;
+      max-width: 1480px;
+    }
+
+    .reveal .slides section.slide-closing .accent-bar {
+      margin: 0 0 44px;
+    }
+
+    .reveal .slides section.slide-closing ul {
+      margin: 0 0 48px;
+    }
+
+    .reveal .slides section.slide-closing li {
+      font-size: 36px;
+      line-height: 1.4;
+    }
+
+    .reveal .slides section.slide-closing .brand-lockup {
+      margin-top: auto;
+    }
+
+
+    /* ---------------------------------------------------------------------
+       Block 4 - Components
+       kpi-grid, kpi-card, kpi-value, kpi-label, kpi-icon, eyebrow,
+       accent-bar, brand-lockup, hero-icon, icon-row.
+       --------------------------------------------------------------------- */
+
+    /* Eyebrow */
+
+    .reveal .slides section .eyebrow {
+      display: block;
+      font-family: var(--ff-mono);
+      font-size: 24px;
+      font-weight: 500;
+      line-height: 1.3;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--blitzy-text-muted-accessible);
+      margin: 0 0 20px;
+    }
+
+    /* KPI grid */
+
+    .reveal .slides section .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      align-items: stretch;
+      gap: 32px;
+      box-sizing: border-box;
+      width: 100%;
+      margin: 32px 0 0;
+      padding: 0;
+      list-style: none;
+      text-align: left;
+    }
+
+    /* KPI card */
+
+    .reveal .slides section .kpi-card {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 16px;
+      box-sizing: border-box;
+      padding: 40px 40px 44px;
+      background: var(--blitzy-surface-2);
+      border: 2px solid var(--blitzy-border-soft);
+      border-radius: 20px;
+      box-shadow: var(--blitzy-shadow-card);
+    }
+
+    .reveal .slides section .kpi-card::before {
+      content: none;
+    }
+
+    .reveal .slides section .kpi-value {
+      display: block;
+      font-family: var(--ff-display);
+      font-size: 76px;
+      font-weight: 700;
+      line-height: 1.02;
+      letter-spacing: -0.03em;
+      color: var(--blitzy-primary-deep);
+      margin: 0;
+    }
+
+    .reveal .slides section .kpi-label {
+      display: block;
+      font-family: var(--ff-body);
+      font-size: 24px;
+      font-weight: 500;
+      line-height: 1.35;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--blitzy-text-muted-accessible);
+      margin: 0;
+    }
+
+    .reveal .slides section .kpi-icon {
+      color: var(--blitzy-primary);
+    }
+
+    .reveal .slides section .kpi-icon:not(svg) {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: none;
+      box-sizing: border-box;
+      width: 72px;
+      height: 72px;
+      border-radius: 18px;
+      background: var(--blitzy-surface-1);
+      border: 1px solid var(--blitzy-border-soft);
+    }
+
+    .reveal .slides section .kpi-icon svg,
+    .reveal .slides section svg.kpi-icon {
+      display: block;
+      flex: none;
+      width: 40px;
+      height: 40px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    /* Accent bar */
+
+    .reveal .slides section .accent-bar {
+      display: block;
+      box-sizing: border-box;
+      width: 240px;
+      height: 10px;
+      margin: 28px 0;
+      padding: 0;
+      border: 0;
+      border-radius: 999px;
+      background: var(--gradient-accent-bar);
+    }
+
+    /* Brand lockup */
+
+    .reveal .slides section .brand-lockup {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-family: var(--ff-display);
+      font-size: 34px;
+      font-weight: 600;
+      line-height: 1.2;
+      letter-spacing: 0.01em;
+      color: var(--blitzy-text-invert);
+      margin: 0;
+    }
+
+    .reveal .slides section .brand-lockup svg {
+      display: block;
+      flex: none;
+      width: 48px;
+      height: 48px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    /* Hero icon */
+
+    .reveal .slides section .hero-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: none;
+      margin: 0 0 36px;
+      color: var(--blitzy-primary);
+    }
+
+    .reveal .slides section .hero-icon svg,
+    .reveal .slides section svg.hero-icon {
+      display: block;
+      flex: none;
+      width: 148px;
+      height: 148px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    /* Icon row */
+
+    .reveal .slides section .icon-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 32px;
+      box-sizing: border-box;
+      width: 100%;
+      margin: 32px 0 0;
+      padding: 0;
+      list-style: none;
+      color: var(--blitzy-primary);
+    }
+
+    .reveal .slides section .icon-row svg {
+      display: block;
+      flex: none;
+      width: 52px;
+      height: 52px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .reveal .slides section .icon-row > li::before {
+      content: none;
+    }
+
+    .reveal .slides section .icon-row > li {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      margin: 0;
+      padding: 0;
+      font-size: 26px;
+      line-height: 1.3;
+    }
+
+
+    /* ---------------------------------------------------------------------
+       Block 5 - Mermaid container
+       Diagrams are authored as <pre class="mermaid">.
+       --------------------------------------------------------------------- */
+
+    .reveal .slides section .mermaid {
+      display: block;
+      box-sizing: border-box;
+      width: 100%;
+      max-width: 1560px;
+      max-height: 760px;
+      margin: 24px auto 0;
+      padding: 0;
+      background: none;
+      border: 0;
+      border-radius: 0;
+      box-shadow: none;
+      font-family: var(--ff-body);
+      font-size: 24px;
+      font-weight: 400;
+      line-height: 1.4;
+      color: var(--blitzy-text);
+      text-align: center;
+      white-space: normal;
+      word-break: normal;
+      overflow-wrap: normal;
+      tab-size: 4;
+      overflow: visible;
+    }
+
+    .reveal .slides section .mermaid svg {
+      display: block;
+      width: auto;
+      height: auto;
+      max-width: 100% !important;
+      max-height: 760px;
+      margin: 0 auto;
+      background: none;
+    }
+
+    .reveal .slides section .mermaid > * {
+      text-align: center;
+    }
+
+    /* Generated diagram labels paint in full rather than being clipped to the
+       measured label box. */
+
+    .reveal .slides section .mermaid svg foreignObject {
+      overflow: visible;
+    }
+
+    /* Generated diagram label typography */
+
+    .reveal .slides section .mermaid svg p {
+      font-size: inherit;
+      font-weight: inherit;
+      line-height: inherit;
+      letter-spacing: inherit;
+      margin: 0;
+      padding: 0;
+      max-width: none;
+    }
+
+    .reveal .slides section .mermaid svg code {
+      font-family: inherit;
+      font-size: inherit;
+      font-weight: inherit;
+      color: inherit;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: none;
+      white-space: inherit;
+    }
+
+    .reveal .slides section .mermaid svg a {
+      color: inherit;
+      border-bottom: 0;
+    }
+
+
+    /* ---------------------------------------------------------------------
+       Block 6 - Tables
+       --------------------------------------------------------------------- */
+
+    .reveal .slides section table {
+      box-sizing: border-box;
+      width: 100%;
+      margin: 28px 0 0;
+      border-collapse: collapse;
+      border-spacing: 0;
+      table-layout: auto;
+      font-family: var(--ff-body);
+      font-size: 26px;
+      font-weight: 400;
+      line-height: 1.4;
+      color: var(--blitzy-text);
+      background: var(--blitzy-surface-0);
+      border: 1px solid var(--blitzy-border);
+      text-align: left;
+    }
+
+    .reveal .slides section table caption {
+      font-family: var(--ff-mono);
+      font-size: 22px;
+      font-weight: 500;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--blitzy-text-muted-accessible);
+      text-align: left;
+      padding: 0 0 14px;
+    }
+
+    .reveal .slides section table th {
+      font-family: var(--ff-display);
+      font-size: 24px;
+      font-weight: 600;
+      line-height: 1.3;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--blitzy-primary-dark);
+      background: var(--blitzy-surface-1);
+      border: 0;
+      border-bottom: 2px solid var(--blitzy-border);
+      padding: 22px 26px;
+      text-align: left;
+      vertical-align: middle;
+    }
+
+    .reveal .slides section table td {
+      color: var(--blitzy-text);
+      background: none;
+      border: 0;
+      border-bottom: 1px solid var(--blitzy-border);
+      padding: 20px 26px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .reveal .slides section table tbody tr:nth-child(even) td {
+      background: var(--blitzy-surface-3);
+    }
+
+    .reveal .slides section table tbody tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .reveal .slides section table th + th,
+    .reveal .slides section table td + td {
+      border-left: 1px solid var(--blitzy-border);
+    }
+
+    .reveal .slides section table th code,
+    .reveal .slides section table td code {
+      font-size: 0.8em;
+      white-space: nowrap;
+    }
+
+    .reveal .slides section table td .kpi-value {
+      font-size: 34px;
+      letter-spacing: -0.01em;
+    }
+
+
+    /* ---------------------------------------------------------------------
+       Block 7 - Deck layout helpers
+       Layout-only additions for this deck: heading rows, two-column
+       splits, diagram size modifiers, compact tables and non-list
+       icon-row items.
+       --------------------------------------------------------------------- */
+
+    /* Heading row: icon chip beside a heading */
+
+    .reveal .slides section .deck-headrow {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      margin: 0 0 24px;
+    }
+
+    .reveal .slides section .deck-headrow h2 {
+      margin: 0;
+    }
+
+    /* Two-column split */
+
+    .reveal .slides section .deck-split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      align-items: start;
+      gap: 48px;
+      box-sizing: border-box;
+      width: 100%;
+      margin: 20px 0 0;
+    }
+
+    .reveal .slides section .deck-split-table-wide {
+      grid-template-columns: 0.8fr 1.2fr;
+    }
+
+    .reveal .slides section .deck-col {
+      box-sizing: border-box;
+      min-width: 0;
+    }
+
+    .reveal .slides section .deck-col .eyebrow {
+      margin: 0 0 14px;
+    }
+
+    .reveal .slides section .deck-split .mermaid {
+      max-height: 470px;
+      margin: 0;
+    }
+
+    .reveal .slides section .deck-split .mermaid svg {
+      max-height: 470px;
+    }
+
+    .reveal .slides section .deck-split table {
+      margin: 0;
+      font-size: 22px;
+    }
+
+    .reveal .slides section .deck-split table th {
+      font-size: 20px;
+      padding: 16px 18px;
+    }
+
+    .reveal .slides section .deck-split table td {
+      padding: 14px 18px;
+    }
+
+    /* Diagram size modifiers */
+
+    .reveal .slides section .mermaid.deck-diagram-sm {
+      max-height: 270px;
+      margin: 20px auto 0;
+    }
+
+    .reveal .slides section .mermaid.deck-diagram-sm svg {
+      max-height: 270px;
+    }
+
+    .reveal .slides section .mermaid.deck-diagram-md {
+      max-height: 620px;
+    }
+
+    .reveal .slides section .mermaid.deck-diagram-md svg {
+      max-height: 620px;
+    }
+
+    /* Compact table */
+
+    .reveal .slides section table.deck-table-compact {
+      font-size: 23px;
+    }
+
+    .reveal .slides section table.deck-table-compact th {
+      font-size: 21px;
+      padding: 16px 20px;
+    }
+
+    .reveal .slides section table.deck-table-compact td {
+      padding: 15px 20px;
+    }
+
+    /* Icon-row items authored as inline elements */
+
+    .reveal .slides section .icon-row > .icon-row-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      margin: 0;
+      padding: 0;
+      font-size: 26px;
+      line-height: 1.3;
+    }
+  </style>
+</head>
+<body>
+  <div class="reveal">
+    <div class="slides">
+
+      <!-- Slide 1 - Title -->
+      <section class="slide-title">
+        <span class="eyebrow">Test Suite Delivery</span>
+        <span class="hero-icon"><i data-lucide="shield-check"></i></span>
+        <h1>From zero executed tests to an enforced quality gate</h1>
+        <h2>Code Skeptic Scanner</h2>
+        <p>Prepared for leadership: what was built, what it now protects, and what remains open.</p>
+        <div class="accent-bar"></div>
+      </section>
+
+      <!-- Slide 2 - Headline KPIs -->
+      <section>
+        <span class="eyebrow">Headline numbers</span>
+        <h2>Where we started, and what we delivered</h2>
+        <p>Nothing in this product had ever been measured. Every test file failed to load, so no
+          check had ever run. The suite below is the first that executes.</p>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="circle-slash"></i></span>
+            <span class="kpi-value">0%</span>
+            <span class="kpi-label">Coverage actually executed before this work, across 33 product
+              modules</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="file-x"></i></span>
+            <span class="kpi-value">216</span>
+            <span class="kpi-label">Lines of tests that had never run</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="list-checks"></i></span>
+            <span class="kpi-value">25</span>
+            <span class="kpi-label">Old tests accounted for: 7 rewritten, 3 skipped, 15
+              retired</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="layers"></i></span>
+            <span class="kpi-value">5</span>
+            <span class="kpi-label">Layers of testing now delivered and running</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Slide 3 - Architecture, after state -->
+      <section>
+        <span class="eyebrow">Architecture after the change</span>
+        <h2>Five layers, one isolation boundary</h2>
+        <p>Every layer tests the real product, and all of them reach it through a single boundary
+          that shuts out the outside world.</p>
+        <pre class="mermaid deck-diagram-md">flowchart LR
+  subgraph LAYERS["Five delivered test layers"]
+    L1["Backend unit"]
+    L2["Backend integration"]
+    L3["Frontend unit"]
+    L4["Frontend component"]
+    L5["End-to-end browser flows"]
+  end
+  GUARD["Isolation boundary<br/>no network<br/>no real credentials<br/>no dependence on the clock"]
+  subgraph SUT["System under test"]
+    S1["Backend service"]
+    S2["Frontend dashboard"]
+  end
+  REPORTS["Coverage and<br/>test-result reports"]
+  DASH["CI dashboards"]
+  L1 --> GUARD
+  L2 --> GUARD
+  L3 --> GUARD
+  L4 --> GUARD
+  L5 --> GUARD
+  GUARD --> S1
+  GUARD --> S2
+  S1 --> REPORTS
+  S2 --> REPORTS
+  REPORTS --> DASH
+</pre>
+      </section>
+
+      <!-- Slide 4 - Divider -->
+      <section class="slide-divider">
+        <span class="hero-icon"><i data-lucide="wrench"></i></span>
+        <span class="eyebrow">Part one</span>
+        <h2>Restoring a broken test estate</h2>
+        <p>Three old test files, three conflicting foundations, and not one check that ever ran.</p>
+        <div class="accent-bar"></div>
+      </section>
+
+      <!-- Slide 5 - Before and after, plus the mapping summary -->
+      <section>
+        <span class="eyebrow">Before and after</span>
+        <h2>Nothing was quietly dropped</h2>
+        <p>Three conflicting foundations became one. Every old test was accounted for in writing.</p>
+        <div class="deck-split deck-split-table-wide">
+          <div class="deck-col">
+            <span class="eyebrow">The migration</span>
+            <pre class="mermaid">flowchart TB
+  R1["Foundation one"] --> F["Nothing loads"]
+  R2["Foundation two"] --> F
+  R3["Foundation three"] --> F
+  F -->|"Migrated, then removed"| U["One shared foundation"]
+  U --> G["Every suite loads and passes"]
+</pre>
+          </div>
+          <div class="deck-col">
+            <span class="eyebrow">Where the old tests went</span>
+            <table>
+              <thead>
+                <tr>
+                  <th>Outcome for each old test</th>
+                  <th>Tests</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Rewritten against the real product</td>
+                  <td>7</td>
+                </tr>
+                <tr>
+                  <td>Skipped, with a stated reason</td>
+                  <td>3</td>
+                </tr>
+                <tr>
+                  <td>Retired, with a recorded reason</td>
+                  <td>15</td>
+                </tr>
+                <tr>
+                  <td>Total accounted for</td>
+                  <td>25</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Slide 6 - Divider -->
+      <section class="slide-divider">
+        <span class="hero-icon"><i data-lucide="file-pen"></i></span>
+        <span class="eyebrow">Part two</span>
+        <h2>Two authorised production changes</h2>
+        <p>Both exist only so the application can start. Everything else was left alone.</p>
+        <div class="accent-bar"></div>
+      </section>
+
+      <!-- Slide 7 - Contained change -->
+      <section>
+        <span class="eyebrow">Scope control</span>
+        <div class="deck-headrow">
+          <span class="kpi-icon"><i data-lucide="git-compare"></i></span>
+          <h2>Change was deliberately contained</h2>
+        </div>
+        <p>Both changes exist only so the application can start under test. Everything else was
+          tested exactly as it is.</p>
+        <table class="deck-table-compact">
+          <thead>
+            <tr>
+              <th>What changed</th>
+              <th>Why it was unavoidable</th>
+              <th>Business risk</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>One combined route file became a folder of separate modules</td>
+              <td>The application could not start, and that file did not even compile</td>
+              <td>None. No new features were added, and the framework connects them by name, so
+                behaviour is unchanged</td>
+            </tr>
+            <tr>
+              <td>Four configuration entries were given safe, empty defaults</td>
+              <td>The product reads them while running but never declared them</td>
+              <td>None. No existing setting had its name or its value altered</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- Slide 8 - Divider -->
+      <section class="slide-divider">
+        <span class="hero-icon"><i data-lucide="lock"></i></span>
+        <span class="eyebrow">Part three</span>
+        <h2>Safety by construction</h2>
+        <p>The safeguards are built into the suite, not left to anyone remembering them.</p>
+        <div class="accent-bar"></div>
+      </section>
+
+      <!-- Slide 9 - Isolation -->
+      <section>
+        <span class="eyebrow">Measured, not theorised</span>
+        <h2>Tests cannot reach the outside world</h2>
+        <p>Both findings below were observed directly. A test that bypasses a stand-in now fails
+          loudly instead of reaching outside.</p>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="cloud-off"></i></span>
+            <span class="kpi-value">Live cloud</span>
+            <span class="kpi-label">Real cloud infrastructure was reached by an unguarded database
+              call</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="timer-off"></i></span>
+            <span class="kpi-value">300s</span>
+            <span class="kpi-label">Seconds an unguarded listener hung on a live connection before
+              it timed out</span>
+          </div>
+        </div>
+        <pre class="mermaid deck-diagram-sm">flowchart LR
+  T["A test runs"] --> G["Safeguards<br/>credentials neutralised<br/>network connections blocked<br/>browser requests intercepted"]
+  G --> S["Stand-ins in memory<br/>fast and repeatable"]
+  G -.-> X["Real outside services<br/>blocked"]
+</pre>
+      </section>
+
+      <!-- Slide 10 - Divider -->
+      <section class="slide-divider">
+        <span class="hero-icon"><i data-lucide="badge-check"></i></span>
+        <span class="eyebrow">Part four</span>
+        <h2>Proof, not promises</h2>
+        <p>The standard is enforced by the tooling, not asserted in a status report.</p>
+        <div class="accent-bar"></div>
+      </section>
+
+      <!-- Slide 11 - Gates, pipeline and reporting -->
+      <section>
+        <span class="eyebrow">Enforcement and reporting</span>
+        <h2>The pipeline now enforces the standard</h2>
+        <p>The 90% bar is the client's own acceptance criterion in the approved proposal. Reused:
+          the two existing coverage uploads, labels unchanged. Added: machine-readable results,
+          extra report formats, a readiness check.</p>
+        <div class="deck-split deck-split-table-wide">
+          <div class="deck-col">
+            <span class="eyebrow">Every push</span>
+            <pre class="mermaid">flowchart TB
+  P["Every push"] --> B["Build job"]
+  P --> E["End-to-end job"]
+  B --> BT["Backend tests"]
+  B --> FT["Frontend tests"]
+  BT --> R["Coverage and<br/>test-result reports"]
+  FT --> R
+  E --> R
+  R --> D["CI dashboards"]
+</pre>
+          </div>
+          <div class="deck-col">
+            <span class="eyebrow">Gates that fail the build</span>
+            <table>
+              <thead>
+                <tr>
+                  <th>Gate</th>
+                  <th>Bar</th>
+                  <th>Enforced by</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Backend configuration, services, background tasks and data access</td>
+                  <td>90% or above</td>
+                  <td>The test runner. The build fails below the bar</td>
+                </tr>
+                <tr>
+                  <td>Frontend state, data shapes and services</td>
+                  <td>80% or above</td>
+                  <td>The test runner. The build fails below the bar</td>
+                </tr>
+                <tr>
+                  <td>Every test file loads</td>
+                  <td>Zero load errors</td>
+                  <td>A readiness check that runs before the suite</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Slide 12 - Divider -->
+      <section class="slide-divider">
+        <span class="hero-icon"><i data-lucide="triangle-alert"></i></span>
+        <span class="eyebrow">Part five</span>
+        <h2>Known limits, managed openly</h2>
+        <p>Each limit is pinned down as today's behaviour and recorded for the backlog.</p>
+        <div class="accent-bar"></div>
+      </section>
+
+      <!-- Slide 13 - Documented limits -->
+      <section>
+        <span class="eyebrow">Documented limits</span>
+        <h2>What cannot be tested, and why</h2>
+        <p>These are product gaps, not test gaps. Closing them would mean building features this
+          engagement deliberately did not build.</p>
+        <table class="deck-table-compact">
+          <thead>
+            <tr>
+              <th>Limit</th>
+              <th>Cause</th>
+              <th>How it is handled</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Several screens cannot open</td>
+              <td>The shared helpers they rely on were never published in the product code</td>
+              <td>Test written, then skipped with a stated reason</td>
+            </tr>
+            <tr>
+              <td>Tweet cards never appear</td>
+              <td>The card itself does not exist anywhere in the product</td>
+              <td>Today's behaviour pinned down, gap recorded</td>
+            </tr>
+            <tr>
+              <td>One record lookup always errors</td>
+              <td>The data model has no identifier, so its "not found" path can never be reached</td>
+              <td>The real outcome pinned down instead</td>
+            </tr>
+            <tr>
+              <td>Charts never draw</td>
+              <td>The charting engine is never switched on</td>
+              <td>The handled-failure path pinned down; the screen stays usable</td>
+            </tr>
+            <tr>
+              <td>The product reports nothing about its own health</td>
+              <td>No live metrics or request tracing, and the health probes point at an address
+                that does not exist</td>
+              <td>Recorded and put on the backlog, not built</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- Slide 14 - Divider -->
+      <section class="slide-divider">
+        <span class="hero-icon"><i data-lucide="compass"></i></span>
+        <span class="eyebrow">Part six</span>
+        <h2>Onboarding and what comes next</h2>
+        <p>From a clean machine to a running suite, without needing to ask anyone.</p>
+        <div class="accent-bar"></div>
+      </section>
+
+      <!-- Slide 15 - Onboarding and the forward timeline -->
+      <section>
+        <span class="eyebrow">Handover</span>
+        <h2>A new engineer is productive on day one</h2>
+        <div class="icon-row">
+          <span class="icon-row-item"><i data-lucide="server"></i>Backend suite guide</span>
+          <span class="icon-row-item"><i data-lucide="monitor"></i>Frontend suite guide</span>
+          <span class="icon-row-item"><i data-lucide="globe"></i>End-to-end suite guide</span>
+          <span class="icon-row-item"><i data-lucide="book-open"></i>Decision log and traceability
+            record</span>
+        </div>
+        <pre class="mermaid deck-diagram-sm">flowchart LR
+  A["Delivered<br/>five layers<br/>gates enforced"] --> B["Next<br/>browser sign-off<br/>of suite and summary"]
+  B --> C["Then<br/>prioritised backlog<br/>of known gaps"]
+</pre>
+        <ul>
+          <li>Three commands to install and three to run, documented for each layer.</li>
+          <li>Every pitfall that cost the team time is written down.</li>
+          <li>A prioritised backlog of everything found but deliberately left alone.</li>
+        </ul>
+      </section>
+
+      <!-- Slide 16 - Closing -->
+      <section class="slide-closing">
+        <span class="eyebrow">Outcome</span>
+        <h2>Quality is now measurable</h2>
+        <div class="accent-bar"></div>
+        <ul>
+          <li>Five layers of testing run on every push.</li>
+          <li>Coverage gates enforced at 90% and 80%, by the tooling itself.</li>
+          <li>Browser sign-off of the end-to-end suite and this summary remains outstanding.</li>
+        </ul>
+        <div class="brand-lockup"><i data-lucide="zap"></i><span>Blitzy</span></div>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- Pinned CDN runtimes -->
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+
+  <script>
+    (function () {
+      'use strict';
+
+      var DIAGRAM_SELECTOR = 'pre.mermaid';
+      var SOURCE_ATTR = 'data-diagram-source';
+      var PROCESSED_ATTR = 'data-processed';
+
+      /* Mermaid setup */
+
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: 'base',
+        themeVariables: {
+          primaryColor: '#F2F0FE',
+          primaryTextColor: '#333333',
+          primaryBorderColor: '#5B39F3',
+          lineColor: '#999999',
+          secondaryColor: '#F4EFF6'
+        }
+      });
+
+      /* Store the authored diagram markup before the first render replaces it. */
+      function cacheDiagramSources() {
+        var nodes = document.querySelectorAll(DIAGRAM_SELECTOR);
+        for (var i = 0; i < nodes.length; i += 1) {
+          if (!nodes[i].hasAttribute(SOURCE_ATTR)) {
+            nodes[i].setAttribute(SOURCE_ATTR, nodes[i].innerHTML);
+          }
+        }
+      }
+
+      /* Restore the source and clear the rendered marker so a re-run is safe. */
+      function resetDiagram(node) {
+        var source = node.getAttribute(SOURCE_ATTR);
+        if (source === null) {
+          return false;
+        }
+        node.removeAttribute(PROCESSED_ATTR);
+        node.innerHTML = source;
+        return true;
+      }
+
+      function diagramsOn(slide) {
+        if (!slide || typeof slide.querySelectorAll !== 'function') {
+          return [];
+        }
+        return Array.prototype.slice.call(slide.querySelectorAll(DIAGRAM_SELECTOR));
+      }
+
+      /* Slide whose diagrams are mid-render, plus a flag for a slide that
+         arrived while that render was still running. A cold load addressed
+         straight at a diagram slide fires every lifecycle path at once, and
+         restoring the source under an in-progress render would tear out the
+         subtree it is drawing into. */
+      var renderingSlide = null;
+      var rerenderQueued = false;
+
+      function renderDiagrams(slide) {
+        if (!slide) {
+          return;
+        }
+        if (renderingSlide) {
+          if (renderingSlide !== slide) {
+            rerenderQueued = true;
+          }
+          return;
+        }
+        if (!diagramsOn(slide).length) {
+          return;
+        }
+        var nodes = diagramsOn(slide).filter(resetDiagram);
+        if (!nodes.length) {
+          return;
+        }
+        renderingSlide = slide;
+        try {
+          var pending = mermaid.run({ nodes: nodes, suppressErrors: false });
+          if (pending && typeof pending.then === 'function') {
+            pending.then(settleRender, function (error) {
+              console.error('Mermaid render failed', error);
+              settleRender();
+            });
+          } else {
+            settleRender();
+          }
+        } catch (error) {
+          console.error('Mermaid render failed', error);
+          settleRender();
+        }
+      }
+
+      function settleRender() {
+        renderingSlide = null;
+        relayout();
+        if (rerenderQueued) {
+          rerenderQueued = false;
+          renderDiagrams(Reveal.getCurrentSlide());
+        }
+      }
+
+      /* Diagrams are inserted after reveal.js has already measured the slide,
+         so the slide is re-centred once the render resolves. */
+      function relayout() {
+        try {
+          Reveal.layout();
+        } catch (error) {
+          console.error('Reveal layout failed', error);
+        }
+      }
+
+      function renderIcons() {
+        try {
+          lucide.createIcons();
+        } catch (error) {
+          console.error('Lucide render failed', error);
+        }
+      }
+
+      /* Single refresh handler for both reveal.js lifecycle events. */
+      function refresh() {
+        cacheDiagramSources();
+        renderIcons();
+        renderDiagrams(Reveal.getCurrentSlide());
+      }
+
+      /* Reveal setup */
+
+      Reveal.on('ready', refresh);
+      Reveal.on('slidechanged', refresh);
+
+      Reveal.initialize({
+        hash: true,
+        transition: 'slide',
+        controlsTutorial: false,
+        width: 1920,
+        height: 1080
+      }).then(refresh);
+    }());
+  </script>
+</body>
+</html>
