@@ -105,6 +105,7 @@ the real module.
 """
 import importlib
 import pytest
+from pydantic import ValidationError
 from app.schema.tweet import Tweet
 from tests.factories import make_tweet
 pytestmark = pytest.mark.integration
@@ -136,6 +137,27 @@ TWEET_FIELD_NAMES = (
 SERIALIZED_TIMESTAMP = "2024-01-01T00:00:00"
 OMITTED_REQUIRED_FIELD = "content"
 MISSING_SCHEMA_ATTRIBUTE = "id"
+
+#: What the ``List[Tweet]`` response model reports for a row missing
+#: :data:`OMITTED_REQUIRED_FIELD`, measured against fastapi 0.95.2 and pydantic
+#: 1.10.13. ``serialize_response`` validates the handler's return value with
+#: ``loc=("response",)`` prefixed, so the location names the response, the index
+#: within the list, and the field -- which is what identifies *response*
+#: validation as the cause rather than any of the other ways this endpoint
+#: reaches a 500.
+RESPONSE_VALIDATION_LOCATION = ("response", 0, OMITTED_REQUIRED_FIELD)
+
+#: pydantic's code for an absent required field.
+MISSING_FIELD_VALIDATION_TYPE = "value_error.missing"
+
+#: Its human-readable half.
+MISSING_FIELD_VALIDATION_MESSAGE = "field required"
+
+#: Name of the model the failure is reported against. Compared by name rather
+#: than by identity because fastapi clones the response model into its own
+#: namespace -- the raised error names ``pydantic.main.Tweet``, not
+#: ``app.schema.tweet.Tweet``.
+RESPONSE_MODEL_NAME = "Tweet"
 
 #: Failure types injected into the collection endpoint's query chain.
 #: ``Exception`` is included deliberately: it is the type a bare
@@ -314,17 +336,78 @@ def test_get_tweets_uses_default_pagination(client, mock_db, override_get_db):
     offset.return_value.limit.assert_called_once_with(DEFAULT_LIMIT)
 
 
-def test_get_tweets_response_validation_rejects_incomplete_row(
-    client_no_raise, mock_db, override_get_db
+def test_get_tweets_response_validation_raises_for_incomplete_row(
+    client, mock_db, override_get_db
 ):
+    """A row missing ``content`` fails the response model, and that is the cause.
+
+    Asserted through the raising client, because the exception is the only place
+    the *cause* is observable: the status a caller sees is a bare ``500``, and
+    this endpoint reaches ``500`` three other ways -- a failing ``db.query``, a
+    failing terminal ``.all()``, and any exception at all, since the handler holds
+    no ``try``. A test that asserted only the status would pass for every one of
+    them.
+
+    Three things establish this particular cause. The exception is a pydantic
+    :class:`ValidationError` against the response model rather than an arbitrary
+    error; its one entry is located at ``("response", 0, "content")``, which names
+    the response, the row and the omitted field; and the query chain ran to
+    completion, so the handler *did* obtain its result set and serialization is
+    what rejected it.
+    """
     override_get_db(mock_db)
     incomplete = make_tweet()
     del incomplete[OMITTED_REQUIRED_FIELD]
+    chain = mock_db.query.return_value.offset.return_value.limit.return_value
+    _program_collection_rows(mock_db, [incomplete])
+
+    with pytest.raises(ValidationError) as excinfo:
+        client.get(TWEETS_PATH)
+
+    # Reported against the response model, named rather than identified: fastapi
+    # clones it into its own namespace when it builds the response field.
+    assert excinfo.value.model.__name__ == RESPONSE_MODEL_NAME
+
+    errors = excinfo.value.errors()
+
+    assert len(errors) == 1
+    assert tuple(errors[0]["loc"]) == RESPONSE_VALIDATION_LOCATION
+    assert errors[0]["type"] == MISSING_FIELD_VALIDATION_TYPE
+    assert errors[0]["msg"] == MISSING_FIELD_VALIDATION_MESSAGE
+
+    # The chain completed, so the row reached the response model. This is what
+    # separates this 500 from the query-failure and result-read-failure ones,
+    # where `.all()` never returned.
+    _assert_queried_the_tweet_model(mock_db)
+    chain.all.assert_called_once_with()
+
+
+def test_get_tweets_response_validation_rejects_incomplete_row(
+    client_no_raise, mock_db, override_get_db
+):
+    """The same failure answers ``500`` through a client that reports.
+
+    This is the status a caller observes.  The body is starlette's own
+    server-error text under ``text/plain`` rather than a JSON array, which
+    establishes that the ``List[Tweet]`` response model produced nothing, and the
+    completed query chain establishes that it was nonetheless *reached* -- the
+    pair that distinguishes this 500 from the two where the chain failed first.
+    The cause itself is asserted by
+    :func:`test_get_tweets_response_validation_raises_for_incomplete_row`.
+    """
+    override_get_db(mock_db)
+    incomplete = make_tweet()
+    del incomplete[OMITTED_REQUIRED_FIELD]
+    chain = mock_db.query.return_value.offset.return_value.limit.return_value
     _program_collection_rows(mock_db, [incomplete])
 
     response = client_no_raise.get(TWEETS_PATH)
 
     assert response.status_code == SERVER_ERROR_STATUS
+    assert response.text == SERVER_ERROR_BODY
+    assert response.headers["content-type"].startswith(SERVER_ERROR_CONTENT_TYPE)
+    _assert_queried_the_tweet_model(mock_db)
+    chain.all.assert_called_once_with()
 
 
 def test_get_tweets_queries_the_tweet_model(client, mock_db, override_get_db):
@@ -725,3 +808,242 @@ def test_get_tweets_accepts_an_unconstrained_pagination_value(
     offset = mock_db.query.return_value.offset
     offset.assert_called_once_with(expected_offset)
     offset.return_value.limit.assert_called_once_with(expected_limit)
+
+
+# --------------------------------------------------------------------------- #
+# The three operations with ``Depends(get_db)`` left in place.
+#
+# Every case above installs a stand-in through ``override_get_db``, so the
+# dependency the application actually declares is never resolved.  These cases
+# resolve it: ``app.db.firestore.get_db`` runs, and the only thing replaced is the
+# ``Client`` class it constructs, through the ``firestore_client_constructor``
+# fixture whose stand-in is specified against ``google.cloud.firestore.Client``.
+# The endpoint therefore meets the attribute surface a real Firestore client has,
+# which is the disposition ``frontend/src/test-utils/handlers.ts`` models in its
+# configured-base, unoverridden column.
+# --------------------------------------------------------------------------- #
+
+#: The attribute the SQLAlchemy-shaped handlers read off the injected object and
+#: that a Firestore client does not carry.
+MISSING_CLIENT_ATTRIBUTE = "query"
+
+
+def test_a_firestore_client_declares_no_query_attribute():
+    """The production fact every case below rests on.
+
+    ``app/api/routes/tweets.py`` was written against a SQLAlchemy ``Session`` and
+    is wired to ``app/db/firestore.py``, whose client has no ``query``.  Asserted
+    against the real class, so the stand-in the fixture builds is faithful by
+    construction rather than by assumption.
+    """
+    from google.cloud.firestore import Client as FirestoreClient
+
+    assert hasattr(FirestoreClient, MISSING_CLIENT_ATTRIBUTE) is False
+
+
+def test_get_tweets_resolves_the_declared_dependency(
+    client_no_raise, firestore_client_constructor, integration_app
+):
+    """With no override installed, the request builds a real Firestore client.
+
+    The empty override map and the recorded constructor call together are what
+    show the dependency was resolved rather than substituted, which is the
+    property that makes the status below an oracle.
+    """
+    assert integration_app.dependency_overrides == {}
+
+    client_no_raise.get(TWEETS_PATH)
+
+    firestore_client_constructor.assert_called_once_with(
+        project=importlib.import_module("app.core.config").Settings().PROJECT_ID
+    )
+
+
+def test_get_tweets_raises_attribute_error_without_an_override(
+    client, firestore_client_constructor
+):
+    """A valid collection request fails on ``db.query`` before any Firestore call."""
+    with pytest.raises(AttributeError) as excinfo:
+        client.get(TWEETS_PATH)
+
+    assert MISSING_CLIENT_ATTRIBUTE in str(excinfo.value)
+
+
+def test_get_tweets_returns_500_without_an_override(
+    client_no_raise, firestore_client_constructor
+):
+    """The same failure reported as a response: ``500`` and the plain-text body.
+
+    This is the value ``configuredBaseBackendHandlers()`` answers for a valid
+    ``GET /tweets`` while its ``dependencyOverridden`` option is unset.
+    """
+    response = client_no_raise.get(TWEETS_PATH)
+
+    assert response.status_code == SERVER_ERROR_STATUS
+    assert response.text == SERVER_ERROR_BODY
+    assert response.headers["content-type"].startswith(SERVER_ERROR_CONTENT_TYPE)
+
+
+def test_get_tweets_returns_500_for_the_pagination_callers_send(
+    client_no_raise, firestore_client_constructor
+):
+    """The disposition does not depend on the query the callers emit.
+
+    ``fetchTweets(page, limit)`` sends ``page`` and ``limit``; ``page`` is not
+    declared and is ignored, and a coercible ``limit`` passes validation, so the
+    request reaches the endpoint and fails there.
+    """
+    response = client_no_raise.get(
+        TWEETS_PATH, params={"page": 2, "limit": EXPLICIT_LIMIT}
+    )
+
+    assert response.status_code == SERVER_ERROR_STATUS
+    assert response.text == SERVER_ERROR_BODY
+
+
+@pytest.mark.parametrize("parameter, value", MALFORMED_QUERY_VALUES)
+def test_get_tweets_rejects_a_malformed_value_before_the_dependency_fails(
+    client_no_raise, firestore_client_constructor, parameter, value
+):
+    """Coercion precedes endpoint execution, override or no override.
+
+    A ``422`` here rather than a ``500`` is what fixes the stage order the mock
+    models: validation of the declared parameters happens before the handler body,
+    so the dependency's own failure is never reached.
+    """
+    response = client_no_raise.get(TWEETS_PATH, params={parameter: value})
+
+    assert response.status_code == UNPROCESSABLE_ENTITY_STATUS
+    assert [record["loc"] for record in _validation_details(response)] == [
+        ["query", parameter]
+    ]
+
+
+def test_get_tweet_by_id_returns_500_without_an_override(
+    client_no_raise, firestore_client_constructor
+):
+    """The detail route answers ``500`` with the dependency in place.
+
+    It fails one step earlier than it does under a SQLAlchemy-shaped stand-in --
+    on ``db.query`` rather than on ``Tweet.id`` -- and the response is identical,
+    so the frontend mock answers one value for both dispositions.
+    """
+    response = client_no_raise.get(TWEET_DETAIL_PATH)
+
+    assert response.status_code == SERVER_ERROR_STATUS
+    assert response.text == SERVER_ERROR_BODY
+    assert response.headers["content-type"].startswith(SERVER_ERROR_CONTENT_TYPE)
+
+
+def test_get_tweet_by_id_raises_on_the_client_attribute_without_an_override(
+    client, firestore_client_constructor
+):
+    """Naming the attribute distinguishes this failure from the ``Tweet.id`` one."""
+    with pytest.raises(AttributeError) as excinfo:
+        client.get(TWEET_DETAIL_PATH)
+
+    assert MISSING_CLIENT_ATTRIBUTE in str(excinfo.value)
+
+
+def test_generate_response_returns_500_without_an_override(
+    client_no_raise, firestore_client_constructor
+):
+    """The responses route answers ``500`` with the dependency in place."""
+    response = client_no_raise.post(TWEET_RESPONSES_PATH)
+
+    assert response.status_code == SERVER_ERROR_STATUS
+    assert response.text == SERVER_ERROR_BODY
+    assert response.headers["content-type"].startswith(SERVER_ERROR_CONTENT_TYPE)
+
+
+def test_generate_response_raises_on_the_client_attribute_without_an_override(
+    client, firestore_client_constructor
+):
+    """The same attribute read ends the responses operation."""
+    with pytest.raises(AttributeError) as excinfo:
+        client.post(TWEET_RESPONSES_PATH)
+
+    assert MISSING_CLIENT_ATTRIBUTE in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------- #
+# The full coercion domain of the two declared ``int`` parameters.
+#
+# pydantic v1 coerces a query value by calling ``int(value)``, so the domain is
+# CPython's own base-10 literal grammar rather than ASCII digits: an optional
+# sign, one or more Unicode decimal digits, and single ``_`` separators strictly
+# between digits.  ``frontend/src/test-utils/handlers.ts`` models this endpoint,
+# so its ``INTEGER_VALUE`` grammar is held to the same domain by the cases below
+# and by their counterparts in ``handlers.test.ts``.
+# --------------------------------------------------------------------------- #
+
+#: Values ``int()`` accepts beyond the plain ASCII digits every caller emits, each
+#: with the integer it coerces to.
+UNCONVENTIONAL_INTEGER_VALUES = (
+    pytest.param("1_0", 10, id="underscore-separated"),
+    pytest.param("1_0_0", 100, id="two-underscore-groups"),
+    pytest.param("+1_0", 10, id="signed-underscore-separated"),
+    pytest.param("\u0661\u0660", 10, id="arabic-indic-digits"),
+    pytest.param("\uff11\uff10", 10, id="fullwidth-digits"),
+    pytest.param("\u06f1\u06f0", 10, id="extended-arabic-indic-digits"),
+    pytest.param("\u0f21\u0f20", 10, id="tibetan-digits"),
+    pytest.param("\u0661\u0031", 11, id="mixed-script-digits"),
+    pytest.param("\uff11_\uff10", 10, id="fullwidth-underscore-separated"),
+)
+
+#: Values that resemble the ones above and that ``int()`` refuses: an underscore
+#: outside a digit pair, and a digit-like character outside category ``Nd``.
+REFUSED_INTEGER_LOOKALIKES = (
+    pytest.param("_10", id="leading-underscore"),
+    pytest.param("10_", id="trailing-underscore"),
+    pytest.param("1__0", id="doubled-underscore"),
+    pytest.param("+_10", id="underscore-after-sign"),
+    pytest.param("\u2070", id="superscript-zero"),
+    pytest.param("\u00b2", id="superscript-two"),
+    pytest.param("\u00bd", id="vulgar-fraction-half"),
+)
+
+
+@pytest.mark.parametrize("value, coerced", UNCONVENTIONAL_INTEGER_VALUES)
+def test_get_tweets_coerces_an_unconventional_integer_limit(
+    client, mock_db, override_get_db, value, coerced
+):
+    """``limit`` is accepted and reaches the query as the integer it denotes."""
+    override_get_db(mock_db)
+    _program_collection_rows(mock_db, [])
+
+    response = client.get(TWEETS_PATH, params={"limit": value})
+
+    assert response.status_code == OK_STATUS
+    offset = mock_db.query.return_value.offset
+    offset.return_value.limit.assert_called_once_with(coerced)
+
+
+@pytest.mark.parametrize("value, coerced", UNCONVENTIONAL_INTEGER_VALUES)
+def test_get_tweets_coerces_an_unconventional_integer_skip(
+    client, mock_db, override_get_db, value, coerced
+):
+    """The same domain governs ``skip``; neither parameter narrows it."""
+    override_get_db(mock_db)
+    _program_collection_rows(mock_db, [])
+
+    response = client.get(TWEETS_PATH, params={"skip": value})
+
+    assert response.status_code == OK_STATUS
+    mock_db.query.return_value.offset.assert_called_once_with(coerced)
+
+
+@pytest.mark.parametrize("value", REFUSED_INTEGER_LOOKALIKES)
+def test_get_tweets_refuses_an_integer_lookalike(
+    client_no_raise, mock_db, override_get_db, value
+):
+    """A value ``int()`` refuses is a ``422`` and never reaches the handler."""
+    override_get_db(mock_db)
+
+    response = client_no_raise.get(TWEETS_PATH, params={"limit": value})
+
+    assert response.status_code == UNPROCESSABLE_ENTITY_STATUS
+    assert [record["loc"] for record in _validation_details(response)] == [
+        ["query", "limit"]
+    ]
+    mock_db.query.assert_not_called()

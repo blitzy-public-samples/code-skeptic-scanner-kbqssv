@@ -2,7 +2,7 @@
  * The suite for `frontend/src/pages/Analytics.tsx`, whose single export is the default `Analytics`
  * page component.
  *
- * Every test below is written out in full and the whole suite is skipped. The subject cannot be
+ * Every test below is written out in full, collected, and skipped individually. The subject cannot be
  * mounted by any test in this repository, for three reasons that hold independently of one another.
  *
  * 1. **`useAppSelector` is not a function.** The subject imports it at L4 from `@/store` and calls
@@ -25,9 +25,12 @@
  *    `Loading...` until `analyticsData` is set. The one component that does exist takes a
  *    `dateRange` prop, where L39 passes `data`.
  *
- * The `describe.skip` title below names the first of the three. `frontend/jest.config.js` gives
- * `jest-junit` a `titleTemplate` that prefixes each test's name with its ancestor titles, so that
- * name reaches every `<testcase>` this file contributes to `frontend/reports/jest-junit.xml`.
+ * The group below is an ordinary `describe`, so this module is collected and every specifier in it
+ * resolves on each run. Each test is marked `it.skip` and carries {@link BLOCKER} - which names the
+ * first of the three - in its own title, so the reason travels with the identity a result reader
+ * sees. `frontend/jest.config.js` gives `jest-junit` a `titleTemplate` that prefixes each test's
+ * name with its ancestor titles, so both strings reach every `<testcase>` this file contributes to
+ * `frontend/reports/jest-junit.xml`. No blanket `describe.skip` is used.
  *
  * ## The module graph still loads
  *
@@ -75,17 +78,25 @@ jest.mock('@/services/analyticsService');
 
 const getAnalyticsDataMock = jest.mocked(getAnalyticsData);
 
+/** Title of the group below, which is an ordinary `describe` so this module stays collected. */
+const SUITE_TITLE = 'pages/Analytics (src/pages/Analytics.tsx)';
+
 /**
- * Title of the skipped suite below, naming the first of the three reasons in the module docstring
- * and the module whose export set does not contain it.
+ * Blocker carried by every skipped test identity below.
  *
- * `describe`'s title is where a Jest skip carries a reason, there being no argument for one, and
- * `frontend/jest.config.js` gives `jest-junit` a `titleTemplate` that prefixes each test's name with
- * its ancestor titles - so this string reaches every `<testcase>` in
- * `frontend/reports/jest-junit.xml` that this file contributes.
+ * Jest's skip takes no reason argument, so the title is where one goes. It is appended to each
+ * individual test rather than declared once on the group: a blanket `describe.skip` leaves each
+ * `<testcase>` in `frontend/reports/jest-junit.xml` marked skipped with no reason of its own, and a
+ * reader of one result then has nothing to go on. `frontend/jest.config.js` gives `jest-junit` a
+ * `titleTemplate` that prefixes each name with its ancestor titles, so both {@link SUITE_TITLE} and
+ * this string reach every `<testcase>` this file contributes.
+ *
+ * It names the first of the three reasons in the module docstring - the one that raises first - and
+ * the module whose export set does not contain it.
  */
-const SKIP_TITLE =
-  'pages/Analytics — SKIPPED: useAppSelector is not a function (not exported by src/store/index.ts)';
+const BLOCKER =
+  'BLOCKED: src/store/index.ts exports no useAppSelector, so src/pages/Analytics.tsx line 13 ' +
+  'raises TypeError: useAppSelector is not a function';
 
 /** Accessible name of the subject's L35 heading. */
 const ANALYTICS_HEADING = 'Analytics Dashboard';
@@ -203,7 +214,7 @@ async function renderLoaded() {
   return result;
 }
 
-describe.skip(SKIP_TITLE, () => {
+describe(SUITE_TITLE, () => {
   beforeEach(() => {
     getAnalyticsDataMock.mockReset();
     getAnalyticsDataMock.mockResolvedValue(ANALYTICS_SUMMARY);
@@ -221,7 +232,7 @@ describe.skip(SKIP_TITLE, () => {
     }
   });
 
-  it('renders "Loading..." and nothing else until the mount fetch settles', async () => {
+  it.skip(`renders "Loading..." and nothing else until the mount fetch settles - ${BLOCKER}`, async () => {
     const { container } = renderWithProviders(<Analytics />);
 
     // Asserted before the fetch is given a turn: `analyticsData` is still the `null` L11 starts it
@@ -234,7 +245,7 @@ describe.skip(SKIP_TITLE, () => {
     await screen.findByRole('heading', { level: 1, name: ANALYTICS_HEADING });
   });
 
-  it('renders the analytics-page shell with its heading and its empty date-range picker', async () => {
+  it.skip(`renders the analytics-page shell with its heading and its empty date-range picker - ${BLOCKER}`, async () => {
     const { container } = await renderLoaded();
 
     const page = container.querySelector('div.analytics-page');
@@ -255,7 +266,7 @@ describe.skip(SKIP_TITLE, () => {
     expect(consoleError).not.toHaveBeenCalled();
   });
 
-  it('calls getAnalyticsData once with the two dateRange dates and the selected user id', async () => {
+  it.skip(`calls getAnalyticsData once with the two dateRange dates and the selected user id - ${BLOCKER}`, async () => {
     await renderLoaded();
 
     expect(getAnalyticsDataMock).toHaveBeenCalledTimes(1);
@@ -272,7 +283,7 @@ describe.skip(SKIP_TITLE, () => {
     expect(call[2]).toBe(EXPECTED_USER_ID);
   });
 
-  it('forwards trends, aiToolComparison and userEngagement to its three child components', async () => {
+  it.skip(`forwards trends, aiToolComparison and userEngagement to its three child components - ${BLOCKER}`, async () => {
     const { summary, reads } = summaryWithReadLog();
     getAnalyticsDataMock.mockResolvedValue(summary);
 
@@ -283,7 +294,7 @@ describe.skip(SKIP_TITLE, () => {
     expect(reads).toEqual(FORWARDED_MEMBERS);
   });
 
-  it('fetches once on mount and does not refetch when re-rendered', async () => {
+  it.skip(`fetches once on mount and does not refetch when re-rendered - ${BLOCKER}`, async () => {
     const { rerender } = await renderLoaded();
 
     expect(getAnalyticsDataMock).toHaveBeenCalledTimes(1);
@@ -298,7 +309,7 @@ describe.skip(SKIP_TITLE, () => {
     });
   });
 
-  it('swallows a getAnalyticsData rejection, logs it, and stays on "Loading..."', async () => {
+  it.skip(`swallows a getAnalyticsData rejection, logs it, and stays on "Loading..." - ${BLOCKER}`, async () => {
     const rejection = new Error(FETCH_REJECTION_MESSAGE);
     getAnalyticsDataMock.mockRejectedValue(rejection);
 

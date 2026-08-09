@@ -8,12 +8,23 @@ wrapper opens with ``client = get_db()`` and then drives one
 
 Isolation
 ---------
-``app.db.firestore.get_db`` is replaced in every test in this module through the
-``firestore_client`` fixture in ``backend/tests/conftest.py``, which patches the
-attribute on this subject — the boundary the wrappers themselves read.
-:func:`test_every_test_requests_the_firestore_client_fixture` is the structural
-gate that keeps that true for tests added later.  No test in this module
-constructs a client, and none calls ``get_db`` in an unpatched state.
+Two fixtures in ``backend/tests/conftest.py`` isolate this module, and every test
+here requests one of them:
+
+``firestore_client``
+    Replaces ``app.db.firestore.get_db`` on this subject — the boundary the three
+    wrappers themselves read — so a wrapper test drives a mock client and never
+    executes the factory.
+``firestore_client_constructor``
+    Leaves ``get_db`` in place and replaces the ``Client`` class it constructs
+    with a ``MagicMock`` specified against the real
+    ``google.cloud.firestore.Client``, so the factory's own body is executed
+    without a client being built.  Credential resolution is already neutralised
+    for every test by the autouse ``neutralize_google_credentials``.
+
+:func:`test_every_test_requests_an_isolation_fixture` is the structural gate that
+keeps that true for tests added later.  No test in this module constructs a real
+client, and none calls ``get_db`` with ``Client`` unpatched.
 
 What this suite asserts
 -----------------------
@@ -42,6 +53,14 @@ What this suite asserts
   from the client the wrappers obtain.
 * ``add_response`` is not defined on the module.
 * ``get_tweet`` is not a coroutine function.
+* ``get_db`` returns the object ``Client(...)`` produced, constructs one client
+  per call, passes ``project=Settings().PROJECT_ID`` and nothing else — no
+  positional argument and no credential — calls ``default()`` exactly once with no
+  arguments and discards its result, is synchronous, and propagates a failure from
+  either ``default()`` or ``Client(...)`` unchanged with no client constructed on
+  the first path.
+* The client ``get_db`` returns answers ``collection`` and refuses ``query``, which
+  is the fact the ``500`` in ``tests/integration/test_http_tweets.py`` rests on.
 
 Current behaviour captured as divergence
 ----------------------------------------
@@ -80,8 +99,10 @@ asserted in the response-generator suite; the fact it rests on is pinned here.
 
 Coverage
 --------
-Lines 8-10, the body of ``get_db``, are executed by no test in this module:
-every test replaces that function.
+Every statement of the module is executed.  Lines 8-10, the body of ``get_db``,
+are covered by the ``get_db`` section at the end of this file, which requests
+``firestore_client_constructor`` instead of ``firestore_client`` so the factory
+runs rather than being replaced.
 
 Scope
 -----
@@ -95,8 +116,9 @@ Every test calls a wrapper directly against a mock client.  The
    D105 (the credential neutraliser and egress guard behind it), D106 (the
    fail-closed shims), D53 (production defects are pinned, not repaired) and
    D70 (the coverage gate this module is measured against).
-   ``docs/testing/TRACEABILITY-MATRIX.md`` section G for the ``get_db`` ceiling.
+   ``docs/testing/TRACEABILITY-MATRIX.md`` section G for the module's ceilings.
 """
+import importlib
 import inspect
 from unittest.mock import MagicMock
 import pytest
@@ -163,7 +185,17 @@ FALSY_DOCUMENT_EXISTS = (
 PUBLIC_SURFACE = ("db", "get_db", "add_tweet", "get_tweet", "update_tweet")
 UNPATCHED_WRAPPERS = ("add_tweet", "get_tweet", "update_tweet")
 UNDEFINED_IMPORTED_NAMES = ("add_response",)
-REQUIRED_ISOLATION_FIXTURE = "firestore_client"
+
+#: Fixtures that make a test in this module safe to run, either of which suffices.
+#: ``firestore_client`` replaces ``get_db`` outright, which is what the three
+#: wrapper suites need; ``firestore_client_constructor`` leaves ``get_db`` in place
+#: and replaces the client class it constructs, which is what the ``get_db`` suite
+#: needs. Neither leaves a path to a real Firestore client.
+#: :func:`test_every_test_requests_an_isolation_fixture` enforces the choice.
+REQUIRED_ISOLATION_FIXTURES = (
+    "firestore_client",
+    "firestore_client_constructor",
+)
 
 #: Recognize both fixture-marker attributes exposed by supported pytest wrapper
 #: shapes.
@@ -674,8 +706,8 @@ def _is_fixture(candidate):
 
 
 def _resolves_to_required_fixture(name, namespace, visited):
-    """Return whether a fixture dependency chain reaches firestore_client."""
-    if name == REQUIRED_ISOLATION_FIXTURE:
+    """Return whether a fixture dependency chain reaches an isolation fixture."""
+    if name in REQUIRED_ISOLATION_FIXTURES:
         return True
     if name in visited:
         return False
@@ -691,9 +723,9 @@ def _resolves_to_required_fixture(name, namespace, visited):
     )
 
 
-def test_every_test_requests_the_firestore_client_fixture(firestore_client):
-    """Guard that every wrapper test transitively requests firestore_client,
-    preventing live Firestore egress.
+def test_every_test_requests_an_isolation_fixture(firestore_client):
+    """Guard that every test here transitively requests one of the two isolation
+    fixtures, preventing live Firestore egress.
     """
     namespace = dict(globals())
     tests = {
@@ -713,9 +745,9 @@ def test_every_test_requests_the_firestore_client_fixture(firestore_client):
 
     assert tests, "no test functions were discovered in this module"
     assert unguarded == [], (
-        "these tests do not request {0} directly or transitively, so "
-        "app.db.firestore.get_db is unpatched while they run: {1}".format(
-            REQUIRED_ISOLATION_FIXTURE, ", ".join(unguarded)
+        "these tests request neither {0} directly nor transitively, so a real "
+        "Firestore client is reachable while they run: {1}".format(
+            " nor ".join(REQUIRED_ISOLATION_FIXTURES), ", ".join(unguarded)
         )
     )
 
@@ -857,3 +889,152 @@ def test_get_tweet_stops_at_a_failing_deserialization(
     mock_snapshot.to_dict.assert_called_once_with()
     mock_tweet_document.get.assert_called_once_with()
     mock_tweet_document.update.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# ``get_db``, source lines 7-10.  The factory every wrapper calls, exercised
+# here with the client class replaced rather than the function itself.
+# --------------------------------------------------------------------------- #
+
+
+def test_get_db_returns_the_constructed_client(firestore_client_constructor):
+    """``get_db`` returns the object the ``Client`` call produced, unwrapped."""
+    assert firestore.get_db() is firestore_client_constructor.return_value
+
+
+def test_get_db_constructs_exactly_one_client(firestore_client_constructor):
+    """One call, one client: the factory neither caches nor retries."""
+    firestore.get_db()
+
+    assert firestore_client_constructor.call_count == 1
+
+
+def test_get_db_constructs_a_client_per_call(firestore_client_constructor):
+    """Each call builds a client; nothing is memoized between calls."""
+    firestore.get_db()
+    firestore.get_db()
+
+    assert firestore_client_constructor.call_count == 2
+
+
+def test_get_db_passes_the_project_the_settings_declare(firestore_client_constructor):
+    """The ``project`` keyword is ``Settings().PROJECT_ID``, read at call time.
+
+    ``PROJECT_ID`` is one of the four fields declared for testability, and the
+    conftest prologue removes its environment name so the declared default is the
+    only possible source. Comparing against a freshly built ``Settings`` rather
+    than against a literal keeps this assertion tied to the declaration.
+    """
+    settings_class = importlib.import_module("app.core.config").Settings
+
+    firestore.get_db()
+
+    _, keywords = firestore_client_constructor.call_args
+    assert keywords == {"project": settings_class().PROJECT_ID}
+
+
+def test_get_db_passes_no_positional_arguments(firestore_client_constructor):
+    """``Client`` is constructed by keyword only."""
+    firestore.get_db()
+
+    positional, _ = firestore_client_constructor.call_args
+    assert positional == ()
+
+
+def test_get_db_passes_no_credentials(firestore_client_constructor):
+    """The resolved credential is **discarded**, not handed to the client.
+
+    Line 8 unpacks ``default()`` into ``credentials, project_id`` and line 10 uses
+    neither: the client is built with the settings' project and with whatever
+    credential the library resolves for itself. So the application cannot be
+    pointed at a service account by this function, and the ``project_id`` the
+    credential reports is ignored in favour of ``PROJECT_ID``.
+    """
+    firestore.get_db()
+
+    _, keywords = firestore_client_constructor.call_args
+    assert set(keywords) == {"project"}
+
+
+def test_get_db_resolves_credentials_once(
+    firestore_client_constructor, neutralize_google_credentials
+):
+    """``default()`` is called once per call, with no arguments."""
+    firestore.default.reset_mock()
+
+    firestore.get_db()
+
+    firestore.default.assert_called_once_with()
+
+
+def test_get_db_does_not_return_the_module_level_client(firestore_client_constructor):
+    """The factory's client is a different object from the module-level ``db``."""
+    assert firestore.get_db() is not firestore.db
+
+
+def test_get_db_is_not_a_coroutine_function(firestore_client_constructor):
+    """Synchronous, which is what makes ``await get_db()`` a ``TypeError``."""
+    assert inspect.iscoroutinefunction(firestore.get_db) is False
+
+
+@pytest.mark.parametrize("failure_type", PROPAGATED_FAILURES)
+def test_get_db_propagates_a_credential_resolution_failure(
+    firestore_client_constructor, neutralize_google_credentials, failure_type
+):
+    """A failure from ``default()`` reaches the caller unchanged."""
+    failure = failure_type("credentials unavailable")
+    firestore.default.side_effect = failure
+
+    with pytest.raises(failure_type) as excinfo:
+        firestore.get_db()
+
+    assert excinfo.value is failure
+
+
+@pytest.mark.parametrize("failure_type", PROPAGATED_FAILURES)
+def test_get_db_stops_at_a_credential_resolution_failure(
+    firestore_client_constructor, neutralize_google_credentials, failure_type
+):
+    """No client is constructed once credential resolution has failed."""
+    firestore.default.side_effect = failure_type("credentials unavailable")
+
+    with pytest.raises(failure_type):
+        firestore.get_db()
+
+    firestore_client_constructor.assert_not_called()
+
+
+@pytest.mark.parametrize("failure_type", PROPAGATED_FAILURES)
+def test_get_db_propagates_a_client_construction_failure(
+    firestore_client_constructor, failure_type
+):
+    """A failure from ``Client(...)`` reaches the caller unchanged.
+
+    The factory holds no ``except``, so there is no fallback client and no
+    ``None`` return on this path.
+    """
+    failure = failure_type("client construction failed")
+    firestore_client_constructor.side_effect = failure
+
+    with pytest.raises(failure_type) as excinfo:
+        firestore.get_db()
+
+    assert excinfo.value is failure
+
+
+def test_the_client_get_db_returns_carries_the_real_client_surface(
+    firestore_client_constructor,
+):
+    """The returned object answers ``collection`` and refuses ``query``.
+
+    ``google.cloud.firestore.Client`` declares no ``query`` attribute, which is
+    the premise of the ``500`` the tweets router produces with this dependency in
+    place: ``db.query(Tweet)`` raises ``AttributeError`` before any Firestore call
+    is made. The stand-in is specified against the real class so this suite and
+    ``tests/integration/test_http_tweets.py`` rest on the same fact.
+    """
+    client = firestore.get_db()
+
+    assert hasattr(client, "collection")
+    with pytest.raises(AttributeError):
+        client.query

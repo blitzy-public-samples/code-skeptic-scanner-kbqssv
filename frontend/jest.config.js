@@ -49,7 +49,7 @@ const TSCONFIG = {
  * `{title}` is the leaf title alone and `{classname}` the ancestor titles joined by `ancestorSeparator`.
  * The two helpers below are what the reporter options apply to those variables.
  *
- * @see frontend/src/test-utils/junit-correlation.test.ts - the suite that holds both halves to this shape.
+ * @see frontend/src/test-utils/handlers.ts - `currentTestId`, the other half of this shape.
  */
 const toPosixPath = (value) => String(value).replace(/\\/g, '/');
 
@@ -61,6 +61,13 @@ const toFullTestName = (joinedAncestorTitles, title) =>
   joinedAncestorTitles ? `${joinedAncestorTitles} ${title}` : title;
 
 module.exports = {
+  /*
+   * `ts-jest`'s preset. Its own `transform` entry, `'^.+\\.tsx?$'`, is merged in after the two
+   * declared below and is therefore shadowed by them: Jest matches transform patterns in
+   * declaration order and takes the first hit.
+   */
+  preset: 'ts-jest',
+
   testEnvironment: 'jsdom',
 
   /* Registers the jest-dom matchers and the msw request-interception lifecycle. */
@@ -68,7 +75,8 @@ module.exports = {
 
   /*
    * Two transformers, matched in declaration order: the extension-less component modules,
-   * then every .ts/.tsx/.js/.jsx file. No `preset` is declared.
+   * then every .ts/.tsx/.js/.jsx file. Both are declared here rather than left to the preset,
+   * because only these two carry the inline compiler options and `diagnostics: false`.
    */
   transform: {
     'src[\\\\/]components[\\\\/](Dashboard|TweetManagement|Analytics|Configuration)$':

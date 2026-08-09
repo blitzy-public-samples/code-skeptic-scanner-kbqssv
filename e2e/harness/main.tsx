@@ -69,9 +69,11 @@ createRoot(rootElement).render(
               collection request with `[]`. */}
           <Route path="/" element={<RealTimeFeed />} />
           <Route path="/tweets" element={<TweetList filters={EMPTY_FILTERS} />} />
-          {/* Chart shell. Renders its heading and canvas: `harness/stubs/analyticsService.ts`
-              always rejects, which holds the component on its caught-failure path and
-              keeps it from constructing an unregistered `Chart`. */}
+          {/* Chart shell. Renders its heading and canvas whenever
+              `harness/stubs/analyticsService.ts` rejects, which is every response that does
+              not set its forwarding header, and which holds the component on its
+              caught-failure path. The one spec that sets that header asserts the opposite:
+              the component reaches an unregistered `Chart` and the route comes down. */}
           <Route path="/analytics" element={<TrendCharts dateRange={ANALYTICS_DATE_RANGE} />} />
           <Route path="/configuration" element={<TwitterAPISettings />} />
         </Routes>

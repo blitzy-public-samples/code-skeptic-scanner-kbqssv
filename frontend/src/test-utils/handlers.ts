@@ -77,8 +77,9 @@
  * rethrow a *replacement* error, `components/TweetManagement` catches and logs, and
  * `components/Dashboard` catches nothing at all and leaves an unhandled rejection - so an error raised
  * inside the request lifecycle can be lost before any assertion sees it. Every violation is therefore also
- * appended to a ledger, and {@link assertNoIsolationViolations} throws on it from the global `afterEach` in
- * `src/test-utils/setup-jest.ts`, which fails the test that caused it.
+ * appended to a ledger, and {@link assertNoIsolationViolations} throws on it from `runSharedAfterEach` in
+ * `src/test-utils/reset-shared-state.ts` - the global `afterEach` that `src/test-utils/setup-jest.ts`
+ * registers - which fails the test that caused it.
  *
  * ## API version
  *
@@ -186,17 +187,60 @@ export const UNSET_BASE_PATH_PREFIX = `/${UNSET_BASE_PATH_SEGMENT}`;
 /**
  * The value a suite assigns to `REACT_APP_API_BASE_URL` to put the client on the backend's own paths.
  *
- * An origin with no path, and a loopback one, for two reasons: the backend mounts its router at the root with
- * no prefix - `Settings.API_V1_STR` is declared and used by nothing - so any base carrying a path segment
- * would be unrouted exactly as `/undefined` is; and it keeps the request inside
- * {@link ALLOWED_REQUEST_ORIGINS}, so the origin confinement above still holds.
+ * An origin with no path, and a loopback one. The backend mounts its router at the root with no prefix -
+ * `Settings.API_V1_STR` is declared and used by nothing - so a base carrying a path segment is unrouted
+ * exactly as `/undefined` is; and a loopback origin is inside {@link ALLOWED_REQUEST_ORIGINS}, so the origin
+ * confinement above still holds.
  *
- * @see frontend/src/test-utils/configured-base.ts - the loader that applies it before importing the subject.
+ * @see importWithConfiguredBase - the loader below, which applies it before importing the subject.
+ * @see docs/testing/DECISION-LOG.md - row D173.
  */
 export const CONFIGURED_BASE_URL = 'http://localhost';
 
 /** The path prefix {@link CONFIGURED_BASE_URL} produces: none. Requests land on the backend's own paths. */
 export const CONFIGURED_BASE_PATH_PREFIX = '';
+
+/**
+ * Loads a module graph with `REACT_APP_API_BASE_URL` set to {@link CONFIGURED_BASE_URL}, so a suite can observe
+ * `services/api.ts` addressing the backend's own paths instead of the unrouted `/undefined` prefix it emits by
+ * default:
+ *
+ *     const api = await importWithConfiguredBase(() => import('./api'));
+ *     await expect(api.fetchTweets(2, 10)).rejects.toMatchObject({ response: { status: 500 } });
+ *
+ * `frontend/src/services/api.ts` line 5 reads `process.env.REACT_APP_API_BASE_URL` **once, at module scope**,
+ * into the constant it prefixes every request with. An assignment inside a test therefore changes nothing
+ * observable: the module has already been evaluated and its base URL is already the literal string
+ * `undefined`. The variable has to be in place before the module is required, so this sets it, discards the
+ * module registry and imports, in that order.
+ *
+ * The returned module - and everything it imports, including a second `axios` instance - is a **fresh**
+ * instance, distinct from the one the calling test file imported at its top. Two consequences for a caller:
+ *
+ * - a `jest.spyOn(axios, …)` installed on the suite's own `axios` import does not affect the returned module,
+ *   so drive these cases through msw, which intercepts at the transport the fresh instance also uses;
+ * - module state is not shared with the suite's own imports. Nothing in `services/` holds state, and this
+ *   module and `./msw-server` are already loaded when this runs, so the request log and the msw server the
+ *   suite asserts on are the same objects either way.
+ *
+ * No cleanup is needed or done here: the `afterEach` in `./setup-jest` deletes `REACT_APP_API_BASE_URL` after
+ * every test, so the next test's subject reads it as unset again. That hook is the single owner of the
+ * variable's lifecycle.
+ *
+ * `load` is a callback rather than a specifier string so the import stays a static-looking `import()` in the
+ * calling file, which is what keeps the specifier resolving relative to that file and visible to the
+ * transformer.
+ *
+ * @typeParam T - The module's shape, usually written as `typeof import('./api')`.
+ * @param load - Imports the subject. Called after the variable is set and the registry is reset.
+ * @returns Whatever `load` resolves to: the freshly evaluated module.
+ * @see configuredBaseBackendHandlers - the handler set that answers the paths this base produces.
+ */
+export async function importWithConfiguredBase<T>(load: () => Promise<T>): Promise<T> {
+  process.env.REACT_APP_API_BASE_URL = CONFIGURED_BASE_URL;
+  jest.resetModules();
+  return load();
+}
 
 /* ------------------------------------------------------------------------------------------------------ *
  * The responses the assembled FastAPI application returns today.
@@ -268,8 +312,25 @@ export function backendIntegerCoercionErrorBody(parameters: readonly string[]): 
  */
 export const BACKEND_TWEETS_INT_PARAMETERS: readonly string[] = Object.freeze(['skip', 'limit']);
 
-/** A value pydantic v1 coerces to `int`: optional sign, digits, surrounding whitespace tolerated. */
-const INTEGER_VALUE = /^[+-]?\d+$/;
+/**
+ * A value pydantic v1 coerces to `int`.
+ *
+ * pydantic v1 coerces a query value by calling `int(value)`, so the domain is CPython's base-10 literal
+ * grammar rather than ASCII digits: an optional sign, one or more Unicode decimal digits - category `Nd`, so
+ * Arabic-Indic `١٠`, full-width `１０` and Tibetan `༡༠` all count, and scripts may be mixed - and single `_`
+ * separators strictly between digits. `_10`, `10_`, `1__0` and `+_10` are refused, as is a digit-like
+ * character outside `Nd` such as the superscript `⁰`.
+ *
+ * Surrounding whitespace is stripped before the test, as `int()` does. The two runtimes' whitespace sets are
+ * not identical - CPython also strips `\x1c`-`\x1f` and `\x85`, and JavaScript also strips `\uFEFF` - but
+ * none of those characters survives URL encoding into a query value, so the difference is unreachable from
+ * any request this module can receive.
+ *
+ * @see backend/tests/integration/test_http_tweets.py -
+ *   `test_get_tweets_coerces_an_unconventional_integer_limit` and
+ *   `test_get_tweets_refuses_an_integer_lookalike`, which fix this domain against the real endpoint.
+ */
+const INTEGER_VALUE = /^[+-]?\p{Nd}+(?:_\p{Nd}+)*$/u;
 
 /**
  * Whether the backend coerces `value` to `int` without raising. `undefined` stands for an absent parameter,
@@ -657,8 +718,7 @@ interface JestExpectState {
  * being evaluated, and {@link UNATTRIBUTED_TEST_ID} when Jest exposes no state at all - which is what makes
  * a leaked request visible as such.
  *
- * @see frontend/src/test-utils/junit-correlation.test.ts - the suite that holds this and the reporter to the
- *   same form.
+ * @see frontend/jest.config.js - the `jest-junit` template functions that emit the same two halves.
  */
 export function currentTestId(): string {
   const jestExpect = (globalThis as { expect?: JestExpectState }).expect;
@@ -767,10 +827,10 @@ export function recordUnhandledRequest(method: string, url: string): void {
 /**
  * Throws when any isolation breach was recorded, listing every one.
  *
- * `src/test-utils/setup-jest.ts` calls this from a global `afterEach`, which is what makes a breach fail the
- * test that caused it even when the code under test caught the response. Without it a service that turns a
- * rejection into `[]` - or a component that logs and continues - reports success for a request that never
- * should have been made.
+ * `src/test-utils/reset-shared-state.ts` calls this from `runSharedAfterEach`, which `src/test-utils/setup-jest.ts`
+ * registers as the suite's global `afterEach`. That is what makes a breach fail the test that caused it even
+ * when the code under test caught the response. Without it a service that turns a rejection into `[]` - or a
+ * component that logs and continues - reports success for a request that never should have been made.
  *
  * @throws Error naming each breach, its kind and its URL.
  */
@@ -795,12 +855,13 @@ export function assertNoIsolationViolations(): void {
 
 /**
  * Restores every piece of module state this file holds - the request log and the isolation ledger - to the
- * state a freshly imported module has. Called from the central `afterEach` in `./setup-jest`, which is the
- * single owner of this cleanup; this file registers no hook of its own. There is no origin state to reset:
- * {@link ALLOWED_REQUEST_ORIGINS} is a frozen constant.
+ * state a freshly imported module has. Called from `resetSharedTestState()` in `./reset-shared-state`, which
+ * is the single owner of this cleanup and which `./setup-jest` registers as the global `afterEach`; this file
+ * registers no hook of its own. There is no origin state to reset: {@link ALLOWED_REQUEST_ORIGINS} is a
+ * frozen constant.
  *
- * `./setup-jest` asserts on the ledger *before* calling this, so a breach still fails the test that caused
- * it, and resetting the ledger here keeps one test's breach from being attributed to a later one.
+ * `runSharedAfterEach` asserts on the ledger *before* reaching this, so a breach still fails the test that
+ * caused it, and resetting the ledger here keeps one test's breach from being attributed to a later one.
  *
  * A new piece of module state added to this file belongs here, so that one call site keeps discarding all of
  * it.
@@ -1169,7 +1230,7 @@ export const handlers: RestHandler[] = frontendIsolationHandlers;
  * The two factories are alternatives, not additions: a request carries one base URL, so a suite installs the
  * set matching the base its subject was loaded under. {@link unsetBaseBackendHandlers} is the base every suite
  * runs under by default; {@link configuredBaseBackendHandlers} requires the subject to have been re-imported
- * with `REACT_APP_API_BASE_URL` set, which `src/test-utils/configured-base.ts` does.
+ * with `REACT_APP_API_BASE_URL` set, which {@link importWithConfiguredBase} does.
  *
  * Unlike layer 1, a contract deviation here is not a ledger entry: reproducing what the backend does with a
  * request no caller should emit is the whole point of this layer, so the deviation is recorded in the
@@ -1304,6 +1365,11 @@ export interface ConfiguredBaseBackendOptions {
    *
    * Defaults to `false`: the dependency yields the Firestore `Client` it yields in the assembled application,
    * which has no `query` attribute, so every endpoint that opens a query raises.
+   *
+   * @see backend/tests/integration/test_http_tweets.py -
+   *   `test_a_firestore_client_declares_no_query_attribute` asserts the missing attribute against the real
+   *   class, and `test_get_tweets_resolves_the_declared_dependency` shows the unoverridden request builds that
+   *   client rather than a stand-in.
    */
   readonly dependencyOverridden?: boolean;
 }
@@ -1327,6 +1393,17 @@ export interface ConfiguredBaseBackendOptions {
  *    endpoint raises and starlette answers `500` with the plain-text body `Internal Server Error`; overridden,
  *    `GET /tweets` answers `200` with the list, while both tweet-detail routes still answer `500` because they
  *    read `Tweet.id`, which the pydantic model does not declare.
+ *
+ * Each of those three answers is fixed by a request made against the assembled application with the same
+ * disposition, so no value here is a frontend literal:
+ *
+ * | This factory answers | Backend case that fixes it, in `backend/tests/integration/` |
+ * | --- | --- |
+ * | `GET /tweets` `500` + plain text, dependency not overridden | `test_http_tweets.py::test_get_tweets_returns_500_without_an_override` |
+ * | `GET /tweets` `422`, either disposition | `test_http_tweets.py::test_get_tweets_rejects_a_malformed_value_before_the_dependency_fails` |
+ * | `GET /tweets` `200` + list, dependency overridden | `test_http_tweets.py::test_get_tweets_returns_serialized_tweet` |
+ * | `GET /tweets/{id}` and `POST /tweets/{id}/responses` `500` | `test_http_tweets.py::test_get_tweet_by_id_returns_500_without_an_override` and `test_generate_response_returns_500_without_an_override` |
+ * | `POST /generate-response` `404` | `test_route_surface.py` - the path no router declares |
  *
  * @param options - See {@link ConfiguredBaseBackendOptions}.
  * @returns One handler per route in {@link ROUTE_CONTRACTS}, per entry in {@link ALLOWED_REQUEST_ORIGINS}.

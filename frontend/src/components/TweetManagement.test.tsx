@@ -1,3 +1,27 @@
+/**
+ * The suite for `TweetList`, the sole named export of `frontend/src/components/TweetManagement`.
+ *
+ * ## The loading indicator is not announced - a documented ceiling
+ *
+ * L62 of the subject renders `{loading && <div>Loading...</div>}`. A bare `div` has no implicit ARIA
+ * role and the subject adds none, so the indicator's appearance and disappearance are silent: a
+ * screen-reader user is told neither that a fetch started nor that it finished, and the container it
+ * sits in - `div.tweet-list` - is not a live region either, so the tweets that eventually replace it
+ * are not announced. The only signal is visual.
+ *
+ * `role="status"` (or `aria-live="polite"` plus `aria-busy` on the list) is what would make it
+ * audible, and adding either means editing `frontend/src/components/TweetManagement`, which is
+ * production code this programme is not authorized to change - the two authorized touches are both
+ * in `backend/`. The behaviour is therefore pinned as it stands: the case below asserts the absence
+ * of every announcement mechanism, so adding one becomes a deliberate, test-visible change. It is
+ * recorded as a ceiling in `frontend/TESTING.md`, `docs/testing/TRACEABILITY-MATRIX.md` §G and the
+ * suggested-next-tasks lists.
+ *
+ * @see frontend/src/components/TweetManagement - the module under test.
+ * @see frontend/src/components/Dashboard.test.tsx - the same ceiling on the polled feed.
+ * @see docs/testing/DECISION-LOG.md - the single source of truth for why this is recorded, not fixed.
+ */
+
 import { act, waitFor } from '@testing-library/react';
 
 import { TweetList } from '@/components/TweetManagement';
@@ -22,6 +46,18 @@ const SCROLL_EVENT = 'scroll';
 
 /** Text of the element the component renders while a fetch is in flight. */
 const LOADING_TEXT = 'Loading...';
+
+/** The container L58 renders, and the element the indicator and every tweet card sit inside. */
+const LIST_SELECTOR = 'div.tweet-list';
+
+/**
+ * Every attribute that would make the indicator's appearance, or the list's replacement of it,
+ * reach assistive technology. The subject sets none of them on either element.
+ */
+const ANNOUNCEMENT_ATTRIBUTES = ['role', 'aria-live', 'aria-busy', 'aria-atomic', 'aria-relevant'] as const;
+
+/** Roles a screen reader would find an announced loading indicator under. */
+const ANNOUNCEMENT_ROLES = ['status', 'alert', 'progressbar', 'log'] as const;
 
 /** Override offsetHeight to satisfy the component's exact bottom-of-page equality. */
 function holdDocumentAtBottom(): void {
@@ -105,6 +141,51 @@ describe('TweetList (src/components/TweetManagement)', () => {
 
     /* `finally` cleared `loading`, so the indicator is gone. */
     expect(container.querySelector('div.tweet-list')?.textContent).toBe('');
+  });
+
+  it('announces neither the loading indicator nor its replacement, the indicator being a bare div in a container that is not a live region', async () => {
+    let resolveFetch: (tweets: unknown[]) => void = () => undefined;
+    const inFlight = new Promise<unknown[]>((resolve) => {
+      resolveFetch = resolve;
+    });
+
+    twitterService.getTweets = jest.fn().mockReturnValue(inFlight);
+
+    const { container, getByText, queryByRole } = renderWithProviders(
+      <TweetList filters={filters} />,
+    );
+
+    const indicator = getByText(LOADING_TEXT);
+    const list = container.querySelector(LIST_SELECTOR);
+
+    /* A bare `div`, which carries no implicit role. */
+    expect(indicator.tagName).toBe('DIV');
+    expect(list).not.toBeNull();
+
+    /* Neither the indicator nor the container it sits in declares any announcement mechanism. */
+    for (const attribute of ANNOUNCEMENT_ATTRIBUTES) {
+      expect(indicator).not.toHaveAttribute(attribute);
+      expect(list).not.toHaveAttribute(attribute);
+    }
+
+    /* So no role query reaches it: the appearance of the indicator is a visual event only. */
+    for (const role of ANNOUNCEMENT_ROLES) {
+      expect(queryByRole(role)).toBeNull();
+    }
+
+    await act(async () => {
+      resolveFetch([]);
+      await inFlight;
+    });
+
+    /*
+     * And its removal is silent too. The container swaps its content with no live region around it,
+     * so a screen reader is told neither that the fetch finished nor what replaced the indicator.
+     */
+    expect(container.querySelector(LIST_SELECTOR)?.textContent).toBe('');
+    for (const role of ANNOUNCEMENT_ROLES) {
+      expect(queryByRole(role)).toBeNull();
+    }
   });
 
   it('renders an empty container and no error when a supplied getTweets resolves with []', async () => {
@@ -272,68 +353,51 @@ describe('TweetList (src/components/TweetManagement)', () => {
     expect(forwardedPage).toBe(FIRST_PAGE);
 
     /*
-     * React's own diagnostics, recorded by the spy that keeps them out of the run's output. They are
-     * asserted rather than merely silenced: they are the only place the *name* of the invalid element
-     * appears, and they are how a change in the way React reports it would be noticed.
+     * React's own diagnostics, recorded by the spy that keeps them out of the run's output.
      *
-     * Two validation records, not one. React re-runs the render synchronously after the throw to build
-     * a component stack, and the element is validated again on that pass.
+     * Three properties are asserted, and deliberately only three: that React reported an invalid
+     * element type, that it named `TweetList` as the component responsible, and that it pointed at this
+     * module. Those are facts about the product - `TweetCard` is imported by a module that does not
+     * export it - and they are what a reader needs in order to act.
+     *
+     * What is *not* asserted is the layout of React's and jsdom's internal reporting: how many records
+     * each writes, how many arguments each record carries, which parts arrive as `console.error` format
+     * substitutions rather than interpolated text, and whether jsdom forwards the same error as an
+     * object alongside them. `react` and `react-dom` are declared as caret ranges and no lockfile is
+     * committed, so a patch release may legitimately reshape all of that while the product behaves
+     * identically - and a test that treated the shape as a contract would fail for a reason that has
+     * nothing to do with this repository. `renderedText` therefore flattens every record to searchable
+     * text and the assertions read it semantically.
      */
-    const records = errorSpy.mock.calls;
-    const invalidElementRecords = records.filter(
-      (call) => typeof call[0] === 'string' && call[0].includes('React.jsx: type is invalid'),
-    );
-    expect(invalidElementRecords).toHaveLength(2);
-    invalidElementRecords.forEach((call) => {
-      /* The format string plus its three substitutions, passed unformatted to `console.error`. */
-      expect(call).toHaveLength(4);
-      expect(call[0]).toContain('expected a string (for built-in components)');
-      expect(call[0]).toContain('but got: %s.%s%s');
-      /* The substitution for the element type: the value `TweetCard` resolved to. */
-      expect(call[1]).toBe('undefined');
-      expect(call[2]).toContain('You likely forgot to export your component');
-      /* The component that built the element, named by React itself. */
-      expect(call[2]).toContain('Check the render method of `TweetList`.');
-      /*
-       * The component stack, whose top frame is the module that built the element. Matched by module
-       * and position rather than by frame name: coverage instrumentation rewrites the function whose
-       * name V8 infers, so the same frame reads `at TweetList` under `npm test` and `at filters` under
-       * `npm run test:ci`, while the file and line stay put.
-       */
-      expect(call[3]).toMatch(/^\s+at \S+ \(.*components[\\/]TweetManagement:\d+:\d+\)/);
-    });
+    const renderedText = errorSpy.mock.calls
+      .map((call) =>
+        call
+          .map((argument) => {
+            if (typeof argument === 'string') {
+              return argument;
+            }
+            if (argument instanceof Error) {
+              return argument.message;
+            }
+            const forwarded = argument as { detail?: unknown } | null;
+            if (forwarded?.detail instanceof Error) {
+              return forwarded.detail.message;
+            }
+            return String(argument);
+          })
+          .join(' '),
+      )
+      .join('\n');
 
-    /* The single record React writes once it gives up on the tree, carrying the same stack. */
-    const teardownRecords = records.filter(
-      (call) => typeof call[0] === 'string' && call[0].includes('The above error occurred'),
-    );
-    expect(teardownRecords).toHaveLength(1);
-    expect(teardownRecords[0]).toHaveLength(1);
-    expect(teardownRecords[0][0]).toContain('<Fragment> component:');
-    /* Through the rendered container, then into the module that built the element. */
-    expect(teardownRecords[0][0]).toContain('at div');
-    expect(teardownRecords[0][0]).toMatch(/at \S+ \(.*components[\\/]TweetManagement:\d+:\d+\)/);
+    /* React reported an invalid element type, and named the value `TweetCard` resolved to. */
+    expect(renderedText).toMatch(/type is invalid/);
+    expect(renderedText).toMatch(/undefined/);
 
-    /*
-     * jsdom forwarding the same uncaught error through its virtual console - once per render pass - as
-     * an object rather than a string.
-     */
-    const forwardedRecords = records.filter((call) => typeof call[0] === 'object' && call[0] !== null);
-    expect(forwardedRecords).toHaveLength(2);
-    forwardedRecords.forEach((call) => {
-      expect(call).toHaveLength(1);
-      const forwarded = call[0] as { type: unknown; detail: unknown };
-      expect(forwarded.type).toBe('unhandled exception');
-      expect(forwarded.detail).toBeInstanceOf(Error);
-      expect((forwarded.detail as Error).message).toMatch(
-        /Element type is invalid: .+ but got: undefined\./,
-      );
-    });
+    /* It attributed the element to the component that built it. */
+    expect(renderedText).toContain('Check the render method of `TweetList`.');
 
-    /* Those three groups are the whole census, so a fourth kind of record cannot appear unnoticed. */
-    expect(records).toHaveLength(
-      invalidElementRecords.length + teardownRecords.length + forwardedRecords.length,
-    );
+    /* And the component stack points into this module rather than somewhere else in the tree. */
+    expect(renderedText).toMatch(/components[\\/]TweetManagement:\d+:\d+/);
 
     /* React tears the tree down: the container the list rendered into is left empty. */
     expect(container).toBeDefined();

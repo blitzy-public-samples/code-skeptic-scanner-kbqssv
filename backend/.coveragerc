@@ -1,0 +1,24 @@
+# Coverage configuration for the Code Skeptic Scanner backend suite.
+#
+# Discovered by coverage.py, and so by pytest-cov, because every backend command
+# in this repository is invoked from `backend/`.  It is a `.coveragerc` rather
+# than a `[coverage:*]` block because `pytest.ini` cannot carry one and no
+# setup.cfg, tox.ini or pyproject.toml exists here.
+#
+# `precision` is the number of digits after the decimal point that
+# `coverage.results.should_fail_under` rounds a total to before comparing it with
+# `--cov-fail-under`: the comparison is `round(total, precision) < fail_under`.
+# At 0 a threshold of 90 accepts any total from 89.5% upward, so a run measuring
+# 89.99% prints `FAIL Required test coverage of 90% not reached` - the message
+# uses the unrounded value - and still exits 0.  At 2 the exit status agrees with
+# the message, and 2 is also the precision every reported percentage is rendered at.
+#
+# This file declares no `fail_under` and no `[run] source`: the threshold and the
+# measured scope are supplied on the command line, where the workflow and the
+# documented commands can be read directly, and a value here would override both.
+# `backend/tests/test_coverage_gate.py` asserts every property stated above.
+#
+# See docs/testing/DECISION-LOG.md and section 12 of backend/tests/README.md.
+
+[report]
+precision = 2

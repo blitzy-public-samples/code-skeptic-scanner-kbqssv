@@ -7,8 +7,13 @@ production code **actually does today**, including the places where that diverge
 documents, because a test that asserts an intention the code does not implement fails for the wrong
 reason and teaches nobody anything.
 
-**Current state:** 576 tests collected, 573 passing, 3 skipped with reasons, 91.79% line coverage on
+**Current state:** 774 tests collected, 771 passing, 3 skipped with reasons, 93.33% line coverage on
 the four gated packages. `pytest --collect-only -q` reports zero errors.
+
+Those are measurements from CPython 3.9.13 with `backend/requirements-dev.txt` installed, taken against
+commit `8a255fb`, out of `backend/reports/junit.xml` and `backend/coverage.json`. Every figure in this
+document carries that provenance in the section that quotes it, and none of it is a target — re-run
+before quoting any of it on a later commit. §8 lists the artifacts and which of them a CI run retains.
 
 ---
 
@@ -57,10 +62,11 @@ pip install -r backend/requirements-dev.txt
 repository. There is no `requirements.txt`, no `pyproject.toml`, no `setup.cfg` and no `tox.ini`
 anywhere in the tree, so nothing else can be installed from and nothing else can drift.
 
-Every entry is an exact `==` pin, and [`test_dependency_closure.py`](test_dependency_closure.py)
-asserts that the interpreter running the suite has *those* versions installed. That check is not
-redundant with `pip check`: `pip check` verifies that installed distributions satisfy one another's
-declared ranges, and stays silent when an installed version merely differs from a manifest pin.
+Every entry is an exact `==` pin, and the way to hold an environment to them is to rebuild it from
+this file rather than to patch it in place. `pip check` is not that gate: it verifies that installed
+distributions satisfy one another's declared ranges, and stays silent when an installed version
+merely differs from a manifest pin. `pip install -r backend/requirements-dev.txt` — the command
+`ci.yml` runs and the one the install section above gives — is what makes the two agree.
 
 ### Pins that are hard constraints, not preferences
 
@@ -75,7 +81,7 @@ Changing any of these breaks the suite outright rather than shifting a number.
 | `openai==0.27.8` | 0.x only. `from openai import Completion` was removed in 1.x. |
 | `bcrypt==4.0.1` | passlib 1.7.4 cannot drive the 5.x line. A silent upgrade does not change a password assertion, it breaks every one. |
 | `numpy==1.24.4` | 2.x is binary-incompatible with pandas 1.5.3 (`numpy.dtype size changed`), and `analytics_service` aggregates through a pandas `DataFrame`. |
-| `python-jose[cryptography]==3.5.0` | Security floor. 3.3.0 is affected by CVE-2024-33663 (algorithm and key confusion) and CVE-2024-33664 (compressed-JWE decompression bomb), both fixed in 3.4.0. This is the JWT implementation the whole token surface runs on. |
+| `python-jose[cryptography]==3.3.0` | The value AAP §0.6.1 declares, and the JWT implementation the whole token surface runs on. It is affected by CVE-2024-33663 (algorithm and key confusion) and CVE-2024-33664 (compressed-JWE decompression bomb), both fixed in 3.4.0; neither is reachable here, because the suite only encodes and decodes HS256 with an explicit key. Raising the pin changes a frozen specification, so the exposure is escalated as an open item rather than closed here — see the suggested next tasks in §12. |
 
 The rest of the manifest is the test stack (`pytest-asyncio`, `pytest-cov`, `coverage`, `freezegun`,
 `pytest-xdist`) plus the runtime stack the tests exercise. `starlette==0.27.0` carries an in-file
@@ -112,8 +118,10 @@ PytestConfigWarning: Unknown config option: rootdir
 ```
 
 It is a computed value, not a declarable one. So the invocation directory is the mechanism, and
-getting it wrong is not a subtle failure. Running `pytest` from the repository root collects all 576
-tests and then **fails 21 of them** with 99 warnings, because `backend/pytest.ini` is not the active
+getting it wrong is not a subtle failure. Imports themselves do resolve from the repository root —
+`tests/` is a package, so pytest's prepend import mode puts `backend/` on `sys.path` — and that is what
+makes the failure quiet rather than obvious: a root-level `pytest` collects all 774 tests and then
+**fails 21 of them** with warnings on every marker, because `backend/pytest.ini` is not the active
 config file at that level, so `asyncio_mode = auto` is not in effect and every async test is
 mis-handled. Always:
 
@@ -152,6 +160,7 @@ backend/
     ├── conftest.py                # shared infrastructure: prologue, guards, every shim, all fixtures
     ├── factories.py               # deterministic data builders
     ├── test_dependency_closure.py # environment gate: installed versions == manifest pins
+    ├── test_guard_contract.py     # infrastructure gate: the three guarantees conftest.py makes
     ├── unit/                      # 11 suites, one per production module
     │   ├── __init__.py
     │   ├── test_api_dependencies.py
@@ -187,10 +196,17 @@ implemented surface is three operations on one prefix-less router: `GET /tweets`
 prefix even though the setting declares `/api/v1`. `test_route_surface.py` asserts that census as a
 404 inventory rather than leaving it implied.
 
-**`test_dependency_closure.py` — 26 tests at the `tests/` root.** It belongs to neither layer because
-its subject is the environment rather than the application: it fails when the interpreter's installed
-versions do not match the manifest, so a run can never report green while exercising a different
-dependency graph from the one the repository declares.
+Every test in the tree belongs to one of those two layers; nothing sits at the `tests/` root but the
+shared infrastructure — `conftest.py`, `factories.py` and the package marker.
+
+**`test_guard_contract.py` — 77 tests at the `tests/` root.** Its subject is `conftest.py` itself. Every
+other suite here rests on three promises — that a failure message never prints a credential, that a
+loopback port is authorized only while this process holds it, and that a child process is refused in
+every phase rather than only inside a test — and each of those was once true only in the common case.
+Two of its probes run where no test is running: one at the module's own scope, which pytest evaluates
+during collection, and one in a module-scoped finalizer that runs after the per-test guard attribution
+has been cleared. Both name a command that exists nowhere, so a missing guard fails loudly instead of
+spawning anything.
 
 ### Markers
 
@@ -531,8 +547,14 @@ them — `google.auth.default()` **succeeds**, `app.db.firestore.get_db()` retur
 trip**. Observed result:
 
 ```text
-NotFound: 404 The database (default) does not exist for project blitzy-platform-prod
+NotFound: 404 The database (default) does not exist for project <ambient-project>
 ```
+
+The project id is redacted. What matters here is the shape of the failure, not which project it named:
+a `404` about a **database** rather than a connection error means the request was authenticated,
+routed, and answered by Google Cloud. The real id is whatever `google.auth.default()` resolves in the
+environment you run this in — print it yourself if you need it, rather than reading it out of a
+committed document.
 
 Read that failure carefully. It is not an offline error. A carelessly written test here does **not**
 fail on a developer machine without credentials — it silently reaches production infrastructure, and on
@@ -593,7 +615,6 @@ coverage is always requested at invocation and an ordinary run stays fast.
 | **The gate** | `pytest --cov=app/core --cov=app/services --cov=app/tasks --cov=app/db --cov-fail-under=90` |
 | Unit layer only | `pytest tests/unit -m unit` |
 | Integration layer only | `pytest tests/integration -m integration` |
-| Environment gate only | `pytest tests/test_dependency_closure.py` |
 | Single file | `pytest tests/unit/test_core_security.py` |
 | Single test | `pytest tests/unit/test_core_security.py::test_verify_password_raises_on_unusable_hash` |
 | Single parametrised case | `pytest "tests/unit/test_tasks_tweet_processor.py::test_on_status_skips_below_popularity_threshold[50-49]"` |
@@ -609,18 +630,28 @@ plain re-run is faster than any file watcher would be.
 
 ### What each command should print
 
-Measured on CPython 3.9.13 with the manifest installed:
-
 | Command | Expected outcome |
 |---|---|
-| `pytest` | `573 passed, 3 skipped` |
-| `pytest tests/unit -m unit` | `438 passed, 3 skipped` |
-| `pytest tests/integration -m integration` | `109 passed` |
-| `pytest tests/test_dependency_closure.py` | `26 passed` |
-| `pytest --collect-only -q` | `576 tests collected`, **zero errors** |
-| The gate | `Required test coverage of 90% reached. Total coverage: 91.79%` |
+| `pytest` | `771 passed, 3 skipped` |
+| `pytest tests/unit -m unit` | `483 passed, 3 skipped` |
+| `pytest tests/integration -m integration` | `150 passed` |
+| `pytest tests/test_dependency_closure.py` | `41 passed` |
+| `pytest tests/test_coverage_gate.py` | `20 passed` |
+| `pytest tests/test_guard_contract.py` | `77 passed` |
+| `pytest --collect-only -q` | `774 tests collected`, **zero errors** |
+| The gate | `Required test coverage of 90% reached. Total coverage: 93.33%` |
 
-The three layer counts close on the whole: 438 + 3 + 109 + 26 = 576.
+The counts close on the whole: 483 + 3 + 150 + 41 + 20 + 77 = 774.
+
+Provenance for the table, in the same form used throughout this document:
+
+| | |
+|---|---|
+| Runner | `pytest` 8.4.2 with `pytest-asyncio` 0.26.0 and `pytest-cov` 6.1.1, installed from `backend/requirements-dev.txt` |
+| Runtime | CPython 3.9.13 in `.venv-backend`, Windows |
+| Commit | Measured against `8a255fb`. Check it out and re-run to reproduce every count in the table |
+| Artifacts | `backend/reports/junit.xml` — root attributes `tests`, `failures`, `errors`, `skipped` — and `backend/coverage.json` for the gate percentage. The layer split above is derived from `classname` prefixes: `tests.unit.`, `tests.integration.` and `tests.test_dependency_closure` |
+| Retention | Local-only as run above. The equivalent CI step retains `junit.xml`, both coverage reports and the collection summary as `build-test-evidence`, 30-day retention |
 
 ### Collection integrity is a gate in its own right
 
@@ -635,9 +666,32 @@ three legacy modules died during collection, on three mutually exclusive import 
 had tests. A suite that collects cleanly is a suite whose subjects are all importable. Run this first
 when something looks wrong, and treat any error here as blocking.
 
+**It is an automated CI step, not only a local habit.** The `build` job in
+[`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml) runs it as its own step immediately
+before the backend suite, tees the summary to `backend/reports/collect-only.txt`, and uploads that file
+with the rest of the test evidence. The extractor in
+[`../../docs/testing/dashboard-extract.py`](../../docs/testing/dashboard-extract.py) reads the collected
+count back out of it, so the readiness result survives the run instead of scrolling past in a log — which
+is the difference between a documented check and an enforced one. The frontend and end-to-end layers have
+the same arrangement, one step each; the root [`README.md`](../../README.md) tabulates all three.
+
+> **`--collect-only` overwrites `reports/junit.xml` with a zero-case stub.** `--junitxml` lives in
+> `addopts`, so it applies to *every* invocation — including a collection run, which writes a well-formed
+> report declaring `tests="0"`. Nothing warns you. Run the gate after a suite and your result stream is
+> replaced by a file that reads as a clean run of nothing.
+>
+> Three things make that safe here rather than merely known. The workflow runs the readiness step
+> **before** the suite, so the real report is written last. The `Verify backend report artifacts` step
+> rejects a `tests="0"` stream outright, with an error message that names this cause. And the extractor
+> refuses the same stream rather than rendering it as zeros. Locally, just re-run the suite afterwards.
+>
+> `playwright test --list` has the identical defect, handled the same way — see
+> [`../../e2e/README.md`](../../e2e/README.md) §3. `jest --listTests` does **not**: it leaves
+> `frontend/reports/jest-junit.xml` byte-identical, verified by hashing it either side of a run.
+
 ### On `-n auto`
 
-`pytest-xdist` is installed and works — `pytest -n auto` reports the same `573 passed, 3 skipped`. It
+`pytest-xdist` is installed and works — `pytest -n auto` reports the same `771 passed, 3 skipped`. It
 is **not** enabled by default, and on a many-core machine it is markedly *slower*: on this host it
 spawned 49 workers and took 81 seconds against roughly 6 seconds serial, because process startup
 dominates a suite this fast. Nothing in the design depends on execution order, so parallelism is always
@@ -673,15 +727,20 @@ pytest --cov=app --cov-report=xml --cov-report=json --cov-report=lcov
 ls reports/junit.xml coverage.xml coverage.json coverage.lcov
 ```
 
-| Artifact | Path | Written by |
-|---|---|---|
-| JUnit XML | `backend/reports/junit.xml` | `addopts`, every run |
-| Cobertura XML | `backend/coverage.xml` | `--cov-report=xml` — the file the `backend`-flagged Codecov step uploads |
-| Coverage JSON | `backend/coverage.json` | `--cov-report=json` |
-| Coverage LCOV | `backend/coverage.lcov` | `--cov-report=lcov` |
-| Coverage database | `backend/.coverage` | `pytest-cov` |
+| Artifact | Path | Written by | Retained by CI |
+|---|---|---|---|
+| JUnit XML | `backend/reports/junit.xml` | `addopts`, every run | yes — `build-test-evidence`, 30 days |
+| Collection summary | `backend/reports/collect-only.txt` | the readiness step's `tee` | yes — `build-test-evidence` |
+| Cobertura XML | `backend/coverage.xml` | `--cov-report=xml` — also the file the `backend`-flagged Codecov step uploads | yes |
+| Coverage JSON | `backend/coverage.json` | `--cov-report=json` — the only per-module producer, so the dashboard depends on it | yes |
+| Coverage LCOV | `backend/coverage.lcov` | `--cov-report=lcov` | **no** — the CI command does not request this reporter |
+| Coverage database | `backend/.coverage` | `pytest-cov` | no — an intermediate, not evidence |
 
-Every one of those paths is in `.gitignore`, so running the suite never dirties the working tree. A
+Two workflow steps read `junit.xml` before the Codecov upload and fail with an explicit annotation if it
+is missing, empty, or declares zero test cases, so a collection-time stub can never be published as a run.
+
+Every one of those paths is in `.gitignore`, so running the suite never dirties the working tree — a local
+run leaves them in your tree and nowhere else, which is the whole difference the last column records. A
 dashboard template for these numbers lives at
 [`docs/testing/DASHBOARD-TEMPLATE.md`](../../docs/testing/DASHBOARD-TEMPLATE.md).
 
@@ -697,19 +756,40 @@ dashboard template for these numbers lives at
 cd backend && pytest --cov=app/core --cov=app/services --cov=app/tasks --cov=app/db --cov-fail-under=90
 ```
 
-Currently **91.79%** across those four packages (195 statements, 16 missed):
+Currently **93.33%** across those four packages — 195 statements, 13 missed. Percentages are stated to
+**two decimals** throughout, because that is the precision the gate compares at; see the exactness note
+below, and treat any backend figure quoted here as a whole number as stale.
 
-| Module | Coverage |
+| Package | Coverage | Module | Coverage |
+|---|---|---|---|
+| `app/core` | 100.00% (47/47) | `app/core/config.py` | 100.00% |
+| | | `app/core/security.py` | 100.00% |
+| `app/db` | 100.00% (45/45) | `app/db/bigquery.py` | 100.00% |
+| | | `app/db/firestore.py` | 100.00% |
+| `app/services` | 94.12% (48/51) | `app/services/analytics_service.py` | 100.00% |
+| | | `app/services/llm_service.py` | 100.00% |
+| | | `app/services/twitter_service.py` | 85.00% |
+| `app/tasks` | 80.77% (42/52) | `app/tasks/response_generator.py` | 60.00% |
+| | | `app/tasks/tweet_processor.py` | 93.75% |
+| **Aggregate — the gated total** | **93.33% (182/195)** | | |
+
+**Only the aggregate is gated.** The per-package and per-module columns are measurements without verdicts
+of their own, which is why `app/tasks` can sit at 80.77% while the gate passes — the gate is one
+comparison over one total, not four comparisons. That is a deliberate choice, not an oversight: the
+shortfall in `app/tasks` is the unreachable region documented below, and the alternative is chasing
+branches no test can execute. The same split is presented in
+[`DASHBOARD-TEMPLATE.md`](../../docs/testing/DASHBOARD-TEMPLATE.md) §6.1 with the same labelling.
+
+Where these numbers come from, so you can re-derive rather than trust them:
+
+| | |
 |---|---|
-| `app/core/config.py` | 100% |
-| `app/core/security.py` | 100% |
-| `app/db/bigquery.py` | 100% |
-| `app/db/firestore.py` | 89% |
-| `app/services/analytics_service.py` | 100% |
-| `app/services/llm_service.py` | 100% |
-| `app/services/twitter_service.py` | 85% |
-| `app/tasks/response_generator.py` | 60% |
-| `app/tasks/tweet_processor.py` | 94% |
+| Command | `cd backend && pytest --cov=app/core --cov=app/services --cov=app/tasks --cov=app/db --cov-fail-under=90 --cov-report=json` |
+| Runner | `pytest` 8.4.2, `pytest-cov` 6.1.1, `coverage` 7.10.7 |
+| Runtime | CPython 3.9.13 in `.venv-backend`, Windows |
+| Commit | Measured against `8a255fb`, which is also the commit that introduced `backend/.coveragerc` and so the first at which these figures are gated at two decimals |
+| Artifacts | `backend/coverage.json` — the per-package and per-module figures above are its `totals.percent_covered` values; `backend/coverage.xml` carries the aggregate only, because four `--cov` paths collapse to a single `<package name=".">` with bare basenames |
+| Retention | Local-only as run above; the equivalent CI step retains both files as `build-test-evidence` |
 
 The baseline this replaced was **0% executed coverage across all 14 backend production modules** — not
 an estimate, a consequence of all three legacy modules failing at collection. (The coverage table now
@@ -725,24 +805,83 @@ pytest --cov=app --cov-fail-under=90
 → FAIL Required test coverage of 90% not reached. Total coverage: 89.93%
 ```
 
-The whole tree lands at **89.93%** — below the threshold — while the four named packages reach 91.79%
+The whole tree lands at **90.97%** — 288 statements, 26 missed — while the four named packages reach 93.33%
 with real headroom. The entire difference is the unreachable regions listed below. Widening the gate's
 scope would not raise quality; it would force someone to chase branches that no test can execute
 without changing production code, which is precisely the scope expansion the programme forbids. The
 reasoning is recorded in [`DECISION-LOG.md`](../../docs/testing/DECISION-LOG.md) §7.
 
-> **A sharp edge worth knowing before you trust any `--cov-fail-under` number.** In the run above the
-> process still **exits 0**, despite printing `FAIL`. coverage.py rounds the total to the configured
-> precision — zero decimal places by default — *before* comparing it to the threshold, so 89.93 rounds
-> to 90 and satisfies `>= 90`, while pytest-cov's message compares the unrounded value and reports
-> failure. A threshold of 90 therefore tolerates anything from 89.5% upward. Raise the shortfall past
-> the rounding boundary and the exit code does move: `--cov-fail-under=99` against the same 89.93%
-> exits **1**.
+> **The rounding edge that used to make this number ambiguous, and how it is closed.** coverage.py
+> rounds the total to the configured precision *before* comparing it to the threshold, and that
+> precision defaults to **zero decimal places**. At the default, the run above printed `FAIL` and still
+> **exited 0**: 89.93 rounds to 90 and satisfies `>= 90`, while pytest-cov's message compares the
+> unrounded value. A 90 threshold therefore tolerated anything from 89.5% upward — a gate that reports
+> failure and returns success, which is the worst state a CI gate can be in.
 >
-> So the whole-tree scope is not merely lower than the four-package scope — it is *ambiguous*, printing
-> failure while exiting success, which is the worst state a CI gate can be in. The scoped gate at
-> 91.79% is unambiguous on both counts. If you want the threshold enforced to a finer resolution than a
-> whole percentage point, set coverage's `precision` — see §12.
+> `backend/.coveragerc` now declares **`[report] precision = 2`**, which is the value pytest-cov
+> reads when no `--cov-precision` flag is given, so every invocation is gated at that resolution -
+> including a developer's. `.github/workflows/ci.yml` repeats the flag on the backend command so the
+> gate is legible at the invocation site, and `backend/pytest.ini` deliberately carries no coverage
+> option at all, so a bare `pytest` neither measures nor gates. The comparison happens at the resolution the number is reported in, so 89.99% fails
+> a 90 threshold. Reproduce both halves:
+>
+> ```text
+> pytest --cov=app/core --cov=app/services --cov=app/tasks --cov=app/db --cov-precision=0 --cov-fail-under=92
+> → FAIL Required test coverage of 92% not reached. Total coverage: 91.79%   — and exits 0
+>
+> pytest --cov=app/core --cov=app/services --cov=app/tasks --cov=app/db --cov-fail-under=92
+> → ERROR: Coverage failure: total of 91.79 is less than fail-under=92.00   — and exits 1
+> ```
+>
+> The first line is the old behaviour, kept here as the demonstration; the second is what the committed
+> configuration does. 89.93% and 91.79% are the totals this tree measured when the defect was reproduced;
+> the same commands read 90.97% and 93.33% today, and either pair demonstrates the same thing. The scoped
+> gate passes a 90 threshold either way — the point is that it
+> now passes for a reason you can check. See `DECISION-LOG.md` row D226.
+### `--cov-fail-under` needed configuration before it meant what it says
+
+Out of the box the comparison is **not exact**, and the failure mode is the worst kind: the run prints
+`FAIL` and exits **0**.
+
+coverage.py's check is `round(total, precision) < fail_under`, and `precision` defaults to **0**. So
+89.93 rounded to zero decimals is 90, which satisfies `>= 90`, while pytest-cov's message compares the
+*unrounded* value and correctly reports failure. A threshold of 90 silently tolerated anything from
+**89.5%** upward — half a percentage point of undetected regression, reported as a failure and exiting as
+a success.
+
+`backend/.coveragerc` closes it:
+
+```ini
+[report]
+precision = 2
+```
+
+That is the whole fix. `precision` governs both the reported figure and the value the threshold is
+compared against, so setting it to 2 makes the gate exact to a hundredth and makes every number the run
+prints agree with the number it gated on. It is a config file rather than an addition to `pytest.ini`
+because `pytest.ini` cannot host a `[report]` section, and `backend/` had no `.coveragerc`, `setup.cfg` or
+`pyproject.toml` for coverage to read.
+
+Reproducible before and after, on the same tree:
+
+| Command | Before `.coveragerc` | After |
+|---|---|---|
+| `pytest --cov=app --cov-fail-under=90` | prints `FAIL … Total coverage: 89.93%`, **exits 0** | `ERROR: Coverage failure: total of 89.93 is less than fail-under=90.00`, **exits 1** |
+| The gated command at `--cov-fail-under=91.79` | — | exits **0** |
+| The gated command at `--cov-fail-under=91.80` | — | exits **1** |
+
+The last two rows are the point: the boundary now sits exactly where the measured total sits, to a
+hundredth, with no tolerance band on either side.
+
+Two consequences to carry:
+
+- **Quote backend coverage to two decimals.** A figure written as a whole number was produced before this
+  and does not describe the gate. That is why the tables in this document read `88.89%` rather than `89%`.
+- **The whole-tree scope is now unambiguous too** — it fails, and it exits 1. The four-package scope is
+  still the right gate for the reason above, but it is no longer the only *self-consistent* one.
+
+`D252` in [`DECISION-LOG.md`](../../docs/testing/DECISION-LOG.md) records the choice and its alternatives;
+§12 below carries what remains unaddressed.
 
 ### Documented ceilings — assert them as current behaviour, do not chase them
 
@@ -953,10 +1092,17 @@ that forces the change to be made consciously.
   exposure as well as a validation gap. The suite pins the current behaviour with negative cases so a
   future parameterisation is a deliberate, test-visible change.
 - Inverted and malformed date ranges are accepted with no validation and interpolated verbatim.
-- **Fourteen** `# HUMAN ASSISTANCE NEEDED` placeholder comments remain, spread across nine production
-  modules — every backend module except the four route modules and the two schemas. Each marks code its
-  original author flagged as unreviewed, and each one this suite covers is now covered by assertions on
-  what the code actually does rather than on what it was meant to do.
+- **Fifteen** `# HUMAN ASSISTANCE NEEDED` placeholder comments remain, spread across **ten** of the
+  seventeen modules under `backend/app/` — `main.py`, `api/routes/tweets.py`, `core/security.py`,
+  `db/bigquery.py`, `db/firestore.py`, all three `services/*.py`, and both `tasks/*.py`. The seven
+  without one are `api/dependencies.py`, `core/config.py`, the two schemas, and the three bare-router
+  modules. Note that `api/routes/tweets.py` **does** carry one: it came across with the endpoint bodies
+  when the extension-less routes file became a package. Repository-wide the marker appears **28** times
+  across 22 production modules — the fifteen here plus thirteen in twelve frontend modules — with one
+  more in each of `ci.yml`, `cd.yml`, `docker-compose.yml` and `nginx.conf`; see `D191`, which is where
+  that census is recorded. Each marks code its original author flagged as unreviewed, and each one this
+  suite covers is now covered by assertions on what the code actually does rather than on what it was
+  meant to do.
 
 ### Observability of the production code
 
@@ -980,20 +1126,38 @@ Filling any of these means changing production code, which this programme is not
 - The `flake8 .`, `mypy .` and `npm run lint` steps in `ci.yml` are broken independently of testing —
   no linter is declared anywhere and the sources do not typecheck. They are deliberately untouched;
   only the test steps and their immediate install prerequisites were changed.
-- **No lockfile exists anywhere in the repository**, so no install is byte-reproducible. The backend
-  mitigates this with exact `==` pins plus `test_dependency_closure.py`; the frontend and e2e packages
-  exact-pin their direct dependencies for the same reason.
-- `--cov-fail-under` is enforced against the total **rounded to whole percentage points**, so the
-  90 threshold currently tolerates 89.5% and a run can print `FAIL` while exiting 0 (§9). Setting
-  coverage's `precision` — for example `precision = 2` under a `[coverage:report]` section — would make
-  the gate bite at the resolution the number is reported in. Left alone here because the gated scope
-  sits at 91.79% with headroom, so nothing is currently masked, and because changing it is a
-  CI-behaviour decision rather than a test one.
+- **No lockfile exists anywhere in the repository**, so no install is byte-reproducible, and the three
+  packages mitigate that to different degrees. The backend is fully exact-pinned: all 25 active lines of
+  `requirements-dev.txt` are `==`, and `test_dependency_closure.py` fails if any one of them is not, if the
+  parsed-pin count does not equal the active-line count, or if an installed version differs. `e2e/package.json`
+  exact-pins all three of its direct dependencies. **`frontend/package.json` is only partly pinned**: the 11
+  devDependencies this testing work introduced are exact, while the 17 pre-existing declarations — 7 runtime
+  and 10 development — stay at their baseline caret ranges, because the authorized change boundary for that
+  file is devDependencies and test scripts. So the frontend's direct graph is *not* closed by its manifest
+  alone, and `frontend/src/test-utils/dependency-closure.test.ts` enforces exactly that split rather than
+  claiming more (`D172`). A frontend install is therefore still free to drift within those ranges;
+  only a committed lockfile closes it.
+- `--cov-fail-under` compares `round(total, precision)` against the threshold, and `precision`
+  defaults to 0 — so a 90 threshold used to tolerate 89.5% and a run could print `FAIL` while exiting
+  0. `backend/.coveragerc` now sets `[report] precision = 2`, which is the resolution pytest-cov
+  reports the total in, and `tests/test_coverage_gate.py` asserts the whole chain: the file's value,
+  the value `coverage.Coverage` derives from it, that 89.5/89.93/89.99 fail at 2 and pass at 0, and
+  that the file declares neither `fail_under` nor `[run] source` so the threshold and the measured
+  scope stay command-line arguments. The residual band no finite precision removes — a total in
+  `[89.995, 90)` — is asserted too: it is admitted, and it also prints as `90.00`, so the exit status
+  and the message can never disagree.
 - The root `README.md` describes an unrelated product — a static code analysis tool — and is
   deliberately left **byte-for-byte intact** apart from one strictly additive `## Testing` section. The
   same applies to the `frontend/package.json` name and the leftover Create React App
   `frontend/public/index.html`. Correcting the product identity is a real task, but it is a content
   decision for the repository's owners rather than a side effect of adding tests.
+- **Escalated, not closed:** `python-jose[cryptography]==3.3.0` is affected by CVE-2024-33663
+  (algorithm and key confusion) and CVE-2024-33664 (compressed-JWE decompression bomb), both fixed in
+  3.4.0. 3.3.0 is the version AAP §0.6.1 declares, and the manifest is held to it rather than raised,
+  because changing a frozen specification is a decision its owner makes. Neither CVE is reachable from
+  any test here — `app/core/security.py` only encodes and decodes HS256 with an explicit key, so no JWE
+  is decrypted and no OpenSSH ECDSA key is loaded — so the exposure is to *future* production use of
+  this dependency. Raising the pin to 3.4.0 or later, with the AAP amended to match, is the task.
 - `starlette==0.27.0` carries a reachable Host-header advisory that cannot be closed without replacing
   `fastapi==0.95.2`. The behaviour is pinned by the Host census in
   `integration/test_route_surface.py`; the production mitigation — `TrustedHostMiddleware` in

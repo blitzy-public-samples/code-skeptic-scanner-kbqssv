@@ -7,9 +7,11 @@
  *
  * Configures the dev server only: it declares no `build` options.
  *
- * Host and port come from `./harness-origin`, which `e2e/playwright.config.ts`
- * imports as well. This file resolves neither itself, so the socket the harness
- * binds and the origin the runner polls are the same value by construction.
+ * Host, port and origin are resolved once below and exported; `e2e/playwright.config.ts`
+ * imports them from here and computes none of them itself, so the socket the harness
+ * binds and the origin the runner polls are the same value by construction. This file
+ * owns them because it is the file that binds the socket, and because `npm run harness`
+ * starts this server on its own, without loading `@playwright/test`.
  *
  * @see docs/testing/DECISION-LOG.md - section 4, every choice made below.
  */
@@ -18,8 +20,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { defineConfig, transformWithEsbuild, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
-
-import { HARNESS_HOST, HARNESS_PORT } from './harness-origin';
 
 /* -------------------------------------------------------------------------- */
 /* Paths                                                                      */
@@ -43,6 +43,99 @@ const CACHE_DIR = path.join(HERE, 'node_modules', '.vite');
  * the `index.html` preamble each import `/@vite/client`.
  */
 const VITE_CLIENT_DIR = path.join(HERE, 'node_modules', 'vite', 'dist', 'client');
+
+/* -------------------------------------------------------------------------- */
+/* Harness origin                                                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The origin the harness is served on, resolved once here and imported by
+ * `e2e/playwright.config.ts`, which starts this server on it and navigates to it.
+ * The runner resolves no port of its own, so the two can never disagree.
+ *
+ * Resolution order:
+ *
+ *   1. `HARNESS_PORT` - an explicit port, used verbatim.
+ *   2. `E2E_PORT`     - the same thing under the name the CI job and `e2e/README.md`
+ *                       use; accepted so one contract covers both spellings.
+ *   3. `CLONE_INDEX`  - an offset added to {@link BASE_PORT}, so `CLONE_INDEX=002`
+ *                       resolves to 4175.
+ *   4. none set        - {@link BASE_PORT}.
+ *
+ * Several checkouts of this repository run concurrently on one host, each with its own
+ * `CLONE_INDEX`, and a TCP port is host-global. `e2e/README.md` documents both variables.
+ *
+ * @see docs/testing/DECISION-LOG.md - section 4, the origin-resolution decision and its risks.
+ */
+
+/** Port used when none of the three environment variables is set. */
+export const BASE_PORT = 4173;
+
+/** Lowest port accepted, above the privileged range. */
+const MIN_PORT = 1024;
+
+/** Highest port accepted. */
+const MAX_PORT = 65535;
+
+/**
+ * Loopback interface the harness binds. A literal address rather than `localhost`, which
+ * resolves to either `127.0.0.1` or `::1` depending on the host's resolver order.
+ */
+export const HARNESS_HOST = '127.0.0.1';
+
+/**
+ * Reads a base-10 non-negative integer from the environment.
+ *
+ * @param name - Variable to read.
+ * @returns The parsed value, or `null` when the variable is unset, empty, or not a
+ *   base-10 non-negative integer. Leading zeros are accepted, so `'002'` reads as `2`.
+ */
+function readNonNegativeInteger(name: string): number | null {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') {
+    return null;
+  }
+
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return null;
+  }
+
+  const value = Number.parseInt(trimmed, 10);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+/** Whether `candidate` is a port this file will hand out. */
+function isUsablePort(candidate: number): boolean {
+  return candidate >= MIN_PORT && candidate <= MAX_PORT;
+}
+
+/**
+ * Resolves the port, applying the order above. An out-of-range result from either
+ * variable falls through to the next step rather than binding a port the harness cannot
+ * serve on.
+ */
+function resolvePort(): number {
+  for (const name of ['HARNESS_PORT', 'E2E_PORT']) {
+    const explicitPort = readNonNegativeInteger(name);
+    if (explicitPort !== null && isUsablePort(explicitPort)) {
+      return explicitPort;
+    }
+  }
+
+  const cloneIndex = readNonNegativeInteger('CLONE_INDEX');
+  if (cloneIndex !== null && isUsablePort(BASE_PORT + cloneIndex)) {
+    return BASE_PORT + cloneIndex;
+  }
+
+  return BASE_PORT;
+}
+
+/** Port the harness binds and Playwright navigates to. */
+export const HARNESS_PORT = resolvePort();
+
+/** Origin the harness is served on, the value of Playwright's `use.baseURL`. */
+export const HARNESS_ORIGIN = `http://${HARNESS_HOST}:${HARNESS_PORT}`;
 
 /* -------------------------------------------------------------------------- */
 /* Module tables                                                              */
@@ -235,25 +328,29 @@ const MAX_DECODE_PASSES = 4;
  * issued, so an installed interception is answered without reaching this server at
  * all.
  *
- * Add an entry to extend.
+ * Add an entry to extend. Every remedy below is spelled with a `${HARNESS_ORIGIN}`
+ * prefix rather than a leading `**`: a host-agnostic pattern also claims a request
+ * addressed to a foreign host that shares the path, and fulfilling it would hide that
+ * destination drift from the ledger in `e2e/tests/harness-fixtures.ts`. A remedy copied
+ * out of this map must stay anchored.
  *
- * @see docs/testing/DECISION-LOG.md - row D126, which supersedes D43.
+ * @see docs/testing/DECISION-LOG.md - row D126, which supersedes D43, and row D213.
  */
 const HARNESS_API_SURFACE: Record<string, string> = {
   // `services/api.ts` fetchTweets, reached by `components/Dashboard` through
   // `services/twitterService` getLatestTweets.
   'GET /undefined/tweets':
-    "page.route('**/undefined/tweets*', route => route.fulfill({ json: [] }))",
+    'page.route(`${HARNESS_ORIGIN}/undefined/tweets*`, route => route.fulfill({ json: [] }))',
 
   // `harness/stubs/analyticsService.ts` getTrendData. `e2e/fixtures/trends.json`
   // is the payload a spec fulfils with.
   'GET /api/trends':
-    "page.route('**/api/trends*', route => route.fulfill({ path: 'fixtures/trends.json' }))",
+    'page.route(`${HARNESS_ORIGIN}/api/trends*`, route => route.fulfill({ path: "fixtures/trends.json" }))',
 
   // `harness/stubs/configService.ts` updateTwitterAPIConfig, from the
   // `components/Configuration` submit handler.
   'POST /api/config/twitter':
-    "page.route('**/api/config/twitter', route => route.fulfill({ json: {} }))",
+    'page.route(`${HARNESS_ORIGIN}/api/config/twitter`, route => route.fulfill({ json: {} }))',
 };
 
 /** Status the harness answers an un-intercepted {@link HARNESS_API_SURFACE} request with. */
@@ -801,9 +898,9 @@ export default defineConfig({
   plugins: [harnessFilesystemGuard(), harnessApiFailClosed(), harnessSourceResolver(), react()],
 
   server: {
-    // Host and port come from `./harness-origin`, which `e2e/playwright.config.ts`
-    // reads as well, so the server and the runner cannot disagree. The port is
-    // clone-specific: see that module for how it is resolved.
+    // Host and port are the values resolved in the harness-origin section above,
+    // which `e2e/playwright.config.ts` imports from this file, so the server and the
+    // runner cannot disagree. The port is clone-specific: see that section.
     host: HARNESS_HOST,
     port: HARNESS_PORT,
     // Fail the start on a port collision; do not select another port.

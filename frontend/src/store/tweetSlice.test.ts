@@ -1,10 +1,28 @@
 import reducer, { addTweet, fetchTweets, updateTweet } from './tweetSlice';
+import * as apiModule from '../services/api';
 import { makeTweet } from '../test-utils/factories';
 import { makeStore } from '../test-utils/render';
 
 type TweetState = ReturnType<typeof reducer>;
 
 const THUNK_TYPE_PREFIX = 'tweets/fetchTweets';
+
+/**
+ * Shape of the `api` binding `tweetSlice.ts` line 3 imports from `../services/api`.
+ *
+ * That module declares `fetchTweets`, `fetchTweetById` and `generateResponse`, and no `api`, so the
+ * binding resolves to `undefined` and the thunk's `api.get('/tweets')` at line 12 throws before any
+ * request is built. Every other case in this file asserts the rejection that follows; the suite below
+ * supplies the missing collaborator so lines 12-13 - the request and the `response.data` it returns -
+ * can be exercised at all.
+ */
+type ApiCollaborator = { get: jest.Mock };
+
+/** The module namespace with the collaborator the source expects to find on it. */
+type ApiModuleWithCollaborator = typeof apiModule & { api?: ApiCollaborator };
+
+/** Path `tweetSlice.ts` line 12 passes to `api.get`. */
+const THUNK_REQUEST_PATH = '/tweets';
 
 const REQUEST_ID = 'test-request-id';
 
@@ -267,5 +285,139 @@ describe('tweetSlice: fetchTweets dispatched through a real store', () => {
     await settled;
 
     expect(store.getState().tweets.status).toBe('failed');
+  });
+});
+
+describe('tweetSlice: fetchTweets once the missing api collaborator is supplied', () => {
+  let get: jest.Mock;
+  let errorSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    /*
+     * These are the only cases here that put real tweets into a real store, which is what makes Redux
+     * Toolkit's serializability check speak: `tweetSchema` declares `timestamp` as `z.date()`, so a
+     * schema-valid tweet carries a `Date` and can never be serializable state. `makeStore` keeps
+     * `configureStore`'s default middleware deliberately, so the notice is expected - it is recorded
+     * here and asserted below rather than left in the run's output.
+     */
+    errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    /*
+     * Injected on the module namespace rather than through `jest.mock`, so `src/services/api.ts` is the
+     * real module and only the one binding it fails to export is supplied. Under the CommonJS emit this
+     * suite runs against, that namespace is the same object `tweetSlice.ts` reads `api` from, so the
+     * assignment is what the thunk sees at call time. The same idiom attaches the missing `getTweets`
+     * export in `src/components/TweetManagement.test.tsx`.
+     */
+    get = jest.fn();
+    (apiModule as ApiModuleWithCollaborator).api = { get };
+  });
+
+  afterEach(() => {
+    /* Removed again, so every other case in this file still observes the real `undefined` binding. */
+    delete (apiModule as ApiModuleWithCollaborator).api;
+    errorSpy.mockRestore();
+  });
+
+  /** Every recorded `console.error` whose first argument mentions a non-serializable value. */
+  function serializabilityNotices(): string[] {
+    return errorSpy.mock.calls
+      .map(([first]) => (typeof first === 'string' ? first : ''))
+      .filter((text) => text.includes('non-serializable value was detected'));
+  }
+
+  it('requests the tweet collection from the path the thunk names, once', async () => {
+    get.mockResolvedValue({ data: [] });
+
+    await makeStore().dispatch(fetchTweets());
+
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith(THUNK_REQUEST_PATH);
+  });
+
+  it('settles as fulfilled carrying the response data itself as the payload', async () => {
+    const responseData = [
+      makeTweet({ tweet_id: FIRST_TWEET_ID, content: FIRST_CONTENT }),
+      makeTweet({ tweet_id: SECOND_TWEET_ID, content: SECOND_CONTENT }),
+    ];
+    get.mockResolvedValue({ data: responseData });
+
+    const action = await makeStore().dispatch(fetchTweets());
+
+    expect(action.type).toBe(`${THUNK_TYPE_PREFIX}/fulfilled`);
+    expect(fetchTweets.fulfilled.match(action)).toBe(true);
+    /*
+     * Identity, not equality. Line 13 returns `response.data` unchanged - it neither copies the array
+     * nor maps it nor validates it against the schema - and only an identity assertion distinguishes
+     * that from a return path that rebuilt an equal array.
+     */
+    expect(action.payload).toBe(responseData);
+  });
+
+  it('leaves the slice at status "succeeded" holding that same array', async () => {
+    const responseData = [makeTweet({ tweet_id: FIRST_TWEET_ID, content: FIRST_CONTENT })];
+    get.mockResolvedValue({ data: responseData });
+    const store = makeStore();
+
+    await store.dispatch(fetchTweets());
+
+    expect(store.getState().tweets.status).toBe('succeeded');
+    expect(store.getState().tweets.tweets).toBe(responseData);
+    expect(store.getState().tweets.error).toBeNull();
+  });
+
+  it('holds a tweet Redux itself reports as non-serializable state', async () => {
+    /*
+     * A divergence, asserted rather than worked around. `tweetSchema` types `timestamp` as `z.date()`,
+     * so the tweet the slice stores carries a `Date`; Redux Toolkit's default middleware detects it and
+     * names the path. Nothing fails - the value is stored and readable - but the store's contents are
+     * not serializable, which matters for persistence, for time-travel debugging and for hydration.
+     */
+    const responseData = [makeTweet({ tweet_id: FIRST_TWEET_ID, content: FIRST_CONTENT })];
+    get.mockResolvedValue({ data: responseData });
+    const store = makeStore();
+
+    await store.dispatch(fetchTweets());
+
+    expect(store.getState().tweets.tweets[0].timestamp).toBeInstanceOf(Date);
+
+    const notices = serializabilityNotices();
+
+    expect(notices.length).toBeGreaterThanOrEqual(1);
+    expect(notices.join('\n')).toContain('tweets.tweets.0.timestamp');
+  });
+
+  it('is at status "loading" from dispatch until the request settles', async () => {
+    let resolveRequest: (response: { data: unknown }) => void = () => undefined;
+    get.mockReturnValue(
+      new Promise<{ data: unknown }>((resolve) => {
+        resolveRequest = resolve;
+      }),
+    );
+    const store = makeStore();
+
+    const settled = store.dispatch(fetchTweets());
+    expect(store.getState().tweets.status).toBe('loading');
+
+    resolveRequest({ data: [] });
+    await settled;
+
+    expect(store.getState().tweets.status).toBe('succeeded');
+  });
+
+  it('rejects with the slice\u2019s own message when the request itself rejects', async () => {
+    /*
+     * The same rejection every other case in this file reaches by accident, reached deliberately here:
+     * `catch` at lines 14-16 discards whatever it caught and substitutes one fixed string, so a network
+     * failure and a missing export are indistinguishable to a consumer.
+     */
+    get.mockRejectedValue(new Error('the collection request failed'));
+    const store = makeStore();
+
+    const action = await store.dispatch(fetchTweets());
+
+    expect(action.type).toBe(`${THUNK_TYPE_PREFIX}/rejected`);
+    expect(action.payload).toBe(REJECTION_MESSAGE);
+    expect(store.getState().tweets.status).toBe('failed');
+    expect(store.getState().tweets.error).toBe(REJECTION_MESSAGE);
   });
 });

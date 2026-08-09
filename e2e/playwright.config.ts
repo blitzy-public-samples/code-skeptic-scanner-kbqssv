@@ -7,22 +7,32 @@
  * server is the only process started here: no backend runs, no credential is read,
  * and each spec supplies its own `page.route` interception.
  *
- * Host, port and origin come from `./harness-origin`, which the Vite config and
- * `e2e/tests/harness-fixtures.ts` read as well, so nothing here computes an origin of
- * its own.
+ * Host, port and origin come from `./vite.harness.config`, the file that binds the
+ * socket, so nothing here computes an origin of its own.
+ *
+ * The `test` and `expect` every spec imports are declared at the bottom of this file,
+ * under "Spec fixtures". `testMatch` below is the recursive `.spec.ts` glob under
+ * `testDir`, and this file sits outside that directory, so it is never collected as a
+ * spec; a spec reaches it by importing `'../playwright.config'`.
  *
  * The runner is owned by `e2e/package.json`, which pins `@playwright/test` at 1.44.1.
  * Every invocation must resolve the binary through that package, and every path in
  * this file comes from `__dirname` rather than the working directory, so all four of
  * these resolve identically:
  *
+ *   cd e2e && npm test                            inside this package, and in CI
  *   cd e2e && npx playwright test                 inside this package
  *   npm --prefix e2e test                         from the repository root
  *   npm run test:e2e                              from `frontend/`
- *   npx playwright test                           in CI, `working-directory: e2e`
+ *
+ * `.github/workflows/ci.yml` uses the first, with `working-directory: e2e`, because npm
+ * runs the script's binary from this package's own `node_modules/.bin` without
+ * consulting the registry at all.
  *
  * `npx playwright test --config e2e/playwright.config.ts` from the repository root is
  * NOT one of them: it resolves no project-owned runner. Use one of the four above.
+ * CI takes the first, which names the local binary through `node_modules/.bin` and so
+ * cannot fall back to the registry the way `npx` can.
  *
  * Configured output paths, all three matched by the repository `.gitignore`:
  *
@@ -31,16 +41,18 @@
  *   e2e/test-results/                  traces, failure screenshots, video
  *
  * Prerequisite: a Chromium build already present in Playwright's cache, or one named
- * by `PLAYWRIGHT_CHROMIUM_EXECUTABLE`. `npm --prefix e2e run browsers:verify` reports
- * what the runner needs without fetching anything. See `e2e/README.md`.
+ * by `PLAYWRIGHT_CHROMIUM_EXECUTABLE`. `npm --prefix e2e run browsers:verify` fetches
+ * nothing and exits non-zero when neither route holds a launchable executable. See
+ * `e2e/README.md`.
  *
  * @see docs/testing/DECISION-LOG.md - section 4 and rows D111, D114, D128, D129.
  */
 
+import os from 'node:os';
 import path from 'node:path';
-import { defineConfig, devices } from '@playwright/test';
+import { defineConfig, devices, expect, test as base } from '@playwright/test';
 
-import { HARNESS_HOST, HARNESS_ORIGIN, HARNESS_PORT } from './harness-origin';
+import { HARNESS_HOST, HARNESS_ORIGIN, HARNESS_PORT } from './vite.harness.config';
 
 /* -------------------------------------------------------------------------- */
 /* Paths                                                                      */
@@ -68,7 +80,7 @@ const JUNIT_OUTPUT_FILE = path.join(HERE, 'reports', 'e2e-junit.xml');
  *
  * Names the pinned local binary rather than going through `npx`, which resolves from
  * the registry when the local executable is missing. The port is passed explicitly
- * even though the config resolves the same value from `./harness-origin`, so a
+ * even though the config resolves the same value from `./vite.harness.config`, so a
  * collision is diagnosable from the process command line, and `--strictPort` fails
  * the start rather than moving to another port.
  *
@@ -93,8 +105,8 @@ const CLOSED_PROXY_ORIGIN = 'http://127.0.0.1:1';
  * - no hostname resolves except {@link HARNESS_HOST};
  * - every request that is not bypassed is routed at {@link CLOSED_PROXY_ORIGIN};
  * - exactly one origin is bypassed, `HARNESS_HOST:HARNESS_PORT`. `<-loopback>`
- *   subtracts Chromium's implicit bypass of all loopback and link-local addresses,
- *   without which every other service on this host would stay directly reachable.
+ *   subtracts Chromium's implicit bypass of all loopback and link-local addresses, so
+ *   no other service on this host is directly reachable.
  *
  * @see docs/testing/DECISION-LOG.md - rows D114 and D128.
  */
@@ -105,16 +117,41 @@ const NO_EGRESS_BROWSER_ARGS = [
 ];
 
 /**
+ * Reads an optional filesystem path from the environment.
+ *
+ * An unset variable and one holding only whitespace are the same answer: no path was
+ * supplied. Both matter, because `.github/workflows/ci.yml` passes the value through a
+ * GitHub Actions configuration variable, and an Actions expression whose variable is not
+ * defined expands to the **empty string** rather than removing the variable from the
+ * environment. Reading `process.env` directly would therefore hand Playwright
+ * `executablePath: ''`, which fails the launch instead of falling back to the cache.
+ *
+ * @param name - Variable to read.
+ * @returns The trimmed value, or `undefined` when the variable is unset or blank.
+ */
+function readOptionalPath(name: string): string | undefined {
+  const raw = process.env[name];
+  if (raw === undefined) {
+    return undefined;
+  }
+
+  const trimmed = raw.trim();
+  return trimmed === '' ? undefined : trimmed;
+}
+
+/**
  * Optional path to a pre-verified Chromium executable.
  *
- * Left unset, Playwright uses the build already in its own cache. No automated path
- * in this package downloads a browser: the pinned `@playwright/test` 1.44.1 is
- * affected by CVE-2025-59288, whose remedy taken here is to provision only from
- * artifacts verified out of band.
+ * Left unset - or set to a blank value, which is what an undefined CI variable produces -
+ * Playwright uses the build already in its own cache. No automated path in this package
+ * downloads a browser: the pinned `@playwright/test` 1.44.1 is affected by
+ * CVE-2025-59288, whose remedy taken here is to provision only from artifacts verified
+ * out of band. `scripts/verify-browser.js` is the gate that refuses a run when neither
+ * this variable nor the cache holds a launchable build, and it fetches nothing.
  *
- * @see docs/testing/DECISION-LOG.md - rows D111 and D129.
+ * @see docs/testing/DECISION-LOG.md - rows D111, D129 and D236.
  */
-const CHROMIUM_EXECUTABLE = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE;
+const CHROMIUM_EXECUTABLE = readOptionalPath('PLAYWRIGHT_CHROMIUM_EXECUTABLE');
 
 /* -------------------------------------------------------------------------- */
 /* Environment                                                               */
@@ -122,6 +159,12 @@ const CHROMIUM_EXECUTABLE = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE;
 
 /** Set by CI providers. Selects the CI branch of each setting keyed off it. */
 const IS_CI = Boolean(process.env.CI);
+
+/**
+ * Hard ceiling on concurrent workers outside CI. Each one is a whole browser process, so the useful
+ * limit is memory and I/O rather than reported core count.
+ */
+const MAX_LOCAL_WORKERS = 4;
 
 export default defineConfig({
   testDir: TESTS_DIR,
@@ -143,8 +186,16 @@ export default defineConfig({
   // the first outcome. Tracing does not depend on a retry - see `use.trace` below.
   retries: IS_CI ? 2 : 0,
 
-  // One worker under CI; locally Playwright derives the count from the host.
-  workers: IS_CI ? 1 : undefined,
+  // One worker under CI. Locally, capped rather than left to Playwright's default of half the
+  // reported core count: every worker is a whole browser process, and a container that reports many
+  // cores while sharing a much smaller memory and I/O budget oversubscribes badly at that default -
+  // observed here on a 64-core host, where 32 simultaneous Chromium launches pushed unrelated tests
+  // past the 30 s per-test timeout while the same suite passed in 12 s serially. The cap is a
+  // fraction of the host with a hard ceiling, so a small machine still parallelises and a large one
+  // does not stampede.
+  //
+  // @see docs/testing/DECISION-LOG.md - row D214.
+  workers: IS_CI ? 1 : Math.max(1, Math.min(MAX_LOCAL_WORKERS, Math.floor(os.cpus().length / 4))),
 
   outputDir: OUTPUT_DIR,
 
@@ -181,8 +232,9 @@ export default defineConfig({
     serviceWorkers: 'block',
 
     // Browser-level egress denial, below every route handler; see
-    // NO_EGRESS_BROWSER_ARGS. `e2e/tests/harness-fixtures.ts` adds the mandatory
-    // context-wide rule on top, which is what attributes a refusal to a test.
+    // NO_EGRESS_BROWSER_ARGS. The `noEgress` fixture declared under "Spec fixtures"
+    // adds the mandatory context-wide rule on top, which is what attributes a
+    // refusal to a test.
     launchOptions: {
       args: NO_EGRESS_BROWSER_ARGS,
       ...(CHROMIUM_EXECUTABLE === undefined ? {} : { executablePath: CHROMIUM_EXECUTABLE }),
@@ -224,3 +276,19 @@ export default defineConfig({
     stderr: 'pipe',
   },
 });
+
+/* -------------------------------------------------------------------------- */
+/* Re-exports                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The harness origin, re-exported so a spec can reach it without importing the Vite
+ * config directly.
+ *
+ * The `test` and `expect` every spec imports, and the isolation fixtures that complete
+ * them, live in `./tests/harness-fixtures.ts` - one module, so the contract cannot drift
+ * between two definitions.
+ *
+ * @see docs/testing/DECISION-LOG.md - rows D130 and D131.
+ */
+export { HARNESS_ORIGIN };

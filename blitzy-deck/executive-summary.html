@@ -2,19 +2,68 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+
+  <!-- Origin allow-list for this file, delivered as exactly ONE policy element. A browser
+       enforces the *intersection* of every Content-Security-Policy it is given, so a second
+       tag cannot relax this one - it can only silently contradict it, which is what a
+       `connect-src 'none'` beside this line did to the source-map allowance below.
+
+       `default-src 'none'` blocks every destination not named here; only the pinned jsDelivr
+       origin and the Google Fonts pair may serve this file anything. reveal.js and Mermaid both
+       inject style elements at runtime and this deck's own style and bootstrap script are
+       inline, so those two directives admit 'unsafe-inline'. `img-src data:` covers the inline
+       favicon and `font-src data:` a font a stylesheet may inline. `connect-src` names the one
+       origin the scripts already come from, because reveal.js and lucide each end in a
+       sourceMappingURL comment that developer tools follow: naming it keeps an inspected load
+       free of policy violations, and it admits nothing the scripts themselves did not already
+       reach, since this file issues no fetch and no XHR of its own. `form-action 'none'` blocks
+       submission and `base-uri 'none'` blocks base-tag injection.
+
+       `frame-ancestors` is deliberately absent: a meta-delivered policy ignores it, and
+       declaring it here would only log "the directive is ignored when delivered via a <meta>
+       element" on every load. Anti-framing for this file has to come from an HTTP response
+       header. See docs/testing/DECISION-LOG.md. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none';
+    script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
+    style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com;
+    font-src https://fonts.gstatic.com data:;
+    img-src 'self' data:;
+    connect-src https://cdn.jsdelivr.net; base-uri 'none'; form-action 'none'" />
+
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
   <title>Code Skeptic Scanner - Test Suite Delivery - Executive Summary</title>
   <link rel="icon" href="data:," />
 
-  <!-- Typography (CDN) -->
+  <!-- Typography (CDN)
+       No Subresource Integrity on the stylesheet below, and none is possible: the
+       fonts.googleapis.com/css2 response is generated per user agent, so its bytes - and
+       therefore its hash - differ between browsers. It is a font declaration only; every
+       family degrades to the local fallbacks named in --font-* if it fails to load. The
+       three pinned runtimes and the reveal.js stylesheet, whose bytes are immutable, all
+       carry integrity attributes. Recorded as a residual, not an oversight. -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
     href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=Fira+Code:wght@400;500&display=swap"
     rel="stylesheet" />
 
-  <!-- reveal.js 5.1.0 core stylesheet (CDN) -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css" />
+  <!--
+    reveal.js 5.1.0 core stylesheet (CDN).
+
+    Every executable or style asset below carries a Subresource Integrity digest and
+    crossorigin="anonymous", so the browser refuses a byte that does not match the
+    build this deck was authored against - the version pin in the URL alone would not
+    detect a substituted artifact. The digests are sha384 over the exact bytes each
+    pinned URL served; regenerate them if a version is ever changed.
+
+    The Google Fonts stylesheet above carries no digest on purpose: that response is
+    generated per user agent, so it has no fixed bytes to pin, and it delivers no
+    executable code.
+  -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css"
+    integrity="sha384-YgvgKeZJykuztG+iQPoZHNZENTFZvOcOJ/uRzmJTje6GHYN9zAw+y5rx/L8MQKA/"
+    crossorigin="anonymous" referrerpolicy="no-referrer" />
 
   <style>
     /* ======================================================================
@@ -1037,7 +1086,7 @@
       <!-- Slide 1 - Title -->
       <section class="slide-title">
         <span class="eyebrow">Test Suite Delivery</span>
-        <span class="hero-icon"><i data-lucide="shield-check"></i></span>
+        <span class="hero-icon" aria-hidden="true"><i data-lucide="shield-check" aria-hidden="true" focusable="false"></i></span>
         <h1>From zero executed tests to an enforced quality gate</h1>
         <h2>Code Skeptic Scanner</h2>
         <p>Prepared for leadership: what was built, what it now protects, and what remains open.</p>
@@ -1048,30 +1097,28 @@
       <section>
         <span class="eyebrow">Headline numbers</span>
         <h2>Where we started, and what we delivered</h2>
-        <p>Nothing in this product had ever been measured. Every test file failed to load, so no
-          check had ever run. The suite below is the first that executes.</p>
+        <p>No check had ever run here. This suite is the first.</p>
         <div class="kpi-grid">
           <div class="kpi-card">
-            <span class="kpi-icon"><i data-lucide="circle-slash"></i></span>
+            <span class="kpi-icon" aria-hidden="true"><i data-lucide="circle-slash" aria-hidden="true" focusable="false"></i></span>
             <span class="kpi-value">0%</span>
-            <span class="kpi-label">Coverage actually executed before this work, across 33 product
-              modules</span>
+            <span class="kpi-label">Coverage actually executed before this work, across the 33
+              modules targeted for testing</span>
           </div>
           <div class="kpi-card">
-            <span class="kpi-icon"><i data-lucide="file-x"></i></span>
-            <span class="kpi-value">216</span>
-            <span class="kpi-label">Lines of tests that had never run</span>
+            <span class="kpi-icon" aria-hidden="true"><i data-lucide="list-checks" aria-hidden="true" focusable="false"></i></span>
+            <span class="kpi-value">1,136</span>
+            <span class="kpi-label">Tests now passing, across five layers</span>
           </div>
           <div class="kpi-card">
-            <span class="kpi-icon"><i data-lucide="list-checks"></i></span>
-            <span class="kpi-value">25</span>
-            <span class="kpi-label">Old tests accounted for: 7 rewritten, 3 skipped, 15
-              retired</span>
+            <span class="kpi-icon" aria-hidden="true"><i data-lucide="gauge" aria-hidden="true" focusable="false"></i></span>
+            <span class="kpi-value">93%</span>
+            <span class="kpi-label">Backend coverage against a 90% bar</span>
           </div>
           <div class="kpi-card">
-            <span class="kpi-icon"><i data-lucide="layers"></i></span>
-            <span class="kpi-value">5</span>
-            <span class="kpi-label">Layers of testing now delivered and running</span>
+            <span class="kpi-icon" aria-hidden="true"><i data-lucide="bug" aria-hidden="true" focusable="false"></i></span>
+            <span class="kpi-value">42</span>
+            <span class="kpi-label">Deliberate defects, every one caught</span>
           </div>
         </div>
       </section>
@@ -1080,20 +1127,20 @@
       <section>
         <span class="eyebrow">Architecture after the change</span>
         <h2>Five layers, one isolation boundary</h2>
-        <p>Every layer tests the real product, and all of them reach it through a single boundary
+        <p>Every layer tests real product code, and all of them reach it through a single boundary
           that shuts out the outside world.</p>
         <pre class="mermaid deck-diagram-md">flowchart LR
-  subgraph LAYERS["Five delivered test layers"]
-    L1["Backend unit"]
-    L2["Backend integration"]
-    L3["Frontend unit"]
-    L4["Frontend component"]
-    L5["End-to-end browser flows"]
+  subgraph L["Five test layers"]
+    A["Backend unit"]
+    B["Backend integration"]
+    C["Frontend unit"]
+    D["Frontend component"]
+    E["Browser flows"]
   end
   GUARD["Isolation boundary<br/>no network<br/>no real credentials<br/>no dependence on the clock"]
-  subgraph SUT["System under test"]
+  subgraph SUT["Real product code under test"]
     S1["Backend service"]
-    S2["Frontend dashboard"]
+    S2["Frontend screens<br/>mounted by a test-owned shell,<br/>not the product's own start-up"]
   end
   REPORTS["Coverage and<br/>test-result reports"]
   DASH["CI dashboards"]
@@ -1112,53 +1159,49 @@
 
       <!-- Slide 4 - Divider -->
       <section class="slide-divider">
-        <span class="hero-icon"><i data-lucide="wrench"></i></span>
+        <span class="hero-icon" aria-hidden="true"><i data-lucide="wrench" aria-hidden="true" focusable="false"></i></span>
         <span class="eyebrow">Part one</span>
         <h2>Restoring a broken test estate</h2>
-        <p>Three old test files, three conflicting foundations, and not one check that ever ran.</p>
+        <p>Three test files, three foundations, and not one check that ran.</p>
         <div class="accent-bar"></div>
       </section>
 
-      <!-- Slide 5 - Before and after, plus the mapping summary -->
+      <!-- Slide 5 - Migration, plus the disposition summary -->
       <section>
-        <span class="eyebrow">Before and after</span>
+        <span class="eyebrow">Migration</span>
         <h2>Nothing was quietly dropped</h2>
-        <p>Three conflicting foundations became one. Every old test was accounted for in writing.</p>
+        <p>Every old test was accounted for in writing.</p>
         <div class="deck-split deck-split-table-wide">
           <div class="deck-col">
-            <span class="eyebrow">The migration</span>
             <pre class="mermaid">flowchart TB
-  R1["Foundation one"] --> F["Nothing loads"]
-  R2["Foundation two"] --> F
-  R3["Foundation three"] --> F
-  F -->|"Migrated, then removed"| U["One shared foundation"]
-  U --> G["Every suite loads and passes"]
+  X["Three foundations"] --> Y["Nothing loaded"]
+  Y --> Z["One foundation"]
+  Z --> W["Every suite passes"]
 </pre>
           </div>
           <div class="deck-col">
-            <span class="eyebrow">Where the old tests went</span>
             <table>
               <thead>
                 <tr>
-                  <th>Outcome for each old test</th>
+                  <th>Outcome</th>
                   <th>Tests</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>Rewritten against the real product</td>
+                  <td>Rewritten against the product</td>
                   <td>7</td>
                 </tr>
                 <tr>
-                  <td>Skipped, with a stated reason</td>
+                  <td>Skipped, reason stated</td>
                   <td>3</td>
                 </tr>
                 <tr>
-                  <td>Retired, with a recorded reason</td>
+                  <td>Retired, reason recorded</td>
                   <td>15</td>
                 </tr>
                 <tr>
-                  <td>Total accounted for</td>
+                  <td>Total</td>
                   <td>25</td>
                 </tr>
               </tbody>
@@ -1169,10 +1212,10 @@
 
       <!-- Slide 6 - Divider -->
       <section class="slide-divider">
-        <span class="hero-icon"><i data-lucide="file-pen"></i></span>
+        <span class="hero-icon" aria-hidden="true"><i data-lucide="file-pen" aria-hidden="true" focusable="false"></i></span>
         <span class="eyebrow">Part two</span>
         <h2>Two authorised production changes</h2>
-        <p>Both exist only so the application can start. Everything else was left alone.</p>
+        <p>Both exist so the suite can load the application under test.</p>
         <div class="accent-bar"></div>
       </section>
 
@@ -1180,30 +1223,33 @@
       <section>
         <span class="eyebrow">Scope control</span>
         <div class="deck-headrow">
-          <span class="kpi-icon"><i data-lucide="git-compare"></i></span>
+          <span class="kpi-icon" aria-hidden="true"><i data-lucide="git-compare" aria-hidden="true" focusable="false"></i></span>
           <h2>Change was deliberately contained</h2>
         </div>
-        <p>Both changes exist only so the application can start under test. Everything else was
-          tested exactly as it is.</p>
+        <p>Everything else tested unchanged.</p>
         <table class="deck-table-compact">
           <thead>
             <tr>
-              <th>What changed</th>
-              <th>Why it was unavoidable</th>
-              <th>Business risk</th>
+              <th>Change</th>
+              <th>Why unavoidable</th>
+              <th>Risk</th>
             </tr>
           </thead>
           <tbody>
             <tr>
               <td>One combined route file became a folder of separate modules</td>
               <td>The application could not start, and that file did not even compile</td>
-              <td>None. No new features were added, and the framework connects them by name, so
-                behaviour is unchanged</td>
+              <td>No behaviour change: no new features, and the framework connects them by name.
+                Two reading risks are on record — three of the four modules are empty and could be
+                mistaken for a place to add endpoints, and the reordered parameters could be
+                mistaken for a changed interface</td>
             </tr>
             <tr>
-              <td>Four configuration entries were given safe, empty defaults</td>
+              <td>Four configuration entries were given the narrowest safe defaults</td>
               <td>The product reads them while running but never declared them</td>
-              <td>None. No existing setting had its name or its value altered</td>
+              <td>No existing setting had its name or value altered. One risk is on record: the
+                permitted-origins list now defaults to empty, so an unconfigured deployment permits
+                none — narrower than today, where it crashes instead</td>
             </tr>
           </tbody>
         </table>
@@ -1211,95 +1257,94 @@
 
       <!-- Slide 8 - Divider -->
       <section class="slide-divider">
-        <span class="hero-icon"><i data-lucide="lock"></i></span>
+        <span class="hero-icon" aria-hidden="true"><i data-lucide="lock" aria-hidden="true" focusable="false"></i></span>
         <span class="eyebrow">Part three</span>
         <h2>Safety by construction</h2>
-        <p>The safeguards are built into the suite, not left to anyone remembering them.</p>
+        <p>The safeguards are built into the suite, not left to memory.</p>
         <div class="accent-bar"></div>
       </section>
 
       <!-- Slide 9 - Isolation -->
       <section>
-        <span class="eyebrow">Measured, not theorised</span>
+        <span class="eyebrow">Isolation</span>
         <h2>Tests cannot reach the outside world</h2>
-        <p>Both findings below were observed directly. A test that bypasses a stand-in now fails
-          loudly instead of reaching outside.</p>
+        <p>An unguarded test now fails loudly instead of reaching outside.</p>
         <div class="kpi-grid">
           <div class="kpi-card">
-            <span class="kpi-icon"><i data-lucide="cloud-off"></i></span>
+            <span class="kpi-icon" aria-hidden="true"><i data-lucide="cloud-off" aria-hidden="true" focusable="false"></i></span>
             <span class="kpi-value">Live cloud</span>
-            <span class="kpi-label">Real cloud infrastructure was reached by an unguarded database
-              call</span>
+            <span class="kpi-label">Reached by one unguarded database call</span>
           </div>
           <div class="kpi-card">
-            <span class="kpi-icon"><i data-lucide="timer-off"></i></span>
+            <span class="kpi-icon" aria-hidden="true"><i data-lucide="timer-off" aria-hidden="true" focusable="false"></i></span>
             <span class="kpi-value">300s</span>
-            <span class="kpi-label">Seconds an unguarded listener hung on a live connection before
-              it timed out</span>
+            <span class="kpi-label">An unguarded listener hung on a live connection</span>
           </div>
         </div>
         <pre class="mermaid deck-diagram-sm">flowchart LR
-  T["A test runs"] --> G["Safeguards<br/>credentials neutralised<br/>network connections blocked<br/>browser requests intercepted"]
-  G --> S["Stand-ins in memory<br/>fast and repeatable"]
-  G -.-> X["Real outside services<br/>blocked"]
+  T["A test"] --> G["Guards"]
+  G --> S["Stand-ins in memory"]
+  G -.-> X["Outside blocked"]
 </pre>
       </section>
 
       <!-- Slide 10 - Divider -->
       <section class="slide-divider">
-        <span class="hero-icon"><i data-lucide="badge-check"></i></span>
+        <span class="hero-icon" aria-hidden="true"><i data-lucide="badge-check" aria-hidden="true" focusable="false"></i></span>
         <span class="eyebrow">Part four</span>
         <h2>Proof, not promises</h2>
-        <p>The standard is enforced by the tooling, not asserted in a status report.</p>
+        <p>Enforced by the tooling, and shown by deliberate failure.</p>
         <div class="accent-bar"></div>
       </section>
 
-      <!-- Slide 11 - Gates, pipeline and reporting -->
+      <!-- Slide 11 - Coverage bars and the authored pipeline -->
       <section>
         <span class="eyebrow">Enforcement and reporting</span>
         <h2>The pipeline now enforces the standard</h2>
-        <p>The 90% bar is the client's own acceptance criterion in the approved proposal. Reused:
-          the two existing coverage uploads, labels unchanged. Added: machine-readable results,
-          extra report formats, a readiness check.</p>
+        <p>The 90% bar is the client's own acceptance criterion. Reused: both coverage uploads,
+          labels unchanged. Added: machine-readable results, kept as downloads, and a readiness
+          check. Two pre-existing checks, outside this work, still halt the first job.</p>
+        <p>Runners fail the build below each bar; two pre-existing lint steps fail ahead of
+          them.</p>
         <div class="deck-split deck-split-table-wide">
           <div class="deck-col">
-            <span class="eyebrow">Every push</span>
+            <span class="eyebrow">Trigger and jobs</span>
             <pre class="mermaid">flowchart TB
-  P["Every push"] --> B["Build job"]
-  P --> E["End-to-end job"]
-  B --> BT["Backend tests"]
-  B --> FT["Frontend tests"]
+  P["Push or pull request<br/>to the main branch"] --> B["Build job"]
+  P --> E["End-to-end job<br/>independent"]
+  B --> L["Lint and type check<br/>pre-existing, still failing<br/>out of scope here"]
+  L --> BT["Backend tests<br/>90% gate<br/>the client's own bar"]
+  L --> FT["Frontend tests<br/>80% gate"]
   BT --> R["Coverage and<br/>test-result reports"]
   FT --> R
   E --> R
-  R --> D["CI dashboards"]
+  R --> D["CI dashboards<br/>labels unchanged"]
 </pre>
           </div>
           <div class="deck-col">
-            <span class="eyebrow">Gates that fail the build</span>
             <table>
               <thead>
                 <tr>
-                  <th>Gate</th>
+                  <th>Scope</th>
                   <th>Bar</th>
-                  <th>Enforced by</th>
+                  <th>Shape</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>Backend configuration, services, background tasks and data access</td>
-                  <td>90% or above</td>
-                  <td>The test runner. The build fails below the bar</td>
+                  <td>Backend core, services, tasks, data</td>
+                  <td>90%</td>
+                  <td>One combined figure</td>
                 </tr>
                 <tr>
-                  <td>Frontend state, data shapes and services</td>
-                  <td>80% or above</td>
-                  <td>The test runner. The build fails below the bar</td>
+                  <td>Frontend state, shapes, services</td>
+                  <td>80%</td>
+                  <td>Each checked alone</td>
                 </tr>
                 <tr>
                   <td>Every test file loads</td>
                   <td>Zero load errors</td>
-                  <td>A readiness check that runs before the suite</td>
+                  <td>A one-command readiness check, run locally. Not yet a pipeline step</td>
                 </tr>
               </tbody>
             </table>
@@ -1309,86 +1354,64 @@
 
       <!-- Slide 12 - Divider -->
       <section class="slide-divider">
-        <span class="hero-icon"><i data-lucide="triangle-alert"></i></span>
+        <span class="hero-icon" aria-hidden="true"><i data-lucide="triangle-alert" aria-hidden="true" focusable="false"></i></span>
         <span class="eyebrow">Part five</span>
-        <h2>Known limits, managed openly</h2>
-        <p>Each limit is pinned down as today's behaviour and recorded for the backlog.</p>
+        <h2>Limits and open risks</h2>
+        <p>Each one is pinned down as today's behaviour and recorded.</p>
         <div class="accent-bar"></div>
       </section>
 
-      <!-- Slide 13 - Documented limits -->
+      <!-- Slide 13 - Documented limits and open risks -->
       <section>
         <span class="eyebrow">Documented limits</span>
         <h2>What cannot be tested, and why</h2>
-        <p>These are product gaps, not test gaps. Closing them would mean building features this
-          engagement deliberately did not build.</p>
-        <table class="deck-table-compact">
-          <thead>
-            <tr>
-              <th>Limit</th>
-              <th>Cause</th>
-              <th>How it is handled</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Several screens cannot open</td>
-              <td>The shared helpers they rely on were never published in the product code</td>
-              <td>Test written, then skipped with a stated reason</td>
-            </tr>
-            <tr>
-              <td>Tweet cards never appear</td>
-              <td>The card itself does not exist anywhere in the product</td>
-              <td>Today's behaviour pinned down, gap recorded</td>
-            </tr>
-            <tr>
-              <td>One record lookup always errors</td>
-              <td>The data model has no identifier, so its "not found" path can never be reached</td>
-              <td>The real outcome pinned down instead</td>
-            </tr>
-            <tr>
-              <td>Charts never draw</td>
-              <td>The charting engine is never switched on</td>
-              <td>The handled-failure path pinned down; the screen stays usable</td>
-            </tr>
-            <tr>
-              <td>The product reports nothing about its own health</td>
-              <td>No live metrics or request tracing, and the health probes point at an address
-                that does not exist</td>
-              <td>Recorded and put on the backlog, not built</td>
-            </tr>
-          </tbody>
-        </table>
+        <p>Product gaps, not test gaps. Closing them means building features this engagement did
+          not build.</p>
+        <pre class="mermaid deck-diagram-md">flowchart TB
+  subgraph L["Five documented limits"]
+    A["Screens cannot open<br/>shared helpers were<br/>never published"]
+    B["Tweet cards never<br/>appear; the card<br/>exists nowhere"]
+    C["A record lookup<br/>always errors; no<br/>identifier to match"]
+    D["Charts never draw;<br/>the chart engine is<br/>never switched on"]
+    E["No self-reported<br/>health; no metrics,<br/>tracing or probe"]
+  end
+  A --> H1["Test written, then<br/>skipped with a<br/>stated reason"]
+  B --> H2["Today's behaviour<br/>pinned down; gap<br/>recorded"]
+  C --> H2
+  D --> H3["Measured in a real<br/>browser: it fails<br/>unhandled and<br/>unmounts the view"]
+  E --> H4["Recorded for the<br/>backlog, not built"]
+</pre>
+        <p class="deck-note">Also open, and escalated rather than silent: an empty allowed-origin default and one deferred security patch.</p>
       </section>
 
       <!-- Slide 14 - Divider -->
       <section class="slide-divider">
-        <span class="hero-icon"><i data-lucide="compass"></i></span>
+        <span class="hero-icon" aria-hidden="true"><i data-lucide="compass" aria-hidden="true" focusable="false"></i></span>
         <span class="eyebrow">Part six</span>
-        <h2>Onboarding and what comes next</h2>
-        <p>From a clean machine to a running suite, without needing to ask anyone.</p>
+        <h2>Onboarding and next steps</h2>
+        <p>From a clean machine to a running suite, unaided.</p>
         <div class="accent-bar"></div>
       </section>
 
-      <!-- Slide 15 - Onboarding and the forward timeline -->
+      <!-- Slide 15 - Onboarding and the delivered-to-backlog timeline -->
       <section>
         <span class="eyebrow">Handover</span>
-        <h2>A new engineer is productive on day one</h2>
+        <h2>A new engineer starts on day one</h2>
         <div class="icon-row">
-          <span class="icon-row-item"><i data-lucide="server"></i>Backend suite guide</span>
-          <span class="icon-row-item"><i data-lucide="monitor"></i>Frontend suite guide</span>
-          <span class="icon-row-item"><i data-lucide="globe"></i>End-to-end suite guide</span>
-          <span class="icon-row-item"><i data-lucide="book-open"></i>Decision log and traceability
-            record</span>
+          <span class="icon-row-item"><i data-lucide="server" aria-hidden="true" focusable="false"></i>Backend guide</span>
+          <span class="icon-row-item"><i data-lucide="monitor" aria-hidden="true" focusable="false"></i>Frontend guide</span>
+          <span class="icon-row-item"><i data-lucide="globe" aria-hidden="true" focusable="false"></i>End-to-end guide</span>
+          <span class="icon-row-item"><i data-lucide="book-open" aria-hidden="true" focusable="false"></i>Decision log</span>
         </div>
         <pre class="mermaid deck-diagram-sm">flowchart LR
-  A["Delivered<br/>five layers<br/>gates enforced"] --> B["Next<br/>browser sign-off<br/>of suite and summary"]
-  B --> C["Then<br/>prioritised backlog<br/>of known gaps"]
+  A["Delivered<br/>five layers<br/>gates enforced"] --> B["Signed off<br/>browser run<br/>of suite and summary"]
+  B --> C["Next<br/>one pipeline run<br/>on the declared runtime"]
+  C --> D["Then<br/>prioritised backlog<br/>of known gaps"]
 </pre>
         <ul>
-          <li>Three commands to install and three to run, documented for each layer.</li>
-          <li>Every pitfall that cost the team time is written down.</li>
-          <li>A prioritised backlog of everything found but deliberately left alone.</li>
+          <li>Three commands to install, three to run, per layer.</li>
+          <li>Every pitfall that cost time is written down.</li>
+          <li>A prioritised backlog of what was left alone.</li>
         </ul>
       </section>
 
@@ -1398,20 +1421,30 @@
         <h2>Quality is now measurable</h2>
         <div class="accent-bar"></div>
         <ul>
-          <li>Five layers of testing run on every push.</li>
-          <li>Coverage gates enforced at 90% and 80%, by the tooling itself.</li>
-          <li>Browser sign-off of the end-to-end suite and this summary remains outstanding.</li>
+          <li>Five layers deliver 1,136 passing tests, from zero.</li>
+          <li>Coverage bars enforced by the runners at 90 and 80.</li>
+          <li>Browser run: nineteen flows passed, none skipped.</li>
+          <li>Forty-two deliberate defects each turned the suite red.</li>
         </ul>
-        <div class="brand-lockup"><i data-lucide="zap"></i><span>Blitzy</span></div>
+        <div class="brand-lockup"><i data-lucide="zap" aria-hidden="true" focusable="false"></i><span>Blitzy</span></div>
       </section>
 
     </div>
   </div>
 
-  <!-- Pinned CDN runtimes -->
-  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <!-- Pinned CDN runtimes, each locked to the exact bytes jsDelivr serves for
+       its version by a sha384 subresource integrity hash: reveal.js 107670
+       bytes, mermaid 2571838 bytes, lucide 355975 bytes. A mismatch makes the
+       browser refuse to execute the file. -->
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"
+    integrity="sha384-M/JtqCVlLcK9lwVnBnMXP0V577CBULkjodKsR/PITOe4MSKNbbwqCemEyluOw0+5"
+    crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js"
+    integrity="sha384-Wm9qzEgq4j1jEnuFK2FxKTlwuhbV2QqtGhcchvjDoKxeJ7WWAW7fysBq+1s6myfX"
+    crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"
+    integrity="sha384-ieG+IKD0d/ZPXyCBTMVAbqsQdns8QGJR/e26WMw7M4fkaI/rHcS/YIoi+ah9WGge"
+    crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
   <script>
     (function () {

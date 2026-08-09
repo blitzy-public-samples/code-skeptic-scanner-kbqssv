@@ -10,11 +10,11 @@ import {
   CONFIGURED_BASE_URL,
   DEFAULT_GENERATED_RESPONSE,
   configuredBaseBackendHandlers,
+  importWithConfiguredBase,
   lastRecordedRequest,
   makeDefaultTweetsJson,
   unsetBaseBackendHandlers,
 } from '../test-utils/handlers';
-import { importWithConfiguredBase } from '../test-utils/configured-base';
 import { server } from '../test-utils/msw-server';
 import { FIXED_TWEET_TIMESTAMP, makeTweet } from '../test-utils/factories';
 

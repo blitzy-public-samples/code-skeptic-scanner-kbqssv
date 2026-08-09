@@ -64,12 +64,11 @@ cd frontend
 npm install
 ```
 
-**`npm ci` will not work here, and that is deliberate.** No `package-lock.json` is committed, and
-[`.npmrc`](./.npmrc) in this folder carries `package-lock=false` so one is never even generated —
-suppressed at the source rather than hidden behind an ignore rule (`D93`, `D159`). Confirm it with
-`npm config get package-lock`, which answers `false`. `npm ci` refuses to run without a lockfile, so
-the CI workflow uses `npm install` too. The reproducibility cost of this is real and is the first
-entry in §[10](#10-suggested-next-tasks).
+**`npm ci` will not work here, and that is deliberate.** No `package-lock.json` is committed (`D93`,
+`D159`), and `npm ci` refuses to run without a lockfile, so the CI workflow uses `npm install` too. A
+lockfile `npm install` writes locally is not ignored either — it stays visible to `git status` and to
+review (`D144`) — so decide deliberately whether to commit it. The reproducibility cost of shipping
+without one is real and is the first entry in §[10](#10-suggested-next-tasks).
 
 Install the `frontend` tree **before** the `e2e` tree: the harness aliases React out of
 `frontend/node_modules` so exactly one copy exists (`D48`). See [`../e2e/README.md`](../e2e/README.md).
@@ -92,9 +91,9 @@ Install the `frontend` tree **before** the `e2e` tree: the harness aliases React
 An `EBADENGINE` warning naming a **test** package is a different matter: it means a pin has drifted
 and the toolchain no longer matches the runtime. Investigate that one.
 
-### The five commands
+### The six commands
 
-All five are declared in [`package.json`](./package.json) and all are run from `frontend/`.
+All six are declared in [`package.json`](./package.json) and all are run from `frontend/`.
 
 | Command | Runs | Use it for |
 | --- | --- | --- |
@@ -102,6 +101,7 @@ All five are declared in [`package.json`](./package.json) and all are run from `
 | `npm run test:watch` | `jest --watch` | Iterating on one suite. Needs a git checkout to diff against. |
 | `npm run test:coverage` | `jest --coverage` | A local coverage report plus the `coverageThreshold` gate. |
 | `npm run test:ci` | `jest --ci --coverage --watchAll=false` | **What CI runs.** Coverage, the gate, and every artifact in §[7](#7-coverage-gates-and-artifacts). |
+| `npm run test:list` | `jest --listTests` | The readiness check — every collectable test file, no assertion evaluated. **Also a CI step**, ahead of `test:ci`; see §[9](#9-observability-of-this-suite). |
 | `npm run test:e2e` | `npm --prefix ../e2e run test` | Hands off to the Playwright suite. Every e2e command goes through the `e2e` package, never `npx` from the repository root (`D49`). |
 
 ### Targeted runs
@@ -109,8 +109,13 @@ All five are declared in [`package.json`](./package.json) and all are run from `
 ```bash
 npx jest src/store/tweetSlice.test.ts          # one file
 npx jest -t "does not refetch at 29999 ms"     # one test, by name
-npx jest --listTests                           # every file Jest can collect, and nothing else
+npx jest --listTests                           # discovery only: which files match, nothing loaded
+npx jest --ci --watchAll=false --runInBand \
+  -t "__readiness_probe_that_matches_no_test__"  # loads and transforms every file, runs no test body
 ```
+
+The last of those is the readiness gate described in §[9](#9-observability-of-this-suite); `--listTests`
+is not, because it resolves no import.
 
 The `-t` pattern matches the full test name — every enclosing `describe` title and the leaf title,
 joined by single spaces. That is exactly the string the JUnit report puts in `<testcase name>`
@@ -131,7 +136,7 @@ Twenty production modules live under `src/`, across `schema/`, `store/`, `servic
 in the coverage denominator; `src/app.tsx` is excluded because it cannot be mounted at all
 (§[7](#ceilings-not-gaps)). Before this suite existed, **none** of them was executed by a test.
 
-Every suite is colocated beside its subject as `<Name>.test.ts` or `<Name>.test.tsx`. There are 23 of
+Every suite is colocated beside its subject as `<Name>.test.ts` or `<Name>.test.tsx`. There are 24 of
 them, in seven families:
 
 | Family | Files | Subjects |
@@ -141,8 +146,15 @@ them, in seven families:
 | Services | 3 | `src/services/*.ts` — the HTTP layer |
 | Utils | 2 | `src/utils/*.ts` — formatting and dates |
 | Components | 4 | `src/components/*` — the four extension-less modules |
-| Pages | 4 | `src/pages/*.tsx` |
+| Pages | 5 | `src/pages/*.tsx` - one per module, plus a second file for `TweetManagement` |
 | Test infrastructure | 5 | `src/test-utils/*.test.ts` — contract suites over the harness itself |
+
+`src/pages/TweetManagement` carries two files rather than one, and the split is deliberate.
+`TweetManagement.test.tsx` renders the real page - it is the only one of the four that mounts - while
+`TweetManagement.callbacks.test.tsx` drives the callbacks it hands its child. Reaching those needs
+`jest.mock('@/components/TweetManagement')`, which is hoisted and module-wide, so putting it in the first
+file blanks the render that file exists to assert. Each file's docstring names the other; the reasoning is
+`D229`.
 
 The last family is worth knowing about before you change anything under `src/test-utils/`. Those five
 suites hold the harness to its own contract: `handlers.test.ts` and `junit-correlation.test.ts`
@@ -326,7 +338,7 @@ have to remember.
 | [`src/test-utils/handlers.ts`](./src/test-utils/handlers.ts) | Every request handler, the request log, and the isolation ledger. Registers handlers only — it constructs no server and installs no hook. |
 | [`src/test-utils/msw-server.ts`](./src/test-utils/msw-server.ts) | One `setupServer(...handlers)` instance. Importing it has **no side effect**. |
 | [`src/test-utils/setup-jest.ts`](./src/test-utils/setup-jest.ts) | The single `setupFilesAfterEnv` entry. Owns the whole lifecycle. |
-| [`src/test-utils/configured-base.ts`](./src/test-utils/configured-base.ts) | Loads a subject with the API base URL configured (§[below](#driving-a-configured-base-url)). |
+| [`src/test-utils/factories.ts`](./src/test-utils/factories.ts) | The deterministic fixture builders the two schema suites validate. |
 
 `setup-jest.ts` registers exactly four things and nothing else:
 
@@ -337,8 +349,10 @@ have to remember.
    `beforeAll`. Jest evaluates a test module and every import-time side effect in its graph before it
    runs `beforeAll`, and `services/api.ts` runs code at module scope while both list components fetch
    on mount, so anything deferred to `beforeAll` would already have reached a socket (`D108`).
-4. A global `afterEach` that asserts no isolation breach was recorded, then — in a `finally`, so a
-   failing test still hands the next one clean state — calls `server.resetHandlers()`,
+4. A global `afterEach`, bound by reference to `runSharedAfterEach` from
+   [`src/test-utils/reset-shared-state.ts`](./src/test-utils/reset-shared-state.ts). That function asserts
+   no isolation breach was recorded, then — in a `finally`, so a failing test still hands the next one
+   clean state — calls `resetSharedTestState()`, which does `server.resetHandlers()`,
    `resetHandlerState()` and deletes the base-URL variable again. `afterAll` closes the server.
 
 Deliberately **not** registered there: Chart.js canvas or `ResizeObserver` shims, any global
@@ -357,8 +371,9 @@ because several suites assert on them.
 The default array is layer 1 only. It is a **test fixture, not a model of the backend**: a suite that
 exercises only layer 1 has covered no integration, and every `200` it returns is a fixture rather than
 an outcome the backend produces. When you need the real disposition, install the matching layer-2 set
-for one test with `server.use(...)`. `handlers.test.ts` is the oracle for what each factory answers
-(`D174`), and the per-route caller-to-backend mapping is in
+for one test with `server.use(...)`. The oracle for what each factory answers is the backend itself —
+`backend/tests/integration/test_route_surface.py` measures the status, body and content type these
+handlers reproduce (`D174`) — and the per-route caller-to-backend mapping is in
 [`../docs/testing/TRACEABILITY-MATRIX.md`](../docs/testing/TRACEABILITY-MATRIX.md).
 
 ### Origin and path confinement
@@ -405,6 +420,34 @@ The same ledger backs request screening: every handler checks the request agains
 `ROUTE_CONTRACTS`, and in layer 1 a request that deviates — an unknown or absent query key, a
 placeholder path parameter, an unexpected body — is answered with status **599** and a body listing the
 violations, never with a success status (`D3`, `D4`).
+
+### The per-test cleanup, and how its own contract is proven
+
+Everything a test may change is discarded by one function,
+[`resetSharedTestState()`](./src/test-utils/reset-shared-state.ts): the msw runtime handler array, both
+pieces of `handlers.ts` module state (the request log and the isolation ledger), and
+`REACT_APP_API_BASE_URL`. `runSharedAfterEach()` in the same module wraps it — ledger assertion in a
+`try`, the reset in a `finally` — and `setup-jest.ts` registers *that* as the global `afterEach`. You do
+not call either one; the hook does.
+
+It lives in its own module for a reason worth understanding before you extend it. A contract of the form
+"state a test changes is gone before the next test sees it" is tempting to prove by changing something in
+one test and looking for it in the next — and that proof is worthless, because it depends on the order
+the tests are declared in. Split the pair, reorder it, or run either half with `-t` and it passes while
+measuring nothing, which is exactly the order dependence the reliability checklist in
+§[8](#reliability-checklist) forbids. Exported as a function, the same contract is provable inside a
+single test: **change one thing, call the cleanup, assert it is gone** — reading the state back and
+re-emitting the request whose outcome the change would have altered.
+[`setup-jest.test.ts`](./src/test-utils/setup-jest.test.ts) is written that way throughout, and every one
+of its tests passes standalone. What a single test cannot see — whether `setup-jest.ts` registers that
+cleanup at all — it checks separately, by loading `setup-jest.ts` into an isolated module registry with
+the Jest hook globals captured and asserting the registered `afterEach` **is** `runSharedAfterEach` by
+identity (`D238`).
+
+Two consequences for your own suites. If you add a new piece of mutable state to `handlers.ts`, put its
+reset inside `resetHandlerState()` — that is the one call site the cleanup reaches, so nothing else needs
+editing. And if you find yourself proving anything with a pair of tests, stop: make each test
+self-contained instead.
 
 ### The four routes, and who calls them
 
@@ -472,7 +515,9 @@ disposition the real backend produces rather than one you invented.
 ### Driving a configured base URL
 
 Because `api.ts` reads the variable once at module scope, assigning it inside a test changes nothing
-observable. Use the loader, which sets the variable, discards the module registry and *then* imports:
+observable. Use the loader — `importWithConfiguredBase`, exported by
+[`src/test-utils/handlers.ts`](./src/test-utils/handlers.ts) beside the `CONFIGURED_BASE_URL` it applies
+— which sets the variable, discards the module registry and *then* imports:
 
 ```ts
 const api = await importWithConfiguredBase(() => import('./api'));
@@ -558,31 +603,39 @@ gated scopes is visible in the report even though it does not fail the run.
 
 ### Measured on this run
 
-Figures below are from a single `npm run test:ci` on Node v22.23.1, which exited **0**. Re-measure
-before quoting them anywhere — do not carry them forward as if they were permanent. Percentages are
-**truncated** to two decimals, which is what Istanbul and Jest's threshold reporting do; rounding them
-instead will put you one hundredth away from what the runner prints.
+Every figure below is a measurement rather than a target, so it carries where it came from. Re-measure
+before quoting any of it — a number that outlives the tree it was taken on is a claim, not evidence.
 
-Suites: 3 skipped, 20 passed, 20 of 23 total. Tests: 24 skipped, 307 passed, 331 total. 0 snapshots.
+Suites: 3 skipped, 21 passed, 21 of 24 total. Tests: 24 skipped, 346 passed, 370 total. 0 snapshots.
+
+The 24 skips are the three page suites that cannot mount, and every one of them carries its own
+blocker reason — the skip is per test, not a blanket `describe.skip`, so a skipped identity still
+appears in `reports/jest-junit.xml` with the missing export named. Jest's *summary* line nevertheless
+counts a suite whose every test is pending as a skipped suite, which is why "3 skipped" appears above
+even though all three files are collected, transformed and executed to their `describe` bodies.
 
 | Scope | Statements | Branches | Functions | Lines |
 | --- | --- | --- | --- | --- |
 | `src/schema` **(gated)** | 100% (4/4) | 100% (0/0) | 100% (0/0) | 100% (4/4) |
 | `src/services` **(gated)** | 100% (38/38) | 100% (0/0) | 100% (6/6) | 100% (34/34) |
-| `src/store` **(gated)** | 97.43% (38/39) | 100% (1/1) | 100% (11/11) | 97.29% (36/37) |
+| `src/store` **(gated)** | 100% (39/39) | 100% (1/1) | 100% (11/11) | 100% (37/37) |
 | `src/components` | 100% (85/85) | 100% (5/5) | 100% (25/25) | 100% (80/80) |
 | `src/utils` | 100% (29/29) | 100% (21/21) | 100% (4/4) | 100% (29/29) |
-| `src/pages` | 34.83% (31/89) | 20% (1/5) | 5% (1/20) | 36.04% (31/86) |
+| `src/pages` | 41.57% (37/89) | 40% (2/5) | 20% (4/20) | 43.02% (37/86) |
 | `src/index.tsx` | 0% (0/11) | 100% (0/0) | 0% (0/1) | 0% (0/11) |
-| **Whole denominator** | **76.27% (225/295)** | **87.5% (28/32)** | **70.14% (47/67)** | **76.15% (214/281)** |
+| **Whole denominator** | **78.64% (232/295)** | **90.62% (29/32)** | **74.62% (50/67)** | **78.64% (221/281)** |
 
-All three gated scopes clear the threshold with margin. The two figures short of 100% elsewhere that a
-test *could* move are `src/store/tweetSlice.ts` at 95.45% statements and `src/pages/TweetManagement.tsx`
-at 66.66%; everything else short of 100% is a ceiling, below.
+All three gated scopes are at 100% on every metric, twenty points clear of the 80 threshold. The last two
+addressable gaps have since been closed: `src/store/tweetSlice.ts` reached 100% once the `fetchTweets`
+thunk's own happy path was driven (the module's missing `api` export is injected for the duration of that
+describe block and removed afterwards), and `src/pages/TweetManagement.tsx` went from 66.66% to **100%** on
+all four metrics once its callbacks were invoked from the second page file. Everything still short of 100%
+is a ceiling, below - `src/pages` is held down by the three page modules that cannot mount at all, and
+`src/index.tsx` calls a React 17 API under React 18.
 
 The gate is live — verified by re-running with `./src/pages` thresholded at 80 through a command-line
 override, which exits **1** with
-`Jest: "./src/pages" coverage threshold for statements (80%) not met: 34.83%`.
+`Jest: "./src/pages" coverage threshold for statements (80%) not met: 41.57%`.
 
 ### Artifacts
 
@@ -597,7 +650,9 @@ override, which exits **1** with
 | `frontend/reports/jest-junit.xml` | the `jest-junit` reporter | CI test reporting |
 
 `'json'` has to stay in `coverageReporters`: it is the reporter that writes `coverage-final.json`, which
-is the file the existing Codecov step already uploads (`D36`).
+is the file the pre-existing `frontend`-flagged Codecov step asks for (`D36`). That step's path was
+repointed to `./frontend/coverage/coverage-final.json`, because it runs from the repository root —
+see §[9](#9-observability-of-this-suite).
 
 The JUnit report carries a stable identity for every test, which is what lets a CI result be matched
 back to a source location and to the requests that test made:
@@ -610,9 +665,10 @@ back to a source location and to the requests that test made:
   read.
 
 Those come from **template functions** rather than `'{filepath}'` strings, because a string cannot
-normalise a path separator and `{title}` expands to the leaf title alone (`D157`).
-`src/test-utils/junit-correlation.test.ts` holds the reporter options and the emitted shape to that
-contract (`D158`), so if you change the reporter options, expect that suite to tell you.
+normalise a path separator and `{title}` expands to the leaf title alone (`D157`). The other half of the
+same identity is `currentTestId()` in [`src/test-utils/handlers.ts`](./src/test-utils/handlers.ts),
+which stamps every intercepted request with that exact string — so if you change either the reporter
+options or that helper, change both (`D158`, `D273`, `D285`).
 
 Both `frontend/coverage/` and `frontend/reports/` are ignored by the repository-root
 [`.gitignore`](../.gitignore), so a test run leaves nothing to commit. Verify with
@@ -628,18 +684,50 @@ there is no global coverage threshold. Do not spend time chasing them.
 | --- | --- |
 | `src/app.tsx` — excluded from the denominator, permanently 0% | It imports the invalid store, imports a `setupInterceptors` that is never exported, and default-imports a module that only has a named export. It cannot be mounted (`D71`). |
 | `src/index.tsx` — 0% | It calls `renderApp()` at module scope, so importing it would execute a full `ReactDOM.render` against the real store. No test imports it. |
-| Three of four page modules cannot mount | `useAppDispatch` / `useAppSelector` are not exported by `src/store/index.ts`. `src/pages/Dashboard.test.tsx` (8 tests), `src/pages/Configuration.test.tsx` (10) and `src/pages/Analytics.test.tsx` (6) are written and skipped with reasons naming the missing export; `src/pages/TweetManagement.test.tsx` runs. |
+| Three of four page modules cannot mount | `useAppDispatch` / `useAppSelector` are not exported by `src/store/index.ts`. `src/pages/Dashboard.test.tsx` (8 tests), `src/pages/Configuration.test.tsx` (10) and `src/pages/Analytics.test.tsx` (6) are written, collected and skipped **per test**, each skip naming the missing export and the line that raises; `src/pages/TweetManagement.test.tsx` runs (`D215`). |
 | The tweet-rendering branch of both list components | `TweetCard` is imported by `src/components/Dashboard` and by `src/components/TweetManagement` — the latter **from itself** — and is defined nowhere. A non-empty list yields React's "Element type is invalid … got: undefined". The suites assert that diagnostic rather than silencing it (`D156`). |
-| Chart.js construction in `src/components/Analytics` | It imports the tree-shakeable `{ Chart }` and never calls `Chart.register`, so construction can never succeed — in a real browser either. The suite asserts the caught failure instead. |
+| Chart.js construction in `src/components/Analytics` | It imports the tree-shakeable `{ Chart }` and never calls `Chart.register`, so construction can never succeed — in a real browser either. The suite asserts what it can reach; the missing-registration failure itself is **unverified**, and the paragraph below says exactly which part of that is evidenced and which is not. |
 
-### Do not add the Chart.js shims
+### The missing `Chart.register` is an unverified ceiling
+
+Be precise about this one, because it is easy to overstate. Three things are asserted by executing
+tests, and one is not:
+
+| Behaviour | Where | State |
+| --- | --- | --- |
+| The subject constructs one chart, on `canvas#trendChart`, with the configuration it owns | `Analytics.test.tsx`, with `Chart` replaced by an inert spy | **Asserted** |
+| The subject constructs no chart when `getTrendData` resolves falsy, and swallows and logs a rejection without reaching `renderCharts` | `Analytics.test.tsx` | **Asserted** |
+| The real `chart.js` is entered once, jsdom reports it cannot supply a 2D rendering context, nothing propagates, and the component is still mounted with its canvas | `Analytics.test.tsx`, one case that puts the real library back | **Asserted** |
+| Chart.js reporting a scale or controller that no module registered | nowhere | **Unverified** |
+
+The last row is the ceiling. Observing it needs a real canvas context *and* a resolved trend series in
+the same run: under jsdom there is no 2D context, and jsdom says so before Chart.js looks anything up in
+its registry, so that notice — not the registration — is what the real-library case observes. The E2E
+layer has a browser and therefore a context, but `e2e/harness/stubs/analyticsService.ts` rejects on
+every path, so `renderCharts` is never reached there; `e2e/tests/analytics.spec.ts` carries the
+assertion and skips it unconditionally with that reason. Neither layer is hiding the other's gap, and
+neither should be described as covering it.
+
+### The four chart paths, kept apart
+
+`src/components/Analytics` has one `try`/`catch` and it wraps only the `getTrendData` call. Nothing
+wraps `new Chart(...)`. Four outcomes are therefore distinct, and conflating them is the single easiest
+mistake to make in this folder — three are asserted, the fourth is out of reach everywhere:
+
+| Path | What happens | Where it is asserted |
+| --- | --- | --- |
+| A controlled `Chart` constructor | `src/components/Analytics.test.tsx` substitutes the constructor, so nothing fails at all. The configuration object the component builds is the subject. | `src/components/Analytics.test.tsx` |
+| jsdom with the real library | `chart.js` cannot acquire a 2D context from jsdom's canvas and **returns early itself**. Nothing is thrown, so nothing is caught; the component stays mounted with its heading and canvas intact. | `src/components/Analytics.test.tsx`, and the E2E render check |
+| The trend request rejects | The `getTrendData` `catch` runs, `chartData` stays null, and `renderCharts` is never entered — a path that never reaches Chart.js. | `src/components/Analytics.test.tsx`, `e2e/tests/analytics.spec.ts` |
+| A real browser with a working canvas | `Chart.register` was never called, so construction raises **outside any `catch`**, the raise propagates out of the effect and React unmounts `TrendCharts`. | Nowhere. `e2e/tests/analytics.spec.ts` carries it as a skip naming this reason (`D216`). |
 
 **Do not install `jest-canvas-mock`, and do not add a `ResizeObserver` stub.** They look like the
-obvious fix for the Analytics component and they make the result strictly worse: with the canvas mock
-alone Chart.js reaches `ReferenceError: ResizeObserver is not defined`, and with both it reaches
-`Error: "linear" is not a registered scale`, which escapes to React and **unmounts** `TrendCharts`,
-leaving nothing to assert. Unshimmed, the component stays mounted with its heading and canvas intact —
-which is how `src/components/Analytics` measures 100% today. The evidence is in `D92`.
+obvious fix and they make the result strictly worse — they move the suite from the second row to the
+fourth. With the canvas mock alone Chart.js reaches `ReferenceError: ResizeObserver is not defined`,
+and with both it reaches `Error: "linear" is not a registered scale`, which escapes to React and
+**unmounts** `TrendCharts`, leaving nothing to assert. Unshimmed, the component stays mounted — because
+`chart.js` bails out on its own, not because anything caught a failure — which is how
+`src/components/Analytics` measures 100% today. The evidence is in `D92`.
 
 ## 8. Adding a suite
 
@@ -669,7 +757,11 @@ Audit your own suite against this before opening it for review:
 - [ ] No real network. Nothing reaches a socket, and no unhandled-request ledger entry is produced.
 - [ ] No wall-clock dependence. Fake timers or fixed fixture dates, never `Date.now()` drift and never
       a sleep.
-- [ ] No order dependence. It passes standalone, in the full run, and with `--runInBand`.
+- [ ] No order dependence. **Every test passes standalone**, in the full run, and with `--runInBand` —
+      check the first of those with `npx jest <file> -t "<the exact test name>"`, which runs one test and
+      skips the rest. In particular, never prove a cleanup or reset with a pair of tests where the second
+      inspects what the first left behind; call the shared helper inside one test instead
+      (§[5](#the-per-test-cleanup-and-how-its-own-contract-is-proven)).
 - [ ] No snapshots.
 - [ ] Shared setup only in `src/test-utils/`. Nothing copy-pasted between suites.
 - [ ] Every assertion has a real oracle. Expected values are literals or fixture-derived — **never
@@ -706,7 +798,7 @@ Every one of these has already cost someone time in this codebase.
 | Omitting `quoted_tweet_id` fails `tweetSchema` | It is **nullable, not optional**. Pass `null` explicitly. |
 | A `jest.spyOn(axios, …)` has no effect | You are asserting a module loaded through `importWithConfiguredBase`, which returns a fresh instance. Drive it through msw (§[configured base](#driving-a-configured-base-url)). |
 | A Redux Toolkit serializability warning in the console | Expected. A `makeTweet()` fixture's `timestamp` is a `Date`; the check is deliberately left on and the warning fails nothing. |
-| `dependency-closure.test.ts` fails after you touched `package.json` | Intended. The eleven suite-owned pins must stay exact, and the seventeen baseline declarations must stay byte-identical to the frozen baseline (`D172`). |
+| A dependency change makes a suite fail to resolve | The eleven suite-owned devDependencies must stay exact pins, and the seventeen baseline declarations must stay byte-identical to the frozen baseline (`D171`). Re-run `npm install` after any edit to `package.json`. |
 | A test passes alone and fails in the full run | An isolation breach. Check for a `server.use(...)` you expected to persist, module state outside `src/test-utils/`, or a real timer left running. |
 
 ## 9. Observability of this suite
@@ -714,10 +806,19 @@ Every one of these has already cost someone time in this codebase.
 The Observability rule asks that a deliverable record what it reused and what it added. For this
 folder:
 
-**Reused, unchanged.** The two Codecov upload steps that already existed in
-[`../.github/workflows/ci.yml`](../.github/workflows/ci.yml), and their `backend` and `frontend` flags.
-The frontend step's `file:` path already pointed at `coverage/coverage-final.json`, which is why
-`'json'` is a required entry in `coverageReporters` rather than an optional extra.
+**Reused.** The two Codecov upload steps that already existed in
+[`../.github/workflows/ci.yml`](../.github/workflows/ci.yml), the action they call, and their `backend`
+and `frontend` flags — none of which changed. The frontend step already asked for
+`coverage-final.json`, which is why `'json'` is a required entry in `coverageReporters` rather than an
+optional extra.
+
+**Repointed, not reused unchanged.** That step's `file:` path *was* changed: `./coverage/coverage-final.json`
+became `./frontend/coverage/coverage-final.json`. The step runs with the job's default working
+directory, which is the repository root, while the run that produces the file happens under
+`frontend/` — so the original path named a file that never exists and the upload would have found
+nothing. The backend step was repointed the same way, `./coverage.xml` to `./backend/coverage.xml`. Both
+are test-step prerequisites under the authorized CI surface; the flags are what Codecov keys on and they
+are untouched, so no dashboard history is orphaned by the move.
 
 **Added.** The `jest-junit` reporter (`D36`, `D37`, `D157`), and four coverage reporters beyond Jest's
 default — `lcov`, `json`, `json-summary` and `cobertura`, alongside `text-summary` for the console. The
@@ -725,10 +826,32 @@ per-test correlation identity described in §[7](#artifacts), and the request lo
 stamps the same identity on every intercepted request (`D83`). Together these are this suite's metrics
 surface (`D193`).
 
-**The readiness gate.** `npx jest --listTests` is the meaningful readiness check: it exits 0 and lists
-every collectable test file — **23** on this run — proving the whole graph resolves before any
-assertion runs. A resolution or transform regression shows up there first, and much more clearly than
-in a failing assertion. A clean `npm run test:ci` is the full check.
+**The readiness gate.** Two checks, and they prove different things — do not substitute one for the
+other.
+
+`npx jest --listTests` is **discovery only**. It walks `roots` against `testMatch` and prints the files
+it would run — **23** on this run, exit 0. It loads nothing, transforms nothing and resolves no import,
+so it cannot tell you the suite is loadable: a file with a broken import or a failing transform is
+listed exactly like a healthy one.
+
+The load-and-execution gate is a non-watch run whose name filter matches nothing:
+
+```bash
+npx jest --ci --watchAll=false --runInBand -t "__readiness_probe_that_matches_no_test__"
+```
+
+Jest can only know a test's name after it has transformed the file, executed it at module scope and run
+its `describe` callbacks, so this transforms and loads all 23 files, evaluates every module in their
+import graphs, registers all **370** test identities, then runs zero test bodies. On this run it exits
+**0** in about 11 seconds reporting `24 skipped, 0 of 24 total` and `370 skipped, 370 total`.
+`--runInBand` keeps it in one process, which is what keeps the output clean — the worker pool otherwise
+adds a teardown warning that has nothing to do with readiness. Negative-validated: adding one
+unresolvable import to `src/utils/formatUtils.test.ts` turns it into exit **1** with
+`Test suite failed to run … Cannot find module`, `1 failed, 22 skipped, 1 of 23 total`; the import was
+removed again immediately.
+
+A clean `npm run test:ci` remains the full check — it is the only one of the three that executes an
+assertion.
 
 **No production instrumentation was added.** Nothing under `src/` gained a logger, a metric, a trace
 hook or a health endpoint. The production instrumentation gaps are recorded in the decision log
@@ -747,7 +870,7 @@ cited handle, or its noted-but-not-fixed register.
 
 | # | Task | Impact of not doing it | Trace |
 | --- | --- | --- | --- |
-| 1 | Commit a `package-lock.json` and restore `npm ci` in CI (this also means removing `package-lock=false` from [`.npmrc`](./.npmrc)). | No install is reproducible; the manifest and the installed graph have already diverged once. | `D93`, `D159` |
+| 1 | Commit a `package-lock.json` and restore `npm ci` in CI. | No install is reproducible; the manifest and the installed graph have already diverged once. | `D93`, `D159` |
 | 2 | Move `@reduxjs/toolkit`, `react-redux`, `react-router-dom`, `zod` and `dayjs` from `devDependencies` into `dependencies`. | Production source imports all five at runtime, so a production install omits them. | register, §*Build, CI and repository hygiene* |
 | 3 | Add `eslint` and `eslint-config-react-app`. | The `lint` script and the `ci.yml` lint step cannot run at all — no linter is declared anywhere. | `D187` |
 | 4 | Create `tsconfig.node.json`, or remove the dangling project reference from `tsconfig.json`. | `npm run build` fails and no Vite-based transform can process a single `.tsx` file. | `D32` |
@@ -764,6 +887,10 @@ cited handle, or its noted-but-not-fixed register.
 | 15 | Correct the stale `"name": "data-visualization-dashboard"` in `package.json` and the "Personal Finance Tracker" title in `public/index.html`. | Two product identities in this folder, neither of which is this product. | register, §*Build, CI and repository hygiene* |
 | 16 | Reconcile the `POST /generate-response` / `POST /tweets/{id}/responses` mismatch. | The frontend calls a path the backend does not declare, and the backend implements one nothing calls — so no response can ever be generated. | `D10`, `D15` |
 | 17 | Turn `diagnostics` back on once items 4, 7 and 10 land. | The suite compiles without type checking, so a type error reaches review unaided. | `D32` |
+| 18 | Give the analytics chart an accessible name and a text alternative — `role="img"` with `aria-label`, or a data table beside the canvas. | The whole of the analytics content is invisible to a screen reader: the canvas carries no naming attribute and a canvas has no implicit role. | `D217`, `G9` |
+| 19 | Make the loading indicator and the polled feed announce themselves — `role="status"` on the indicator, `aria-live` on `div.real-time-feed`. | A non-sighted user is told neither that a fetch is in flight nor that the feed replaced itself, which it does every 30 000 ms. | `D217`, `G10` |
+| 20 | Hold pending state across the credential save: `disabled` plus `aria-busy` on the button while the write is open. | A second activation mid-flight issues a second identical credential write and a second dialog; nothing in the UI indicates the first is still running. | `D217`, `G11` |
+| 21 | Render `API Key` and `Access Token` as `type="password"` and declare an `autocomplete` policy on all four fields. | Two of four credentials are shown in clear text and are offered to the browser's generic autofill; masking currently follows the field's name, not its sensitivity. | `D217`, `G12` |
 
 ## 11. Where "why" lives
 
@@ -788,4 +915,3 @@ by pointing somewhere rather than by argument here:
 Comments inside test and configuration files state **what the code does** and what a suite asserts;
 they do not carry rationale (`D148`). If a comment and this document ever disagree, the code is
 authoritative and one of the two is stale — fix it.
-

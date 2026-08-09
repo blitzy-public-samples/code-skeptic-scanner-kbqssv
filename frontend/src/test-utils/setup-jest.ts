@@ -18,8 +18,10 @@
  *    this module is evaluating**, not from `beforeAll`: Jest evaluates a test module - and every import-time
  *    side effect in its graph - before it runs `beforeAll`, and `services/api.ts` runs at module scope while
  *    both list components fetch on mount, so anything done at import time would otherwise reach a socket.
- * 4. A global `afterEach` that fails the test on any recorded isolation breach, then discards per-test
- *    handlers and every piece of mutable state this layer owns.
+ * 4. A global `afterEach` bound to `runSharedAfterEach` from `./reset-shared-state`, which fails the test
+ *    on any recorded isolation breach and then discards per-test handlers and every piece of mutable state
+ *    this layer owns. The body lives in that module rather than inline here so a test can invoke the same
+ *    cleanup directly and prove the contract without depending on the order tests are declared in.
  *
  * `onUnhandledRequest` is a callback rather than the `'error'` string so the request can be put in the ledger
  * in `./handlers` *before* `print.error()` raises. The raise happens inside the request lifecycle and every
@@ -35,8 +37,9 @@
  * Testing Library global configuration; and any seeding of environment variables.
  *
  * @see frontend/src/test-utils/setup-jest.test.ts - the suite that holds this module to the contract above.
+ * @see frontend/src/test-utils/reset-shared-state.ts - the cleanup this file registers.
  * @see frontend/TESTING.md - the msw contract, the `server.use(...)` idiom, and how to add a handler.
- * @see docs/testing/DECISION-LOG.md - rows D108 and D136.
+ * @see docs/testing/DECISION-LOG.md - rows D108, D136 and D238.
  */
 
 /*
@@ -47,8 +50,9 @@ delete process.env.REACT_APP_API_BASE_URL;
 
 import '@testing-library/jest-dom';
 
-import { assertNoIsolationViolations, recordUnhandledRequest, resetHandlerState } from './handlers';
+import { recordUnhandledRequest } from './handlers';
 import { server } from './msw-server';
+import { runSharedAfterEach } from './reset-shared-state';
 
 /*
  * Interception is live from this statement onward, which is before Jest evaluates the test file. Any request
@@ -62,26 +66,16 @@ server.listen({
   },
 });
 
-/**
- * Fails the test on any isolation breach, then discards everything a test may have changed: the handlers it
- * added through `server.use(...)`, every piece of `./handlers` module state, and the base-URL variable.
+/*
+ * The hook body is `runSharedAfterEach` itself, passed by reference rather than wrapped in an arrow
+ * function: `./setup-jest.test.ts` asserts that identity, which is how the wiring between this file and the
+ * cleanup is proven without one test having to observe the state another test left behind.
  *
- * The assertion runs first and the resets run in `finally`, so a failing test still hands the next one clean
- * state. `resetHandlerState()` is the one call site for that state - the request log and the ledger - so a new
- * piece of state added there is discarded here without editing this hook.
- *
- * `REACT_APP_API_BASE_URL` is deleted rather than restored: it is absent from the environment the suite runs
- * in, and a test that sets it does so to observe `services/api.ts` under a configured base URL.
+ * What it does - assert the isolation ledger, then discard the handlers a test added with `server.use(...)`,
+ * every piece of `./handlers` module state and the base-URL variable, with the resets in a `finally` - is
+ * documented on the function in `./reset-shared-state`.
  */
-afterEach(() => {
-  try {
-    assertNoIsolationViolations();
-  } finally {
-    server.resetHandlers();
-    resetHandlerState();
-    delete process.env.REACT_APP_API_BASE_URL;
-  }
-});
+afterEach(runSharedAfterEach);
 
 afterAll(() => {
   server.close();

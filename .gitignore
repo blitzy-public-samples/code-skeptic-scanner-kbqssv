@@ -7,6 +7,14 @@
 # pytest suite, the frontend Jest suite, the Playwright e2e suite, and the
 # local development virtual environments.
 #
+# Scope: test artifacts, the dependency trees the suites install, and the
+# evidence a verification run captures.  Nothing else.  In particular there is
+# deliberately no rule for build output (`dist/`, `build/`) and none for editor
+# or operating-system noise (`.DS_Store`, `Thumbs.db`, `*.swp`): no suite here
+# produces either, so such a rule would ignore files this work never generates,
+# and a contributor's editor and platform are not this file's business.  Add
+# them in a change that has a reason to.
+#
 # Generated artifacts only.  Nothing here ignores a source file, and that
 # includes dependency lockfiles: a `package-lock.json` is the recorded
 # resolution of a manifest, not an artifact of a test run, and ignoring one
@@ -17,28 +25,19 @@
 # --- Python bytecode / caches ---
 __pycache__/
 *.py[cod]
-*$py.class
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# --- Python coverage artifacts ---
 .coverage
-.coverage.*
 coverage.xml
 coverage.json
 coverage.lcov
 htmlcov/
-
-# --- Test report directories: the three the runners write, and the repository root ---
-/reports/
 backend/reports/
 
-# --- Frontend test + coverage artifacts ---
+# Frontend artifacts
 frontend/coverage/
 frontend/reports/
 
-# --- Node dependency trees ---
+# Dependency trees
 node_modules/
 e2e/node_modules/
 
@@ -47,25 +46,24 @@ e2e/node_modules/
 # lockfile is the only artifact that records an integrity-hashed dependency
 # graph, and `npm ci` refuses to run without one, so ignoring it would make a
 # frozen install impossible for both `frontend` and `e2e`.  Neither package
-# commits one today - both manifests exact-pin their direct dependencies
-# instead, which frontend/src/test-utils/dependency-closure.test.ts enforces
-# alongside the absence of this rule - but nothing here stands in the way of
-# committing one.  See docs/testing/DECISION-LOG.md.
+# commits one today, and what stands in for one is narrower than a lockfile:
+# all 3 of e2e's declarations and the 11 test dependencies this suite added to
+# frontend/package.json are exact pins, while frontend's 17 pre-existing
+# declarations remain caret ranges that were left untouched.  So the frontend
+# graph is only partly frozen.  frontend/src/test-utils/dependency-closure.test.ts
+# enforces exactly that split - exact pins where they exist, an exact *installed*
+# version for the ranged baseline - alongside the absence of this rule.  Nothing
+# here stands in the way of committing a lockfile.
+# See docs/testing/DECISION-LOG.md.
 
 # --- Playwright / e2e artifacts ---
 e2e/test-results/
 e2e/playwright-report/
 e2e/reports/
-playwright/.cache/
 
 # --- Browser/desktop evidence captured during verification runs ---
 blitzy/screenshots/
 blitzy/screen_recordings/
-
-# --- Build output ---
-dist/
-build/
-.vite/
 
 # ---------------------------------------------------------------------------
 # Local development environments.
@@ -74,12 +72,6 @@ build/
 # repository, so it must never be committed.
 # ---------------------------------------------------------------------------
 .venv-backend/
-.venv/
 venv/
 env/
 ENV/
-
-# --- Editor / OS noise ---
-.DS_Store
-Thumbs.db
-*.swp

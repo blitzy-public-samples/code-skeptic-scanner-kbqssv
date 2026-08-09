@@ -15,12 +15,24 @@
  * 2. A parsed body that is not a {@link TrendSeries} rejects with
  *    {@link TrendSeriesContractError}, which names the member at fault.
  * 3. A parsed body that *is* a {@link TrendSeries} rejects with
- *    {@link UnrenderableTrendSeriesError}.
+ *    {@link UnrenderableTrendSeriesError}, *unless* the response carries
+ *    {@link FORWARD_TREND_SERIES_HEADER}, in which case it resolves with that series.
  *
- * It therefore always rejects, and the three rejections are distinguishable by type.
+ * So it rejects by default, the three rejections are distinguishable by type, and one
+ * spec at a time can opt into the fourth path.
+ *
+ * That opt-in is what makes the chart ceiling assertable rather than merely described.
+ * Forwarding a series carries the subject into `renderCharts`, whose `new Chart(...)`
+ * throws out of a passive effect and unmounts the route - so it is a destructive path
+ * no other spec wants, and the default has to stay refusal. Selecting it through a
+ * *response header* is the only channel available: the request URL is built here from
+ * the component's own prop, so a spec cannot influence it, and an envelope field in the
+ * body would fail the {@link TrendSeries} shape check this module and
+ * `e2e/fixtures/trends.json` share.
  *
  * @see docs/testing/DECISION-LOG.md - row D127, which refines D44.
  * @see docs/testing/DECISION-LOG.md - row D143, the non-ok body read.
+ * @see docs/testing/DECISION-LOG.md - row D231, the opt-in forwarding header.
  * @see docs/testing/TRACEABILITY-MATRIX.md - the unreachable chart branch as an
  *   assertion obligation.
  */
@@ -42,6 +54,26 @@ export interface TrendSeries {
 
 /** Endpoint the specs intercept, and the only place this path is written. */
 const TRENDS_ENDPOINT = '/api/trends';
+
+/**
+ * Response header a spec sets to have a well-formed series forwarded to the caller
+ * instead of rejected.
+ *
+ * Read same-origin, so no CORS filtering hides it. Absent from every response the
+ * harness dev server itself produces - it answers an unintercepted `/api/trends` with
+ * `503 harness-api-not-intercepted` - so the forwarding path is reachable only from a
+ * spec that asks for it by name.
+ */
+export const FORWARD_TREND_SERIES_HEADER = 'x-harness-forward-trend-series';
+
+/**
+ * The one value {@link FORWARD_TREND_SERIES_HEADER} is honoured for.
+ *
+ * Compared exactly, so a header carrying anything else - including `'0'`, `'false'` or
+ * an empty string - leaves the default rejection in place rather than half-enabling a
+ * path that unmounts the route.
+ */
+export const FORWARD_TREND_SERIES_VALUE = '1';
 
 /**
  * Rejection produced when the fetched body is not a {@link TrendSeries}.
@@ -70,7 +102,8 @@ export class TrendSeriesContractError extends Error {
 }
 
 /**
- * Rejection produced for a well-formed {@link TrendSeries}.
+ * Rejection produced for a well-formed {@link TrendSeries} the response did not opt into
+ * forwarding.
  *
  * Named so a spec, or a page-error listener, can attribute the console line the
  * component logs. `frontend/src/components/Analytics` catches it at lines 18-20,
@@ -86,11 +119,12 @@ export class UnrenderableTrendSeriesError extends Error {
 
   constructor(url: string, series: TrendSeries) {
     super(
-      `GET ${url} returned a trend series of ${series.labels.length} labels, which the ` +
-        'harness does not forward: @/components/Analytics constructs a Chart from the ' +
-        'tree-shakeable { Chart } export without calling Chart.register, so a renderable ' +
-        'series throws out of its useEffect and unmounts the route. The route is asserted ' +
-        'on its caught-failure path instead.',
+      `GET ${url} returned a trend series of ${series.labels.length} labels, which this ` +
+        'response did not opt into forwarding: @/components/Analytics constructs a Chart ' +
+        'from the tree-shakeable { Chart } export without calling Chart.register, so a ' +
+        'renderable series throws out of its useEffect and unmounts the route. Most specs ' +
+        `assert the caught-failure path instead; one that asserts that unmount sets the ` +
+        `"${FORWARD_TREND_SERIES_HEADER}" response header.`,
     );
     this.name = 'UnrenderableTrendSeriesError';
     this.url = url;
@@ -144,13 +178,15 @@ function describeTrendSeriesViolation(payload: unknown): string | null {
  *
  * @param dateRange - Range whose two members become the `start` and `end` query
  *   parameters, interpolated verbatim.
- * @returns Never resolves.
+ * @returns The fetched series, and only when the response opted in with
+ *   {@link FORWARD_TREND_SERIES_HEADER}. Never resolves otherwise.
  * @throws Error - When the response status falls outside 200-299. The body is read to
  *   completion and discarded first; the message names the request URL and that status,
  *   and carries nothing the body held.
  * @throws TrendSeriesContractError - When the parsed body is not a
- *   {@link TrendSeries}.
- * @throws UnrenderableTrendSeriesError - When it is one.
+ *   {@link TrendSeries}. Checked before the opt-in, so opting in cannot smuggle a
+ *   malformed payload past the shape check.
+ * @throws UnrenderableTrendSeriesError - When it is one and the response did not opt in.
  */
 export const getTrendData = async (dateRange: DateRange): Promise<TrendSeries> => {
   const url = `${TRENDS_ENDPOINT}?start=${dateRange.startDate}&end=${dateRange.endDate}`;
@@ -170,5 +206,12 @@ export const getTrendData = async (dateRange: DateRange): Promise<TrendSeries> =
     throw new TrendSeriesContractError(url, violation);
   }
 
-  throw new UnrenderableTrendSeriesError(url, payload as TrendSeries);
+  const series = payload as TrendSeries;
+
+  if (response.headers.get(FORWARD_TREND_SERIES_HEADER) === FORWARD_TREND_SERIES_VALUE) {
+    // The spec asked for the destructive path, having asserted what it destroys.
+    return series;
+  }
+
+  throw new UnrenderableTrendSeriesError(url, series);
 };

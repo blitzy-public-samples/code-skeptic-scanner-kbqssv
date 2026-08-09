@@ -44,14 +44,17 @@ const PAGE_HEADING_LEVEL = 1;
 const FETCH_ERROR_MARKER = 'Error fetching tweets:';
 
 /**
- * Message of the `TypeError` the child records as that call's second argument.
+ * What the `TypeError` the child records as that call's second argument must say.
  *
- * `twitterService_1` is the local alias ts-jest's CommonJS emit gives the `@/services/twitterService`
- * namespace, and `(0 , <alias>.getTweets)` is how V8 renders the callee of the emitted
- * `await (0, twitterService_1.getTweets)(filters, page)` - one space before the comma - when the property
- * resolves to `undefined`.
+ * Two semantic fragments rather than the whole message. The full text - which reads
+ * `(0 , twitterService_1.getTweets) is not a function` under the current toolchain - is built from
+ * things that are not this page's contract: `twitterService_1` is the local alias ts-jest's CommonJS
+ * emit happens to give the `@/services/twitterService` namespace, `(0 , …)` with its single leading
+ * space is how V8 currently renders an indirect callee, and both would change with a module target, a
+ * transformer or a V8 version without anything about the product changing. What *is* the contract is
+ * that the missing export is named and that calling it failed, so that is what these match.
  */
-const MISSING_GET_TWEETS_MESSAGE = '(0 , twitterService_1.getTweets) is not a function';
+const MISSING_GET_TWEETS_FRAGMENTS = [/getTweets/, /is not a function/] as const;
 
 /** Number of times the child's mount effect runs: its `filters` dependency is the page's stable initialiser. */
 const EXPECTED_MOUNT_FETCHES = 1;
@@ -148,8 +151,12 @@ describe('pages/TweetManagement', () => {
 
     expect(marker).toBe(FETCH_ERROR_MARKER);
     expect(recorded).toBeInstanceOf(TypeError);
-    expect((recorded as TypeError).message).toBe(MISSING_GET_TWEETS_MESSAGE);
-    expect(String(recorded)).toBe(`TypeError: ${MISSING_GET_TWEETS_MESSAGE}`);
+
+    /* The missing export is named, and calling it is what failed. */
+    const message = (recorded as TypeError).message;
+
+    MISSING_GET_TWEETS_FRAGMENTS.forEach((fragment) => expect(message).toMatch(fragment));
+    expect(String(recorded)).toMatch(/^TypeError: /);
   });
 
   it('omits the selected-tweet block, leaving the undefined TweetCard unreached', async () => {

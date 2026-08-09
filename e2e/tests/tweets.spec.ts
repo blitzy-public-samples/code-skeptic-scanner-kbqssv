@@ -7,10 +7,13 @@
  * transforms it, and appends the two names it imports that no module declares - `getTweets`
  * from `services/twitterService` and `TweetCard` from itself - each carrying `undefined`.
  *
- * `test` and `expect` come from `./harness-fixtures`, whose automatic `noEgress` fixture
- * aborts every request addressed off the harness origin and fails the test at teardown for
- * any harness API request no route below claimed. Each test therefore installs its own
- * interception before navigating, and holds no state shared with another test.
+ * `test` and `expect` come from `./harness-fixtures`, whose two automatic fixtures do the
+ * cross-cutting work: `noEgress` aborts every request addressed off the harness origin and
+ * fails the test at teardown for any harness API request no route below claimed, and
+ * `browserDiagnostics` attaches the browser's console and page errors and fails the test on
+ * any it did not declare. Every test on this route declares {@link FETCH_FAILURE_PREFIX},
+ * because the mount fetch fails on every one of them; nothing else is tolerated. Each test
+ * installs its own interception before navigating, and holds no state shared with another.
  *
  * What each test asserts, and the production lines it reads from:
  *
@@ -30,7 +33,13 @@
  * @see docs/testing/DECISION-LOG.md - the interception, ceiling and layer-boundary rows for this file.
  */
 
-import { expect, test, unInterceptedApiRequestUrls } from './harness-fixtures';
+import {
+  type BrowserDiagnostics,
+  expect,
+  HARNESS_ORIGIN,
+  test,
+  unInterceptedApiRequestUrls,
+} from './harness-fixtures';
 
 /* -------------------------------------------------------------------------- */
 /* Oracles                                                                    */
@@ -43,15 +52,31 @@ const TWEET_LIST_ROUTE = '/tweets';
 const TWEET_LIST_CONTAINER = 'div.tweet-list';
 
 /**
- * Globs covering the collection request `services/api.ts` L8 builds. Both match that request,
- * and Playwright runs a single matching handler per request, so no test below asserts which
- * glob fired. The document request for {@link TWEET_LIST_ROUTE} also matches the first of
- * them, which is what every handler's navigation guard hands back to the harness.
+ * Globs covering the collection request `services/api.ts` L8 builds. Playwright runs a single
+ * matching handler per request, so no test below asserts which glob fired. The document request
+ * for {@link TWEET_LIST_ROUTE} also matches the first of them, which is what every handler's
+ * navigation guard hands back to the harness.
+ *
+ * Both are anchored to {@link HARNESS_ORIGIN}. A host-agnostic `'**\/tweets*'` would also claim a
+ * request addressed to a foreign host that shares the path, and fulfilling it would hide that
+ * destination drift from the `noEgress` fixture's ledger. Anchored, such a request falls through
+ * to that fixture, which aborts and records it. `./isolation.spec.ts` asserts exactly that.
  */
-const TWEET_COLLECTION_GLOBS = ['**/tweets*', '**/undefined/tweets*'] as const;
+const TWEET_COLLECTION_GLOBS = [
+  `${HARNESS_ORIGIN}/tweets*`,
+  `${HARNESS_ORIGIN}/undefined/tweets*`,
+] as const;
 
 /** Prefix `components/TweetManagement` L35 passes to `console.error`. */
 const FETCH_FAILURE_PREFIX = 'Error fetching tweets:';
+
+/**
+ * {@link FETCH_FAILURE_PREFIX} as an allow-list pattern.
+ *
+ * Every test on this route declares it, because L32 throws on every mount here, and declaring it
+ * makes the absence of any *other* browser error part of each test's verdict.
+ */
+const EXPECTED_FETCH_FAILURE = /console\.error: Error fetching tweets:/;
 
 /** How a browser reports the call at L32 against an import that carries `undefined`. */
 const UNCALLABLE_IMPORT = /is not a function/;
@@ -59,19 +84,32 @@ const UNCALLABLE_IMPORT = /is not a function/;
 /** The name L2 imports, which `services/twitterService` does not declare. */
 const MISSING_EXPORT_NAME = /getTweets/;
 
-/** Prefix an uncaught error is recorded under, as opposed to a console message. */
-const PAGE_ERROR_PREFIX = 'pageerror:';
-
 /** Budget for a poll over state the mount effect at L25-L27 has to settle first. */
 const SETTLE_TIMEOUT_MS = 10_000;
 
-test.describe('harness route /tweets - TweetList (frontend/src/components/TweetManagement)', () => {
-  test('renders an empty tweet-list container', async ({ page }) => {
-    const interceptedUrls: string[] = [];
-    const diagnostics: string[] = [];
+/**
+ * Console errors the mount fetch reported, read out of the fixture's ledger.
+ *
+ * Filtering on {@link FETCH_FAILURE_PREFIX} rather than counting every console error keeps the
+ * "exactly one report per mount" assertions honest without making them a census of everything the
+ * dev server and React also say - which is what the fixture's own allow-list is for.
+ *
+ * @param diagnostics - The test's `browserDiagnostics` handle.
+ * @returns Each matching record's text, oldest first.
+ */
+function reportedFetchFailures(diagnostics: BrowserDiagnostics): readonly string[] {
+  return diagnostics
+    .records()
+    .filter((record) => record.failing && record.text.includes(FETCH_FAILURE_PREFIX))
+    .map((record) => record.text);
+}
 
-    page.on('console', (message) => diagnostics.push(`console.${message.type()}: ${message.text()}`));
-    page.on('pageerror', (error) => diagnostics.push(`${PAGE_ERROR_PREFIX} ${error.message}`));
+test.describe('harness route /tweets - TweetList (frontend/src/components/TweetManagement)', () => {
+  test('renders an empty tweet-list container', async ({ page, browserDiagnostics }) => {
+    const interceptedUrls: string[] = [];
+
+    // The one failure this route always produces. Anything else the browser reports fails the test.
+    browserDiagnostics.allow(EXPECTED_FETCH_FAILURE);
 
     // Installed before navigating. The guard hands the document request for this route back
     // to the harness.
@@ -103,30 +141,18 @@ test.describe('harness route /tweets - TweetList (frontend/src/components/TweetM
         body: interceptedUrls.join('\n') || '(no request intercepted)',
         contentType: 'text/plain',
       });
-      await test.info().attach('browser-diagnostics', {
-        body: diagnostics.join('\n') || '(no console message and no page error)',
-        contentType: 'text/plain',
-      });
     }
   });
 
   test('logs the fetch failure because twitterService declares no getTweets export', async ({
     page,
+    browserDiagnostics,
   }) => {
     const interceptedUrls: string[] = [];
-    const diagnostics: string[] = [];
-    const consoleErrors: string[] = [];
 
-    // Console errors are recorded separately from the diagnostics ledger, which also carries
-    // the dev-server and React notices.
-    page.on('console', (message) => {
-      diagnostics.push(`console.${message.type()}: ${message.text()}`);
-
-      if (message.type() === 'error') {
-        consoleErrors.push(message.text());
-      }
-    });
-    page.on('pageerror', (error) => diagnostics.push(`${PAGE_ERROR_PREFIX} ${error.message}`));
+    // Here that record is the subject rather than a tolerated side effect, and the assertions below
+    // read it out of the fixture's ledger.
+    browserDiagnostics.allow(EXPECTED_FETCH_FAILURE);
 
     for (const glob of TWEET_COLLECTION_GLOBS) {
       await page.route(glob, async (route) => {
@@ -146,13 +172,13 @@ test.describe('harness route /tweets - TweetList (frontend/src/components/TweetM
       // One mount, one report: `harness/main.tsx` mounts the subject outside `React.StrictMode`
       // and passes it a module-scope `filters`, so the effect at L25-L27 runs once.
       await expect
-        .poll(() => consoleErrors.filter((text) => text.includes(FETCH_FAILURE_PREFIX)).length, {
+        .poll(() => reportedFetchFailures(browserDiagnostics).length, {
           message: `expected exactly one console error carrying "${FETCH_FAILURE_PREFIX}"`,
           timeout: SETTLE_TIMEOUT_MS,
         })
         .toBe(1);
 
-      const [reported] = consoleErrors.filter((text) => text.includes(FETCH_FAILURE_PREFIX));
+      const [reported] = reportedFetchFailures(browserDiagnostics);
 
       // One message carries the production prefix and what the call at L32 was made against.
       expect(reported).toMatch(UNCALLABLE_IMPORT);
@@ -160,15 +186,11 @@ test.describe('harness route /tweets - TweetList (frontend/src/components/TweetM
 
       // L34-L36 swallowed it: nothing reached the page as an uncaught error, and the route
       // stayed mounted.
-      expect(diagnostics.filter((entry) => entry.startsWith(PAGE_ERROR_PREFIX))).toEqual([]);
+      expect(browserDiagnostics.pageErrorText()).toBe('');
       await expect(page.locator(TWEET_LIST_CONTAINER)).toBeAttached();
     } finally {
       await test.info().attach('intercepted-requests', {
         body: interceptedUrls.join('\n') || '(no request intercepted)',
-        contentType: 'text/plain',
-      });
-      await test.info().attach('browser-diagnostics', {
-        body: diagnostics.join('\n') || '(no console message and no page error)',
         contentType: 'text/plain',
       });
     }
@@ -176,19 +198,11 @@ test.describe('harness route /tweets - TweetList (frontend/src/components/TweetM
 
   test('issues no tweet collection request because the uncallable import throws before axios', async ({
     page,
+    browserDiagnostics,
   }) => {
     const interceptedUrls: string[] = [];
-    const diagnostics: string[] = [];
-    const consoleErrors: string[] = [];
 
-    page.on('console', (message) => {
-      diagnostics.push(`console.${message.type()}: ${message.text()}`);
-
-      if (message.type() === 'error') {
-        consoleErrors.push(message.text());
-      }
-    });
-    page.on('pageerror', (error) => diagnostics.push(`${PAGE_ERROR_PREFIX} ${error.message}`));
+    browserDiagnostics.allow(EXPECTED_FETCH_FAILURE);
 
     // The same handler shape `dashboard.spec.ts` records one request through on `/`.
     for (const glob of TWEET_COLLECTION_GLOBS) {
@@ -210,7 +224,7 @@ test.describe('harness route /tweets - TweetList (frontend/src/components/TweetM
 
       // Reporting the failure is the last statement of the mount fetch's `catch`.
       await expect
-        .poll(() => consoleErrors.filter((text) => text.includes(FETCH_FAILURE_PREFIX)).length, {
+        .poll(() => reportedFetchFailures(browserDiagnostics).length, {
           message: `expected the mount fetch to report "${FETCH_FAILURE_PREFIX}" before its ledgers are read`,
           timeout: SETTLE_TIMEOUT_MS,
         })
@@ -222,10 +236,6 @@ test.describe('harness route /tweets - TweetList (frontend/src/components/TweetM
     } finally {
       await test.info().attach('intercepted-requests', {
         body: interceptedUrls.join('\n') || '(no request intercepted)',
-        contentType: 'text/plain',
-      });
-      await test.info().attach('browser-diagnostics', {
-        body: diagnostics.join('\n') || '(no console message and no page error)',
         contentType: 'text/plain',
       });
     }

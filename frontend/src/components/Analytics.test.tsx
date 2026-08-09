@@ -18,9 +18,23 @@
  *
  * 3. **Chart construction is reached but can never succeed.** The subject imports the
  *    tree-shakeable `{ Chart }` export of `chart.js` and never registers a controller or a scale,
- *    and jsdom implements no 2D canvas context. Nothing is thrown, so the component stays mounted.
- *    This is a permanent ceiling of the implemented code: the absent registration puts a working
- *    chart out of reach in a real browser too.
+ *    so a working chart is out of reach in every environment including a real browser.
+ *
+ * ## Three distinct paths through `renderCharts`, and one that is out of reach
+ *
+ * The subject's only `try`/`catch` wraps the `getTrendData` call at L16-L21. `renderCharts` and the
+ * `new Chart(...)` inside it are **not** wrapped by anything, so "the failure is caught" is never a
+ * correct description of a chart outcome here. Four outcomes exist and this file keeps them apart:
+ *
+ * | Path | What happens | Where it is asserted |
+ * |------|--------------|----------------------|
+ * | Controlled constructor | The `Chart` spy returns an inert instance. Nothing fails at all, and the subject writes nothing to `console.error` | the configuration, falsy-resolution and re-fetch cases |
+ * | jsdom, real library | `chart.js` asks the canvas for a 2D context, jsdom has none, and the library **returns early of its own accord** rather than throwing. Nothing was caught: nothing was thrown | the "cannot acquire a canvas context" case |
+ * | Fetch rejection | The L18-L20 `catch` runs, `chartData` stays `null`, and `renderCharts` is never entered - so no chart path is exercised at all. This is also the only path the E2E layer can reach, because the harness stub rejects on every route | the rejection case here, and `e2e/tests/analytics.spec.ts` |
+ * | Real browser, real canvas | `_acquireContext` succeeds, the unregistered `'line'` controller raises, and because nothing wraps the effect the error propagates and React **unmounts** the subject | out of reach: no environment in this repository supplies a working canvas. Recorded as a ceiling, asserted nowhere |
+ *
+ * The fourth row is the ceiling. It is deliberately not simulated: forcing it would assert the
+ * behaviour of a stand-in rather than of the subject.
  *
  * ## The Chart boundary is controlled
  *
@@ -42,12 +56,27 @@
  * This file installs no canvas or resize-observer shim and registers no Chart.js component; the
  * `Chart` spy is the only substitution, and it is created and restored per test.
  *
+ * ## The canvas carries no accessible name - a documented ceiling
+ *
+ * L68 of the subject renders `<canvas id="trendChart"></canvas>` and nothing else: no `role`, no
+ * `aria-label`, no `aria-labelledby`, no `title`, no fallback child content, and no adjacent table
+ * or textual summary of the series. A canvas has no implicit ARIA role, so assistive technology is
+ * offered nothing at all - the whole of the analytics content is unavailable to a screen reader, and
+ * the `'Trend Charts'` heading is the only thing announced.
+ *
+ * That is the current behaviour and this suite pins it rather than papering over it. The last case
+ * below asserts the absence of every naming mechanism, so adding one becomes a deliberate,
+ * test-visible change. Supplying a name or a text alternative means editing
+ * `frontend/src/components/Analytics`, which is production code this programme is not authorized to
+ * change - the two authorized touches are both in `backend/`. It is recorded as a ceiling in
+ * `frontend/TESTING.md`, `docs/testing/TRACEABILITY-MATRIX.md` §G and the suggested-next-tasks lists.
+ *
  * @see frontend/src/components/Analytics - the module under test.
  * @see frontend/src/test-utils/stubs/analyticsService.ts - the mapped stub and its contract.
  * @see frontend/src/test-utils/render.tsx - `renderWithProviders`, the shared mount harness.
  * @see frontend/TESTING.md - the dual-transformer arrangement and the jsdom canvas pitfall.
  * @see docs/testing/DECISION-LOG.md - the single source of truth for why this suite is shaped as
- *   it is, including the shims and mocks deliberately not used.
+ *   it is, including which shims and mocks are not installed and why.
  */
 
 import { act } from '@testing-library/react';
@@ -134,6 +163,29 @@ const EXPECTED_CHART_CONFIGURATION = {
  * `frontend/package.json` pins exactly, so unlike anything `chart.js` emits it is reproducible.
  */
 const CANVAS_CONTEXT_NOTICE_FRAGMENT = 'HTMLCanvasElement.prototype.getContext';
+
+/** The canvas L68 of the subject renders. `id` is the only selector the subject provides. */
+const CHART_CANVAS_SELECTOR = 'canvas#trendChart';
+
+/**
+ * Every attribute that could give the canvas an accessible name or put it in the accessibility
+ * tree. The subject sets none of them; the accessibility case below asserts each absence
+ * individually so the report names the one that appeared.
+ */
+const CANVAS_NAMING_ATTRIBUTES = [
+  'role',
+  'aria-label',
+  'aria-labelledby',
+  'aria-describedby',
+  'title',
+  'alt',
+] as const;
+
+/** Roles a named or role-bearing chart canvas would answer to. None is reachable today. */
+const CANVAS_CANDIDATE_ROLES = ['img', 'figure', 'graphics-document'] as const;
+
+/** The whole of the subject's rendered text: its heading, and nothing describing the series. */
+const CHARTS_HEADING_TEXT = 'Trend Charts';
 
 /** First of the two arguments the subject's `catch` block passes to `console.error`. */
 const FETCH_FAILURE_PREFIX = 'Error fetching trend data:';
@@ -270,11 +322,18 @@ describe('TrendCharts (src/components/Analytics)', () => {
     expect(container.querySelector('canvas#trendChart')).not.toBeNull();
   });
 
-  it('stays mounted when the real Chart cannot acquire a canvas context', async () => {
+  it('stays mounted because chart.js returns early when jsdom cannot supply a canvas context, not because anything caught a failure', async () => {
     // The one case that runs the installed `chart.js`. Its own diagnostic text and the number of
     // records it writes are deliberately not asserted: `chart.js` is a floating `^4.3.0` range with
     // no lockfile, so neither is reproducible across a clean install. What is asserted is the
     // subject's behaviour and jsdom's pinned notice.
+    //
+    // Note what this does NOT show. `renderCharts` is wrapped by no `try`/`catch`, so the subject
+    // catches nothing here - `chart.js` fails to acquire a 2D context and returns of its own accord
+    // before it reaches the unregistered `'line'` controller. In a real browser the context would be
+    // acquired, the missing registration would raise, and with nothing wrapping the effect the error
+    // would propagate and unmount the subject. That path is the ceiling in the module docstring and
+    // is asserted nowhere.
     chartConstructor.mockImplementation(
       (...args: unknown[]) => new (ChartBeforeSpying as never)(...args),
     );
@@ -350,5 +409,38 @@ describe('TrendCharts (src/components/Analytics)', () => {
     expect(getTrendDataMock).toHaveBeenCalledTimes(2);
     expect(getTrendDataMock.mock.calls[1]).toHaveLength(1);
     expect(getTrendDataMock.mock.calls[1][0]).toBe(OTHER_DATE_RANGE);
+  });
+
+  it('offers assistive technology no name, role or text alternative for the chart canvas', async () => {
+    const { container, getByRole, queryByRole } = renderWithProviders(
+      <TrendCharts dateRange={DATE_RANGE} />,
+    );
+
+    await flushFetchEffect();
+
+    const canvas = container.querySelector(CHART_CANVAS_SELECTOR);
+
+    expect(canvas).not.toBeNull();
+
+    // Every mechanism that could put this element in the accessibility tree with a name, absent.
+    // `id` is not one of them: it is a hook for `document.getElementById`, nothing more.
+    for (const attribute of CANVAS_NAMING_ATTRIBUTES) {
+      expect(canvas).not.toHaveAttribute(attribute);
+    }
+
+    // No fallback content either, which is the other way a canvas carries an alternative.
+    expect(canvas).toBeEmptyDOMElement();
+
+    // A canvas has no implicit role, and nothing above supplied one, so no role query reaches it.
+    for (const role of CANVAS_CANDIDATE_ROLES) {
+      expect(queryByRole(role)).toBeNull();
+    }
+
+    // What is left for a screen reader is the heading, and nothing of the series itself: no table,
+    // no list, and no textual summary anywhere in the subtree.
+    expect(getByRole('heading', { level: 2, name: 'Trend Charts' })).toBeInTheDocument();
+    expect(queryByRole('table')).toBeNull();
+    expect(queryByRole('list')).toBeNull();
+    expect(container.textContent).toBe(CHARTS_HEADING_TEXT);
   });
 });

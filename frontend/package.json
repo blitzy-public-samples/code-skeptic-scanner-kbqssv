@@ -42,6 +42,7 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "test:ci": "jest --ci --coverage --watchAll=false",
+    "test:list": "jest --listTests",
     "test:e2e": "npm --prefix ../e2e run test",
     "lint": "eslint src --ext .ts,.tsx",
     "preview": "vite preview"

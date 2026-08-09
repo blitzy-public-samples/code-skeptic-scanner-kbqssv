@@ -2,18 +2,19 @@
  * The `test` and `expect` every spec in `e2e/tests` imports.
  *
  * `e2e/playwright.config.ts` sets `testMatch` to the recursive `.spec.ts` glob, so this module is not
- * collected as a spec; it exists to extend Playwright's `test` with one automatic fixture that confines
- * the browser to the harness and holds every spec to explicit request interception.
+ * collected as a spec; it exists to extend Playwright's `test` with two automatic fixtures: one that
+ * confines the browser to the harness and holds every spec to explicit request interception, and one
+ * that turns the browser's own diagnostics into a verdict.
  *
- * The origin comes from `../harness-origin`, the same module the runner and the Vite config read, so
+ * The origin comes from `../vite.harness.config`, the same module the runner reads, so
  * a clone-specific port cannot make this fixture treat the real harness as external.
  *
- * ## What the automatic fixture enforces
+ * ## What the isolation fixture enforces
  *
  * It registers one catch-all `context.route` rule, on the recursive wildcard glob, before the page
- * exists, so it covers that page,
- * every other page opened in the context, popups and workers - the three cases a per-spec
- * `page.route` misses, the third being simply forgetting to install one. Playwright evaluates route
+ * exists, so it covers that page, every other page opened in the context, popups and workers - the
+ * three cases a per-spec `page.route` misses, the third being simply forgetting to install one.
+ * Playwright evaluates route
  * handlers most-recently-registered-first and this rule is installed by an automatic fixture, so a
  * `page.route(...)` or `context.route(...)` a spec adds is matched first and wins. A request that
  * reaches this rule is therefore provably one no spec claimed, and it is dispositioned by origin:
@@ -28,9 +29,38 @@
  * codebase swallows or replaces what it is handed, so a refusal expressed only as a response can be
  * absorbed and the test can still pass.
  *
- * @see docs/testing/DECISION-LOG.md - rows D130 and D131.
+ * ## Why every spec route must be anchored to the harness origin
  *
- * @example
+ * The rule above can only disposition a request that reaches it, and a `page.route(...)` a spec adds
+ * is matched **first**. A host-agnostic pattern such as `'**\/tweets*'` therefore claims a request to
+ * *any* origin that happens to share the path, and a spec handler that fulfils it turns a request
+ * that left for a foreign host into a green assertion - the destination drift never reaches this
+ * ledger. Every pattern in this directory is consequently spelled `` `${HARNESS_ORIGIN}/<path>` ``,
+ * so a foreign origin falls through to the rule above and is aborted and recorded.
+ * `e2e/tests/isolation.spec.ts` asserts that property for every path any spec here intercepts, using
+ * {@link consumeAbortedRequestUrls} to acknowledge the refusal it deliberately caused.
+ *
+ * @see docs/testing/DECISION-LOG.md - rows D130, D131 and D213.
+ * ## What the diagnostics fixture enforces
+ *
+ * `browserDiagnostics` records every console message and every uncaught page error, attaches the whole
+ * ledger to the test as evidence whatever the outcome, and **fails the test at teardown** for any
+ * `console.error` or `pageerror` the test did not declare it expected.
+ *
+ * That last clause is the point. Recording diagnostics and attaching them proves nothing on its own: a
+ * happy-path test that renders a heading passes just as well with a React teardown error and a rejected
+ * promise in the console as without them, so an attachment nobody reads is not an assertion. Declaring
+ * the expected records instead makes the *absence* of everything else part of every test's verdict, and
+ * makes the expectation itself reviewable - each allow-list entry is a claim about what this route does
+ * wrong today, sitting next to the assertion about what it does right.
+ *
+ * A test that expects a failure declares it with {@link BrowserDiagnostics.allow}, which is additive and
+ * scoped to that test. A `console.warning`, `console.info` or `console.log` is recorded as evidence and
+ * never fails a test: the dev server and React both emit notices that carry no verdict.
+ *
+ * @see docs/testing/DECISION-LOG.md - rows D130, D131 and D230.
+ *
+ * @example A route with no expected failure. Any console error fails the test.
  * ```ts
  * import { expect, HARNESS_ORIGIN, test } from './harness-fixtures';
  *
@@ -40,11 +70,21 @@
  *   await expect(page.getByText('Real-Time Tweet Feed')).toBeVisible();
  * });
  * ```
+ *
+ * @example A route whose subject logs a caught failure. The one record is declared, and nothing else is
+ * tolerated.
+ * ```ts
+ * test('the list reports its failed fetch', async ({ page, browserDiagnostics }) => {
+ *   browserDiagnostics.allow(/Error fetching tweets:/);
+ *   await page.goto('/tweets');
+ *   await expect.poll(() => browserDiagnostics.errorText()).toMatch(/getTweets/);
+ * });
+ * ```
  */
 
 import { test as base, expect } from '@playwright/test';
 
-import { HARNESS_ORIGIN } from '../harness-origin';
+import { HARNESS_ORIGIN } from '../vite.harness.config';
 
 export { HARNESS_ORIGIN };
 
@@ -86,6 +126,28 @@ export function unInterceptedApiRequestUrls(): readonly string[] {
 }
 
 /**
+ * Reads the aborted-request ledger **and clears it**, so the refusal it records is asserted rather
+ * than reported as a breach at teardown.
+ *
+ * Exists for one caller shape: a test whose subject *is* the refusal. `e2e/tests/isolation.spec.ts`
+ * drives a foreign origin on a path a spec has a route for, in order to prove that the route does
+ * not claim it and that this fixture aborts and records it instead. Without a way to consume the
+ * entry, that proof would fail its own test at teardown and the property could not be asserted at
+ * all.
+ *
+ * Consume only what the test deliberately caused, and only after asserting it. An entry left in the
+ * ledger still fails the test, which is what keeps this from becoming a way to silence a real
+ * breach: clearing it is meaningless unless the test has already asserted the exact URL.
+ *
+ * @returns A frozen snapshot of the aborted URLs, oldest first, taken before the ledger was cleared.
+ */
+export function consumeAbortedRequestUrls(): readonly string[] {
+  const seen = Object.freeze([...abortedUrls]);
+  abortedUrls.length = 0;
+  return seen;
+}
+
+/**
  * Whether a URL is one the harness itself serves.
  *
  * Same-origin only. A relative URL has already been resolved against `baseURL` by the time a route
@@ -107,7 +169,98 @@ function isHarnessApiRequest(url: string): boolean {
   return HARNESS_API_PATHS.includes(pathname);
 }
 
-export const test = base.extend<{ noEgress: void }>({
+/**
+ * One thing the browser reported: a console message, or an uncaught page error.
+ *
+ * `text` is the rendered form that appears in the attached evidence and that an allow-list pattern is
+ * matched against, so a pattern can key on the `console.error:` / `pageerror:` prefix as well as on the
+ * message.
+ */
+export interface BrowserRecord {
+  /** `'console'` for a console message, `'pageerror'` for an uncaught error. */
+  readonly kind: 'console' | 'pageerror';
+
+  /** Whether this record fails the test when it is not allow-listed. */
+  readonly failing: boolean;
+
+  /** `console.<type>: <text>` or `pageerror: <message>`. */
+  readonly text: string;
+}
+
+/** The handle a spec uses to declare what it expects and to read what was recorded. */
+export interface BrowserDiagnostics {
+  /**
+   * Declares console errors and page errors this test expects, so they do not fail it.
+   *
+   * Additive and scoped to the calling test. Call it **before** navigating: a record that arrives
+   * before its pattern is registered is still matched, because matching happens at teardown, but
+   * declaring the expectation first keeps the test readable.
+   *
+   * @param patterns - Matched against {@link BrowserRecord.text}. Every failing record must match at
+   *   least one of them.
+   */
+  allow(...patterns: RegExp[]): void;
+
+  /** Every record so far, oldest first. */
+  records(): readonly BrowserRecord[];
+
+  /** Every record's text, newline-joined. Console notices included. */
+  text(): string;
+
+  /** Only the failing records' text, newline-joined: console errors and page errors. */
+  errorText(): string;
+
+  /** Only the uncaught page errors' text, newline-joined. */
+  pageErrorText(): string;
+}
+
+/**
+ * Allow-list pattern for the browser's own notice about a non-2xx response.
+ *
+ * Chrome writes one `console.error` reading `Failed to load resource: the server responded with a
+ * status of <status> (<reason>)` for every response outside 200-299 a page receives. It comes from the
+ * network stack rather than from any module under test, so a spec that *chooses* to fulfil a route with
+ * a failing status has to declare it - and declares it with the status it chose, so a response arriving
+ * with some other status still fails the test.
+ *
+ * @param status - The status the spec fulfilled with.
+ * @returns A pattern matching that notice and no other.
+ *
+ * @example
+ * ```ts
+ * browserDiagnostics.allow(resourceFailure(500), /console\.error: Error fetching trend data:/);
+ * await page.route('**\/api\/trends*', (route) => route.fulfill({ status: 500, json: {} }));
+ * ```
+ */
+export function resourceFailure(status: number): RegExp {
+  return new RegExp(
+    `console\\.error: Failed to load resource: the server responded with a status of ${status}\\b`,
+  );
+}
+
+/**
+ * Pattern matching Chrome's notice for a request the automatic `noEgress` fixture aborted.
+ *
+ * That fixture answers a foreign-origin request with `route.abort()`, and Chrome reports an aborted
+ * request as a console error - so a spec that *provokes* the guard, rather than merely relying on it,
+ * carries one error of its own making. `e2e/tests/isolation.spec.ts` is that spec: proving the guard
+ * fires is its whole subject, so it declares this notice instead of being exempted from the verdict.
+ *
+ * @returns A pattern matching the abort notice and no other console error.
+ *
+ * @example
+ * ```ts
+ * browserDiagnostics.allow(blockedByEgressGuard());
+ * ```
+ */
+export function blockedByEgressGuard(): RegExp {
+  return /console\.error: Failed to load resource: net::ERR_BLOCKED_BY_CLIENT/;
+}
+
+export const test = base.extend<{
+  noEgress: void;
+  browserDiagnostics: BrowserDiagnostics;
+}>({
   /**
    * Aborts every request to anything but the harness origin, and records every harness API request
    * no spec route claimed. Fails the test at teardown on either.
@@ -159,6 +312,86 @@ export const test = base.extend<{ noEgress: void }>({
 
       if (failures.length > 0) {
         throw new Error(`${testInfo.title} breached harness isolation.\n${failures.join('\n')}`);
+      }
+    },
+    { auto: true },
+  ],
+
+  /**
+   * Records the browser's console and page errors, attaches them, and fails the test on any the test
+   * did not declare.
+   *
+   * `auto: true`, so a spec that declares nothing still gets the enforcement; a spec that needs to
+   * declare an expected failure, or to read what was recorded, names `browserDiagnostics` in its
+   * arguments.
+   *
+   * Depends on `noEgress` explicitly, and names it before `page`, so the catch-all route is installed on
+   * the context before the page this fixture listens to exists - the ordering `noEgress` documents.
+   */
+  browserDiagnostics: [
+    async ({ noEgress, page }, use, testInfo) => {
+      void noEgress;
+
+      const records: BrowserRecord[] = [];
+      const allowed: RegExp[] = [];
+
+      page.on('console', (message) => {
+        const type = message.type();
+        records.push({
+          kind: 'console',
+          failing: type === 'error',
+          text: `console.${type}: ${message.text()}`,
+        });
+      });
+
+      page.on('pageerror', (error) => {
+        records.push({ kind: 'pageerror', failing: true, text: `pageerror: ${error.message}` });
+      });
+
+      const render = (subset: readonly BrowserRecord[]): string =>
+        subset.map((record) => record.text).join('\n');
+
+      const diagnostics: BrowserDiagnostics = {
+        allow(...patterns) {
+          allowed.push(...patterns);
+        },
+        records() {
+          return Object.freeze([...records]);
+        },
+        text() {
+          return render(records);
+        },
+        errorText() {
+          return render(records.filter((record) => record.failing));
+        },
+        pageErrorText() {
+          return render(records.filter((record) => record.kind === 'pageerror'));
+        },
+      };
+
+      await use(diagnostics);
+
+      // Attached whatever the outcome, so a passing run still carries the evidence and a failing one
+      // carries it alongside the failure.
+      await testInfo.attach('browser-diagnostics', {
+        body: render(records) || '(no console message and no page error)',
+        contentType: 'text/plain',
+      });
+
+      const unexpected = records.filter(
+        (record) => record.failing && !allowed.some((pattern) => pattern.test(record.text)),
+      );
+
+      if (unexpected.length > 0) {
+        throw new Error(
+          `${testInfo.title} produced ${unexpected.length} browser error(s) it did not declare. ` +
+            'Either the route is broken, or the record is expected and belongs in a ' +
+            'browserDiagnostics.allow(...) call in this test:\n' +
+            `${unexpected.map((record) => `  - ${record.text}`).join('\n')}\n` +
+            `Declared patterns: ${
+              allowed.length === 0 ? '(none)' : allowed.map(String).join(', ')
+            }`,
+        );
       }
     },
     { auto: true },

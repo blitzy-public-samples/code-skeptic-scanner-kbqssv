@@ -1,3 +1,29 @@
+/**
+ * The suite for `RealTimeFeed`, the default export of `frontend/src/components/Dashboard`.
+ *
+ * ## Polled feed updates are not announced - a documented ceiling
+ *
+ * L22-L27 of the subject render `<div className="real-time-feed">` around an `<h2>` and a map over
+ * the fetched collection, and L16 refetches that collection every 30000 ms. The wrapper is a bare
+ * `div`: no `role="log"`, no `role="status"`, no `aria-live`, no `aria-atomic`, no `aria-relevant`,
+ * and no `aria-busy` while a poll is in flight. A live-updating region that declares none of those
+ * is invisible to assistive technology - content arriving on the 30-second poll is inserted silently,
+ * so a screen-reader user is never told the feed changed, and there is no loading state to announce
+ * either because the subject renders none at all.
+ *
+ * `role="log"` with `aria-live="polite"` on the wrapper is what would make the updates audible, and
+ * adding it means editing `frontend/src/components/Dashboard`, which is production code this
+ * programme is not authorized to change - the two authorized touches are both in `backend/`. The
+ * behaviour is therefore pinned as it stands: the case below asserts the absence of every
+ * announcement mechanism across a mount and a completed poll, so adding one becomes a deliberate,
+ * test-visible change. It is recorded as a ceiling in `frontend/TESTING.md`,
+ * `docs/testing/TRACEABILITY-MATRIX.md` §G and the suggested-next-tasks lists.
+ *
+ * @see frontend/src/components/Dashboard - the module under test.
+ * @see frontend/src/components/TweetManagement.test.tsx - the same ceiling on the loading indicator.
+ * @see docs/testing/DECISION-LOG.md - the single source of truth for why this is recorded, not fixed.
+ */
+
 import { act, cleanup, screen } from '@testing-library/react';
 
 import RealTimeFeed from '@/components/Dashboard';
@@ -14,6 +40,23 @@ const ONE_TICK_BEFORE_POLL_MS = 29999;
 const FEED_HEADING = 'Real-Time Tweet Feed';
 
 const WRAPPER_SELECTOR = 'div.real-time-feed';
+
+/**
+ * Every attribute that would make an update to the polled feed reach assistive technology. The
+ * subject sets none of them on the wrapper, asserted individually so a failure names the one that
+ * appeared.
+ */
+const ANNOUNCEMENT_ATTRIBUTES = [
+  'role',
+  'aria-live',
+  'aria-atomic',
+  'aria-relevant',
+  'aria-busy',
+  'aria-label',
+] as const;
+
+/** Roles a screen reader would find an announced live feed under. */
+const ANNOUNCEMENT_ROLES = ['log', 'status', 'alert', 'feed', 'progressbar'] as const;
 
 const latestTweets = () => jest.mocked(getLatestTweets);
 
@@ -127,6 +170,40 @@ describe('RealTimeFeed (src/components/Dashboard)', () => {
 
     await advanceTimers(POLL_INTERVAL_MS);
     expect(getLatestTweets).toHaveBeenCalledTimes(3);
+  });
+
+  it('announces nothing when the 30000 ms poll refetches, the feed wrapper declaring no live region', async () => {
+    const { container } = renderWithProviders(<RealTimeFeed />);
+    await flushPendingFetch();
+
+    const wrapper = container.querySelector(WRAPPER_SELECTOR);
+
+    /* A bare `div`, which carries no implicit role. */
+    expect(wrapper).not.toBeNull();
+    expect(wrapper?.tagName).toBe('DIV');
+
+    for (const attribute of ANNOUNCEMENT_ATTRIBUTES) {
+      expect(wrapper).not.toHaveAttribute(attribute);
+    }
+
+    for (const role of ANNOUNCEMENT_ROLES) {
+      expect(screen.queryByRole(role)).toBeNull();
+    }
+
+    /* A completed poll changes nothing about that: the refetch is silent, before and after. */
+    await advanceTimers(POLL_INTERVAL_MS);
+    expect(getLatestTweets).toHaveBeenCalledTimes(2);
+
+    for (const attribute of ANNOUNCEMENT_ATTRIBUTES) {
+      expect(container.querySelector(WRAPPER_SELECTOR)).not.toHaveAttribute(attribute);
+    }
+
+    for (const role of ANNOUNCEMENT_ROLES) {
+      expect(screen.queryByRole(role)).toBeNull();
+    }
+
+    /* The heading is the only thing a screen reader is offered, mounted and after the poll alike. */
+    expect(screen.getByRole('heading', { level: 2, name: FEED_HEADING })).toBeInTheDocument();
   });
 
   it('registers the poll as a single 30000 ms interval', async () => {

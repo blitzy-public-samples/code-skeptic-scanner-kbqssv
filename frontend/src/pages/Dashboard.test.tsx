@@ -1,5 +1,10 @@
 /**
- * Suite for `src/pages/Dashboard.tsx`, written in full and skipped.
+ * Suite for `src/pages/Dashboard.tsx`, written in full, collected, and skipped test by test.
+ *
+ * The group below is an ordinary `describe`, so this module is imported and every specifier in it
+ * resolves on each run. Each individual test is marked `it.skip` and carries {@link BLOCKER} in its
+ * own title, so the reason travels with the identity a result reader sees rather than sitting on the
+ * group. No blanket `describe.skip` is used anywhere.
  *
  * The page cannot mount. Three facts of the current source establish that:
  *
@@ -26,6 +31,10 @@
  * un-skipped once `src/store/index.ts` exports the two hooks and the page's line 2 import agrees with what
  * `src/components/Dashboard` exports.
  *
+ * The skip is declared in exactly one place - the `describe.skip` below, whose title carries the reason -
+ * so removing that one `.skip` re-enables all eight tests. No leaf carries its own `.skip`, matching
+ * `src/pages/Analytics.test.tsx` and `src/pages/Configuration.test.tsx`.
+ *
  * @see frontend/src/store/index.test.ts - holds `src/store/index.ts` to the runtime export list above.
  * @see frontend/src/components/Dashboard.test.tsx - the suite for the feed component this page composes.
  * @see docs/testing/TRACEABILITY-MATRIX.md - the disposition this suite is recorded under.
@@ -43,8 +52,8 @@ import type { AppStore } from '@/test-utils/render';
 
 /*
  * `src/components/Dashboard` line 10 awaits `getLatestTweets()` on mount and line 16 repeats it on a
- * 30000 ms interval. Mocked here so the feed the page composes resolves from a value rather than a
- * transport, and so no promise it starts settles after the test that mounted it.
+ * 30000 ms interval. Module-mocked for this suite: the feed resolves from a configured value, opens no
+ * transport, and starts no promise that can settle after the test that mounted it.
  */
 jest.mock('@/services/twitterService');
 
@@ -82,6 +91,23 @@ const INITIAL_STATUS = 'idle';
 const latestTweets = () => jest.mocked(getLatestTweets);
 
 /**
+ * Blocker carried by every skipped test identity below.
+ *
+ * Held in one constant and appended to each title rather than declared once on the `describe`: a
+ * blanket `describe.skip` puts the reason on the group, so a result reader looking at an individual
+ * `<testcase>` in `frontend/reports/jest-junit.xml` sees a skip with no reason at all. Suffixing
+ * each title puts the blocker on the identity that is actually reported, and keeps the group itself
+ * an ordinary `describe` so this module is collected and its imports are exercised.
+ *
+ * The named symbol is the first of the three independent blockers in the module docstring, because
+ * it is the one that raises first: line 13 runs before line 14 reaches `useAppSelector` and before
+ * line 31 reaches the undefined `RealTimeFeed`.
+ */
+const BLOCKER =
+  'BLOCKED: src/store/index.ts exports no useAppDispatch, so src/pages/Dashboard.tsx line 13 ' +
+  'raises TypeError: useAppDispatch is not a function';
+
+/**
  * Waits for the mount effect's thunk to reach a terminal state, which is what clears `loading` at line 20.
  *
  * @param store - The store the page was mounted against.
@@ -92,7 +118,7 @@ async function settleMountThunk(store: AppStore): Promise<void> {
   });
 }
 
-describe.skip('Dashboard (src/pages/Dashboard.tsx) - SKIPPED: useAppDispatch is not a function (not exported by src/store/index.ts)', () => {
+describe('Dashboard (src/pages/Dashboard.tsx)', () => {
   beforeEach(() => {
     /*
      * An empty list: a non-empty one reaches line 25 of `src/components/Dashboard`, where `TweetCard` is
@@ -105,7 +131,7 @@ describe.skip('Dashboard (src/pages/Dashboard.tsx) - SKIPPED: useAppDispatch is 
     jest.restoreAllMocks();
   });
 
-  it.skip('renders the page heading inside the container element', async () => {
+  it.skip(`renders the page heading inside the container element - ${BLOCKER}`, async () => {
     const { container, store } = renderWithProviders(<Dashboard />);
     await settleMountThunk(store);
 
@@ -118,7 +144,7 @@ describe.skip('Dashboard (src/pages/Dashboard.tsx) - SKIPPED: useAppDispatch is 
     expect(pageContainer).toContainElement(heading);
   });
 
-  it.skip('renders both columns inside the content wrapper', async () => {
+  it.skip(`renders both columns inside the content wrapper - ${BLOCKER}`, async () => {
     const { container, store } = renderWithProviders(<Dashboard />);
     await settleMountThunk(store);
 
@@ -134,7 +160,7 @@ describe.skip('Dashboard (src/pages/Dashboard.tsx) - SKIPPED: useAppDispatch is 
     expect(leftColumn).not.toBe(rightColumn);
   });
 
-  it.skip('dispatches one thunk for the mount effect', async () => {
+  it.skip(`dispatches one thunk for the mount effect - ${BLOCKER}`, async () => {
     const store = makeStore();
     const dispatchSpy = jest.spyOn(store, 'dispatch');
 
@@ -146,7 +172,7 @@ describe.skip('Dashboard (src/pages/Dashboard.tsx) - SKIPPED: useAppDispatch is 
     expect(typeof dispatchSpy.mock.calls[0][0]).toBe('function');
   });
 
-  it.skip('does not dispatch again when the tree rerenders, because the effect is keyed on dispatch', async () => {
+  it.skip(`does not dispatch again when the tree rerenders, because the effect is keyed on dispatch - ${BLOCKER}`, async () => {
     const store = makeStore();
     const dispatchSpy = jest.spyOn(store, 'dispatch');
 
@@ -158,7 +184,7 @@ describe.skip('Dashboard (src/pages/Dashboard.tsx) - SKIPPED: useAppDispatch is 
     expect(dispatchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it.skip('moves the tweets slice out of idle and settles it as failed', async () => {
+  it.skip(`moves the tweets slice out of idle and settles it as failed - ${BLOCKER}`, async () => {
     const { store } = renderWithProviders(<Dashboard />);
 
     expect(store.getState().tweets.status).not.toBe(INITIAL_STATUS);
@@ -168,14 +194,14 @@ describe.skip('Dashboard (src/pages/Dashboard.tsx) - SKIPPED: useAppDispatch is 
     expect(store.getState().tweets.status).toBe(SETTLED_STATUS);
   });
 
-  it.skip('settles with the message the fetchTweets thunk rejects with', async () => {
+  it.skip(`settles with the message the fetchTweets thunk rejects with - ${BLOCKER}`, async () => {
     const { store } = renderWithProviders(<Dashboard />);
     await settleMountThunk(store);
 
     expect(store.getState().tweets.error).toBe(REJECTION_MESSAGE);
   });
 
-  it.skip('reaches the same terminal tweets state as dispatching fetchTweets() directly', async () => {
+  it.skip(`reaches the same terminal tweets state as dispatching fetchTweets() directly - ${BLOCKER}`, async () => {
     const reference = makeStore();
     await reference.dispatch(fetchTweets());
 
@@ -185,7 +211,7 @@ describe.skip('Dashboard (src/pages/Dashboard.tsx) - SKIPPED: useAppDispatch is 
     expect(store.getState().tweets).toEqual(reference.getState().tweets);
   });
 
-  it.skip('renders the feed in the left column over the tweets the store holds', async () => {
+  it.skip(`renders the feed in the left column over the tweets the store holds - ${BLOCKER}`, async () => {
     const tweets = [makeTweet(), makeTweet({ tweet_id: 'tweet-2', content: 'A second doubtful take.' })];
     const { container, store } = renderWithProviders(<Dashboard />, '/', {
       preloadedState: { tweets: { tweets } },

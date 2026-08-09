@@ -16,12 +16,12 @@ import {
   BACKEND_UNPROCESSABLE_STATUS,
   CONFIGURED_BASE_URL,
   configuredBaseBackendHandlers,
+  importWithConfiguredBase,
   lastRecordedRequest,
   makeDefaultTweetsJson,
   unsetBaseBackendHandlers,
 } from '../test-utils/handlers';
 import type { SerializedTweet } from '../test-utils/handlers';
-import { importWithConfiguredBase } from '../test-utils/configured-base';
 import { server } from '../test-utils/msw-server';
 
 const LATEST_TWEETS_COUNT = 5;

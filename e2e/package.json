@@ -2,14 +2,16 @@
   "name": "code-skeptic-scanner-e2e",
   "version": "1.0.0",
   "private": true,
-  "description": "Playwright end-to-end layer for Code Skeptic Scanner, driven by its own self-contained Vite harness. Every script names a local binary; none is resolved through npx, which would fall back to the registry when the local one is absent. No script downloads a browser: Playwright 1.44.1's downloader does not verify the TLS chain of the host it fetches from (CVE-2025-59288), so browsers are provisioned out of band and browsers:verify checks for them without fetching. See docs/testing/DECISION-LOG.md rows D111 and D129.",
+  "description": "Playwright end-to-end layer for Code Skeptic Scanner, driven by its own self-contained Vite harness. Every script names a local binary; none is resolved through npx, which would fall back to the registry when the local one is absent. No script downloads a browser: Playwright 1.44.1's downloader does not verify the TLS chain of the host it fetches from (CVE-2025-59288), so browsers are provisioned out of band from a channel that signs its artifacts. Two fail-closed gates read that provision without fetching: browsers:require resolves and publishes the executable and exits non-zero when there is none, and browsers:verify proves one is present, exiting non-zero when neither PLAYWRIGHT_CHROMIUM_EXECUTABLE nor the Playwright cache holds a launchable Chromium. test:list overrides the reporter so listing cannot overwrite a previous run's JUnit and HTML reports with an all-skipped stub. See docs/testing/DECISION-LOG.md rows D111, D129, D236, D252 and D264.",
   "scripts": {
     "test": "playwright test",
+    "test:list": "playwright test --list --reporter=line",
     "test:headed": "playwright test --headed",
     "test:debug": "playwright test --debug",
     "report": "playwright show-report",
     "harness": "node ./node_modules/vite/bin/vite.js --config vite.harness.config.ts",
-    "browsers:verify": "playwright install --dry-run chromium"
+    "browsers:require": "node ./scripts/require-browser.js",
+    "browsers:verify": "node ./scripts/verify-browser.js"
   },
   "devDependencies": {
     "@playwright/test": "1.44.1",

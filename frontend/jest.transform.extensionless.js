@@ -17,8 +17,8 @@
  * and `moduleFileExtensions` in `frontend/jest.config.js`.
  *
  * @see https://jestjs.io/docs/code-transformation#writing-custom-transformers
- * @see frontend/src/test-utils/jest-transform-extensionless.test.ts - the
- *   contract suite over this file.
+ * @see frontend/src/components/Dashboard.test.tsx - one of the four component
+ *   suites this transformer is what makes compilable.
  * @see docs/testing/DECISION-LOG.md - rows D30-D32 and D138-D140.
  */
 

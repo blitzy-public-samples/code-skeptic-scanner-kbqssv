@@ -12,14 +12,26 @@ Invariants this module enforces structurally rather than by convention:
 
 Synthetic settings
     Every ``Settings`` field name is managed.  The eight declared without a
-    default are assigned placeholders; every defaulted one, plus the two fields
-    production reads but never declares, is removed so the declared default
-    governs.  Assignment is unconditional, so no ambient value can win.
+    default are assigned placeholders, and every defaulted one whose value a
+    suite reads is assigned the string form of its declared default.  Two sets
+    are removed from the environment instead: ``NOTION_API_KEY``, whose declared
+    ``None`` no environment string reproduces, and the two consumer fields
+    production reads although ``Settings`` declares neither.  Every assignment is
+    unconditional, so no ambient value can win.
 
 Deny-by-default egress, from before collection until after teardown
-    Connect, datagram send, DNS resolution, the Windows overlapped connector,
-    gRPC channel construction and child-process creation are refused unless the
-    target is a socket this process itself owns - see :func:`_is_local_address`.
+    Connect, datagram send, DNS resolution, the Windows overlapped connector and
+    gRPC channel construction are refused unless the target is a socket this
+    process itself owns - see :func:`_is_local_address`, and note that a loopback
+    port stops being owned the moment its socket closes. Child-process creation
+    is refused in every phase unless the command is one of the commands
+    :data:`ALLOWED_CHILD_PROCESS_COMMANDS` names.
+
+No credential is ever printed
+    A failure that fires because a *real* credential reached a settings singleton
+    reports the field and the shape of what was found, never the value - see
+    :func:`describe_unexpected_value`. ``backend/tests/test_guard_contract.py``
+    holds this module to all three guarantees.
 
 Fail-closed shims
     A symbol production imports but never defines is stood in for by a value
@@ -68,11 +80,13 @@ import ipaddress
 import logging
 import os
 import platform
+import re
 import socket
 import subprocess
 import sys
 import threading
 import typing
+import weakref
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -106,6 +120,47 @@ REQUIRED_SETTINGS_ENV = {
     "GOOGLE_CLOUD_PROJECT": FAKE_PROJECT,
     "BIGQUERY_DATASET": "test_dataset",
 }
+
+#: ``Settings`` field names whose value must never appear in anything this suite
+#: prints. Every credential the model declares is here, plus ``NOTION_API_KEY``,
+#: which is ``Optional[str] = None`` and therefore holds a real key whenever the
+#: surrounding environment carries one.
+#:
+#: A mismatch on one of these means an ambient variable or a ``backend/.env``
+#: supplied a *real* secret in place of the synthetic one, and the failure
+#: message is written to stdout and into ``reports/junit.xml`` -- artifacts that
+#: are archived, uploaded and pasted into tickets. Reporting the value would
+#: publish the secret the check exists to warn about, so
+#: :func:`describe_unexpected_value` reports its shape instead.
+#:
+#: ``GOOGLE_CLOUD_PROJECT`` is included although a project id is not a
+#: credential: a real one identifies the infrastructure a leaked credential
+#: reaches, and it was the identifier a previous revision of the onboarding
+#: documents disclosed.
+SENSITIVE_SETTINGS_FIELDS = frozenset(
+    {
+        "SECRET_KEY",
+        "TWITTER_API_KEY",
+        "TWITTER_API_SECRET",
+        "TWITTER_ACCESS_TOKEN",
+        "TWITTER_ACCESS_TOKEN_SECRET",
+        "TWITTER_CONSUMER_KEY",
+        "TWITTER_CONSUMER_SECRET",
+        "OPENAI_API_KEY",
+        "NOTION_API_KEY",
+        "GOOGLE_CLOUD_PROJECT",
+    }
+)
+
+#: Key for the keyed digest :func:`_value_fingerprint` computes. Generated once
+#: per process, so a fingerprint is comparable within one run and carries no
+#: information about its input outside it -- an unkeyed digest of a short secret
+#: is recoverable by enumeration, which is the reason this key exists.
+_FINGERPRINT_KEY = os.urandom(16)
+
+#: Length of that digest. Long enough that two different values in one run do not
+#: collide in practice, short enough to read in a failure message.
+_FINGERPRINT_DIGEST_BYTES = 8
 
 #: ``Settings`` fields that carry a declared default. Every one is *removed*
 #: from the environment by the prologue rather than assigned a test value:
@@ -195,21 +250,47 @@ MANAGED_ENVIRONMENT_NAMES = (
 #: :mod:`ipaddress` instead; see :func:`_is_local_host`.
 LOOPBACK_HOSTS = frozenset({"localhost", "ip6-localhost", ""})
 
-#: Loopback ports this process bound, recorded by the guard on
-#: ``socket.socket.bind`` and read by :func:`_is_local_address`.  A loopback
-#: *port* belongs to whichever process bound it, so admitting the whole
-#: loopback interface would admit every other service on this host - under
-#: parallel execution, another checkout's dev server or application process.
-#: Only a port this interpreter bound itself is a socket the suite owns.
-#:
-#: Written and read under :data:`_BOUND_PORTS_LOCK`; a port is never removed,
-#: because a closed port cannot be reached and re-recording is idempotent.
-_PROCESS_BOUND_PORTS = set()
+#: ``socket.AF_UNIX`` where the platform provides it, and ``None`` where it does
+#: not - Windows builds of CPython 3.9 do not define it.  Read at call time by
+#: :func:`_endpoint_of` and :func:`_is_local_address`, so a suite exercising the
+#: ``AF_UNIX`` branch on a platform without the constant substitutes it here.
+AF_UNIX_FAMILY = getattr(socket, "AF_UNIX", None)
 
-#: Serialises access to :data:`_PROCESS_BOUND_PORTS`.  ``socket.bind`` is
-#: reachable from any thread, and starlette's ``TestClient`` runs its event
-#: loop in one.
-_BOUND_PORTS_LOCK = threading.Lock()
+#: Socket families whose address is a ``(host, port)`` pair.
+INTERNET_FAMILIES = (socket.AF_INET, socket.AF_INET6)
+
+#: The unspecified address of each internet family, the value a bind to "every
+#: local interface" reports through ``getsockname()``.
+_UNSPECIFIED_ADDRESSES = {
+    socket.AF_INET: ipaddress.ip_address("0.0.0.0"),
+    socket.AF_INET6: ipaddress.ip_address("::"),
+}
+
+#: Endpoints this process has bound and not yet released, each mapped to the
+#: number of live sockets holding it.
+#:
+#: A key is the whole identity of an endpoint - ``(family, type, protocol,
+#: address)`` - rather than a port number.  A port number alone is not an
+#: authorization: on one number this host can carry a UDP service and a TCP
+#: service, one per loopback address and one per family, each belonging to a
+#: different process, and a number this process released can be rebound by
+#: another.  Recording the full identity, and releasing it when the socket that
+#: held it closes, is what keeps "a socket this run owns" from widening into "any
+#: socket on this host".
+#:
+#: Written and read under :data:`_OWNED_ENDPOINTS_LOCK`.
+_OWNED_ENDPOINTS = {}
+
+#: Live weak references to the bound sockets, each mapped to the endpoint it
+#: holds.  The reference's callback releases the endpoint if a socket is collected
+#: without ``close`` or ``detach`` being called, which is the path
+#: ``_socket.socket.__del__`` takes.
+_OWNED_ENDPOINT_REFERENCES = {}
+
+#: Serialises access to :data:`_OWNED_ENDPOINTS` and
+#: :data:`_OWNED_ENDPOINT_REFERENCES`.  ``bind`` and ``close`` are reachable from
+#: any thread, and starlette's ``TestClient`` runs its event loop in one.
+_OWNED_ENDPOINTS_LOCK = threading.Lock()
 
 #: ``(module, attribute)`` channel factories blocked by
 #: :func:`block_network_access`.  gRPC opens its sockets in the C core
@@ -256,13 +337,42 @@ METHOD_CONNECTORS = (
     ("asyncio.proactor_events", "BaseProactorEventLoop.sock_connect"),
 )
 
-#: ``(module, attribute)`` shell entry points refused while a test is running.
+#: ``(module, attribute)`` shell entry points refused unless the command they
+#: were handed is on :data:`ALLOWED_CHILD_PROCESS_COMMANDS`.
 #: A child process is the one egress path invisible to every guard above, since
 #: its sockets belong to another process.  :class:`subprocess.Popen` is guarded
 #: at ``__init__`` rather than by replacing the class, so the type stays intact
 #: for anything that inspects it; ``os.popen`` needs no entry because it is
 #: implemented on top of ``Popen``.
 CHILD_PROCESS_FACTORIES = (("os", "system"),)
+
+#: The complete set of child-process commands this suite tolerates, matched
+#: against the whole command line rendered by :func:`child_process_command`.
+#:
+#: The guard is otherwise unconditional, from :func:`pytest_configure` -- which
+#: is before collection -- through the last teardown. It used to be narrowed to
+#: "while a test is executing" instead, which left collection, module import and
+#: teardown open: a subprocess started in any of those phases owns its own
+#: sockets, so nothing else in this module can see what it does, and it could
+#: egress freely. Naming the permitted commands closes that window without
+#: reintroducing the breakage the narrowing existed to avoid.
+#:
+#: One entry, and it earns its place: on Windows :func:`platform.uname` obtains
+#: the OS version by running ``cmd.exe /c ver``, and both ``platform.system()``
+#: and ``platform.node()`` reach it. The prologue calls ``platform.uname()``
+#: while no guard is installed, which caches the answer for the whole process,
+#: so in practice this pattern is never matched -- it is here because the cache
+#: is an implementation detail of the standard library and a run must not depend
+#: on it. The pattern is deliberately exact: it admits ``ver`` and no other
+#: argument, so it cannot be widened into a general ``cmd /c`` escape.
+#:
+#: See ``docs/testing/DECISION-LOG.md`` rows D105 and D223.
+ALLOWED_CHILD_PROCESS_COMMANDS = (
+    re.compile(
+        r"^\"?(?:[A-Za-z]:[\\/][^\"]*?)?(?:cmd|cmd\.exe)\"?\s+/c\s+ver\s*$",
+        re.IGNORECASE,
+    ),
+)
 
 #: Symbols production code imports but that no production module defines, each
 #: mapped to the module the import reads from and to every module that binds the
@@ -363,8 +473,9 @@ def _is_local_host(host):
     closed.
 
     Naming this machine is necessary but not sufficient for a connect: see
-    :func:`_is_local_address`, which also requires the port to be one this
-    process bound.
+    :func:`_is_local_address`, which requires the whole endpoint to be one a live
+    socket in this process bound.  This function gates name resolution and the
+    bind recorder; it never admits a connect on its own.
     """
     if host is None:
         return True
@@ -385,60 +496,268 @@ def _is_local_host(host):
     return address.is_loopback or address.is_unspecified
 
 
-def _record_bound_port(sock):
-    """Record the loopback port ``sock`` is bound to, if it has one.
+def _normalized_protocol(family, socket_type):
+    """Return the protocol number ``(family, socket_type)`` implies.
 
-    Called after a successful ``bind``, so the port is read from
-    ``getsockname()`` rather than from the requested address: a bind to port
-    ``0`` - which is what :func:`socket.socketpair` and every ephemeral listener
-    ask for - is only assigned its real port by the kernel.
+    ``socket.socket(AF_INET, SOCK_STREAM)`` reports ``proto == 0`` while a socket
+    built from a ``getaddrinfo`` record for the same endpoint reports
+    ``IPPROTO_TCP``.  Both are the same transport, so the protocol recorded in an
+    endpoint key is the transport's own number rather than whichever spelling the
+    caller happened to construct with.  A type outside the two transports is
+    returned unchanged, so a raw socket cannot collide with a stream or datagram
+    one.
     """
+    if family in INTERNET_FAMILIES:
+        if socket_type == socket.SOCK_STREAM:
+            return socket.IPPROTO_TCP
+        if socket_type == socket.SOCK_DGRAM:
+            return socket.IPPROTO_UDP
+    return socket_type
+
+
+def _normalized_internet_address(host, port):
+    """Return ``(ip_address, port)`` for an internet address, or ``None``.
+
+    The host is parsed with :mod:`ipaddress`, so every spelling of one address
+    normalises to one key while two different addresses stay distinct: a socket
+    bound to ``127.0.0.1`` does not authorize ``127.0.0.2``, and an ``AF_INET6``
+    bind does not authorize the ``AF_INET`` address it prints like.  ``None`` for
+    anything that is not a literal address on a usable port.
+    """
+    if not isinstance(port, int) or port <= 0:
+        return None
+    if isinstance(host, (bytes, bytearray)):
+        host = bytes(host).decode("ascii", "ignore")
+    if not isinstance(host, str):
+        return None
+    try:
+        return ipaddress.ip_address(host), port
+    except ValueError:
+        return None
+
+
+def _endpoint_of(family, socket_type, address):
+    """Return the endpoint key ``address`` denotes for a socket of that shape.
+
+    ``(family, protocol, normalized_address)``, where the normalized address is
+    the ``(ip_address, port)`` pair for an internet family and the filesystem
+    path for ``AF_UNIX``.  ``None`` when the address is not one this guard can
+    identify, which is what makes an unrecognised target refusable rather than
+    admissible.
+
+    ``socket_type`` reaches the key through :func:`_normalized_protocol`, so a
+    UDP bind and a TCP connect on one number are two endpoints.
+    """
+    if AF_UNIX_FAMILY is not None and family == AF_UNIX_FAMILY:
+        if isinstance(address, (bytes, bytearray)):
+            address = bytes(address).decode("utf-8", "surrogateescape")
+        if not isinstance(address, str) or address == "":
+            return None
+        return family, None, address
+    if family not in INTERNET_FAMILIES:
+        return None
+    if not isinstance(address, tuple) or len(address) < 2:
+        return None
+    normalized = _normalized_internet_address(address[0], address[1])
+    if normalized is None:
+        return None
+    return family, _normalized_protocol(family, socket_type), normalized
+
+
+def _acquire_endpoint(sock, endpoint):
+    """Record that ``sock`` holds ``endpoint`` until it is closed or collected."""
+    try:
+        reference = weakref.ref(sock, _release_collected_endpoint)
+    except TypeError:  # pragma: no cover - every socket supports weak references
+        return
+    with _OWNED_ENDPOINTS_LOCK:
+        _OWNED_ENDPOINT_REFERENCES[reference] = endpoint
+        _OWNED_ENDPOINTS[endpoint] = _OWNED_ENDPOINTS.get(endpoint, 0) + 1
+
+
+def _forget_endpoint(endpoint):
+    """Drop one hold on ``endpoint``, removing it when the last one goes."""
+    remaining = _OWNED_ENDPOINTS.get(endpoint)
+    if remaining is None:
+        return
+    if remaining <= 1:
+        del _OWNED_ENDPOINTS[endpoint]
+    else:
+        _OWNED_ENDPOINTS[endpoint] = remaining - 1
+
+
+def _release_collected_endpoint(reference):
+    """Weak-reference callback: release the endpoint of a collected socket."""
+    with _OWNED_ENDPOINTS_LOCK:
+        endpoint = _OWNED_ENDPOINT_REFERENCES.pop(reference, None)
+        if endpoint is not None:
+            _forget_endpoint(endpoint)
+
+
+def _release_socket_endpoint(sock):
+    """Release whatever endpoint ``sock`` holds.  A no-op if it holds none.
+
+    Called from the ``close`` and ``detach`` guards, so a port stops being an
+    authorization the moment the socket holding it goes away rather than at the
+    end of the run.  Idempotent: ``close`` is routinely called more than once.
+    """
+    with _OWNED_ENDPOINTS_LOCK:
+        for reference, endpoint in list(_OWNED_ENDPOINT_REFERENCES.items()):
+            if reference() is sock:
+                del _OWNED_ENDPOINT_REFERENCES[reference]
+                _forget_endpoint(endpoint)
+
+
+def _record_bound_endpoint(sock):
+    """Record the endpoint ``sock`` was just bound to, if this guard owns it.
+
+    Called after a successful ``bind``, so the address is read from
+    ``getsockname()`` rather than from the requested one: a bind to port ``0`` -
+    which is what :func:`socket.socketpair` and every ephemeral listener ask for -
+    is only assigned its real port by the kernel.
+
+    Only a loopback or unspecified internet address is recorded, and for
+    ``AF_UNIX`` only a named path.  A bind to a routable address records nothing,
+    so it authorizes nothing.
+    """
+    _release_socket_endpoint(sock)
+    family = getattr(sock, "family", None)
     try:
         name = sock.getsockname()
     except OSError:
         return
-    if not isinstance(name, tuple) or len(name) < 2:
+    if AF_UNIX_FAMILY is None or family != AF_UNIX_FAMILY:
+        if not isinstance(name, tuple) or len(name) < 2:
+            return
+        if not _is_local_host(name[0]):
+            return
+    endpoint = _endpoint_of(family, getattr(sock, "type", None), name)
+    if endpoint is None:
         return
-    host, port = name[0], name[1]
-    if not isinstance(port, int) or port <= 0 or not _is_local_host(host):
-        return
-    with _BOUND_PORTS_LOCK:
-        _PROCESS_BOUND_PORTS.add(port)
+    _acquire_endpoint(sock, endpoint)
+
+
+def _is_owned_endpoint(endpoint):
+    """Return ``True`` when a live socket in this process holds ``endpoint``."""
+    if endpoint is None:
+        return False
+    with _OWNED_ENDPOINTS_LOCK:
+        if endpoint in _OWNED_ENDPOINTS:
+            return True
+        family, protocol, normalized = endpoint
+        if family not in INTERNET_FAMILIES:
+            return False
+        # A socket this process bound to the unspecified address of its family
+        # answers on every local address of that family, so it owns the port
+        # there too.  The widening is one family, one protocol and one port wide.
+        host, port = normalized
+        if not host.is_loopback and not host.is_unspecified:
+            return False
+        wildcard = family, protocol, (_UNSPECIFIED_ADDRESSES[family], port)
+        return wildcard in _OWNED_ENDPOINTS
 
 
 def _is_port_owned_by_this_process(port):
-    """Return ``True`` when this process bound ``port`` on a loopback address."""
-    if not isinstance(port, int):
+    """Return ``True`` when a live socket in this process holds ``port``.
+
+    The registry is keyed on the whole endpoint identity rather than on a port
+    number - see :data:`_OWNED_ENDPOINTS` for why - and admission goes through
+    :func:`_is_local_address`, which matches that full key.  This is the
+    port-level *projection* of the same registry, and it exists for the guard's
+    own contract suite: the property under test is the port lifecycle
+    (authorized while a socket holds it, de-authorized the moment that socket is
+    closed, detached or collected), and a port number is the only handle the
+    caller of ``bind`` has to assert it with.  Nothing in the admission path
+    calls this, so the projection cannot widen what the guard admits.
+
+    :param port: The port to ask about.  Accepts anything ``int`` accepts, so a
+        caller may pass the string form; an unparseable value is not owned.
+    :returns: ``True`` when some live socket of an internet family holds that
+        port, on any address.
+    """
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
         return False
-    with _BOUND_PORTS_LOCK:
-        return port in _PROCESS_BOUND_PORTS
+    with _OWNED_ENDPOINTS_LOCK:
+        for family, _protocol, normalized in _OWNED_ENDPOINTS:
+            if family not in INTERNET_FAMILIES:
+                continue
+            if normalized[1] == port:
+                return True
+    return False
 
 
 def _is_local_address(sock, address):
     """Return ``True`` when ``address`` is a socket this process itself owns.
 
-    Three admissions, and nothing else:
+    One admission and nothing else: the target resolves to an endpoint key that a
+    live socket in this process bound.  Naming this machine is necessary but never
+    sufficient - a neighbouring checkout's dev server, an application process and
+    another user's service all listen on this host, and reaching one is neither
+    offline nor deterministic - and neither is being an ``AF_UNIX`` socket, since
+    any process can publish one this suite must not talk to.
 
-    * an ``AF_UNIX`` socket, which is local by construction and has no port;
-    * an address with no port component, which cannot be a TCP or UDP target;
-    * a loopback host on a port recorded in :data:`_PROCESS_BOUND_PORTS`.
-
-    A loopback host on any other port is refused. That is the difference between
-    "cannot leave the machine" and "belongs to this test run": a neighbouring
-    checkout's dev server, an application process or another user's service all
-    listen on this host, and reaching one is neither offline nor deterministic.
+    ``sock`` may be ``None``, which is how :func:`socket.create_connection`
+    reaches the guard: it constructs its own socket, so the family is unknown and
+    the type is TCP.  The address is then matched against the owned TCP endpoints
+    of both internet families and nothing else.
     """
-    unix_family = getattr(socket, "AF_UNIX", None)
     family = getattr(sock, "family", None)
-    if unix_family is not None and family == unix_family:
-        return True
-    if not isinstance(address, tuple) or not address:
+    socket_type = getattr(sock, "type", None)
+    if sock is None:
+        return any(
+            _is_owned_endpoint(_endpoint_of(candidate, socket.SOCK_STREAM, address))
+            for candidate in INTERNET_FAMILIES
+        )
+    return _is_owned_endpoint(_endpoint_of(family, socket_type, address))
+
+
+def child_process_command(args, kwargs):
+    """Render the command a child-process entry point was handed, as one string.
+
+    The two guarded entry points describe a command three different ways --
+    ``os.system("...")`` takes a string, ``subprocess.Popen(["a", "b"])`` takes a
+    sequence, and either may arrive as the ``args`` keyword -- so they are
+    normalised here to the single form :data:`ALLOWED_CHILD_PROCESS_COMMANDS` is
+    written against and that a refusal message reports.
+
+    :param args: Positional arguments the guarded callable received, with any
+        bound instance already stripped.
+    :param kwargs: Keyword arguments it received.
+    :returns: The command line, or ``"<no command>"`` when there is none to name.
+    """
+    command = args[0] if args else kwargs.get("args", kwargs.get("cmd"))
+    if command is None:
+        return "<no command>"
+    if isinstance(command, (bytes, bytearray)):
+        return bytes(command).decode("utf-8", "replace")
+    if isinstance(command, str):
+        return command
+    if isinstance(command, (list, tuple)):
+        return " ".join(
+            part.decode("utf-8", "replace")
+            if isinstance(part, (bytes, bytearray))
+            else str(part)
+            for part in command
+        )
+    return str(command)
+
+
+def is_allowed_child_process(command):
+    """Return ``True`` only for a command :data:`ALLOWED_CHILD_PROCESS_COMMANDS` names.
+
+    Fails closed: a command that matches no pattern -- including one this
+    function cannot make sense of -- is refused.
+
+    :param command: A command line as :func:`child_process_command` renders it.
+    """
+    if not isinstance(command, str):
         return False
-    if not _is_local_host(address[0]):
-        return False
-    if len(address) < 2:
-        return True
-    return _is_port_owned_by_this_process(address[1])
+    return any(
+        pattern.match(command.strip()) is not None
+        for pattern in ALLOWED_CHILD_PROCESS_COMMANDS
+    )
 
 
 class _EgressGuard:
@@ -523,11 +842,11 @@ class _EgressGuard:
         return guarded
 
     def _guard_bind(self, real):
-        """Record the loopback port a successful ``bind`` assigned.
+        """Record the endpoint a successful ``bind`` assigned.
 
         Binding is not egress, so nothing is refused here. This is what makes a
-        later connect to that port admissible: :func:`_is_local_address` admits a
-        loopback target only when this process bound the port itself, and
+        later connect to that endpoint admissible: :func:`_is_local_address` admits
+        a target only when a live socket in this process bound it, and
         :func:`socket.socketpair` - which asyncio's proactor self-pipe and
         starlette's ``TestClient`` portal both reach - binds a listener on an
         ephemeral loopback port before connecting to it.
@@ -535,8 +854,22 @@ class _EgressGuard:
 
         def guarded(sock, address, *args, **kwargs):
             result = real(sock, address, *args, **kwargs)
-            _record_bound_port(sock)
+            _record_bound_endpoint(sock)
             return result
+
+        return guarded
+
+    def _guard_endpoint_release(self, real):
+        """Release the endpoint a socket held, then run ``close``/``detach``.
+
+        Releasing first keeps the registry from outliving the socket even if the
+        underlying call raises. Nothing is refused: giving up a socket is not
+        egress.
+        """
+
+        def guarded(sock, *args, **kwargs):
+            _release_socket_endpoint(sock)
+            return real(sock, *args, **kwargs)
 
         return guarded
 
@@ -575,36 +908,46 @@ class _EgressGuard:
 
         return guarded
 
-    def _refuse_inside_a_test(self, name, real):
-        """Return a callable that refuses only while a test is executing.
+    def _refuse_unless_allowlisted(self, name, real):
+        """Return a callable that refuses every command outside the allow-list.
 
-        Used for the child-process entry points only, because on Windows the
-        standard library itself shells out - ``platform.uname()`` runs
-        ``cmd /c ver`` - from module-scope imports and from pytest's own JUnit
-        reporter.  The prologue warms that cache, and this narrowing keeps a
-        benign spawn from pytest's machinery outside any test from failing a
-        run.  Every socket, datagram, resolver and gRPC guard stays
-        unconditional.
+        Used for the child-process entry points.  A child process owns its own
+        sockets, so nothing else in this module can observe what it does - which
+        makes it the one egress path that has to be judged by *what is being
+        run* rather than by where the traffic goes.
 
-        See ``docs/testing/DECISION-LOG.md`` row D105.
+        Unconditional in time.  An earlier revision permitted any command
+        whenever ``test_id`` was ``None``, which is true during collection,
+        during module import and during teardown, so a spawn in any of those
+        phases escaped the guard entirely.  The allow-list in
+        :data:`ALLOWED_CHILD_PROCESS_COMMANDS` replaces that timing test: the one
+        spawn the standard library itself needs is named, and everything else is
+        refused whenever it is attempted.
+
+        See ``docs/testing/DECISION-LOG.md`` rows D105 and D223.
         """
 
         def guarded(*args, **kwargs):
-            if self.test_id is None:
+            command = child_process_command(args, kwargs)
+            if is_allowed_child_process(command):
                 return real(*args, **kwargs)
-            detail = args[0] if args else None
-            raise self.refuse(name, detail)
+            raise self.refuse(name, command)
 
         return guarded
 
-    def _refuse_construction_inside_a_test(self, name, real):
-        """As :meth:`_refuse_inside_a_test`, for an ``__init__`` replacement."""
+    def _refuse_construction_unless_allowlisted(self, name, real):
+        """As :meth:`_refuse_unless_allowlisted`, for an ``__init__`` replacement.
+
+        The instance is the :class:`subprocess.Popen` being constructed, so the
+        command sits in the remaining positional arguments exactly as it does for
+        a plain call.
+        """
 
         def guarded(instance, *args, **kwargs):
-            if self.test_id is None:
+            command = child_process_command(args, kwargs)
+            if is_allowed_child_process(command):
                 return real(instance, *args, **kwargs)
-            detail = args[0] if args else None
-            raise self.refuse(name, detail)
+            raise self.refuse(name, command)
 
         return guarded
 
@@ -646,14 +989,27 @@ class _EgressGuard:
         """Install the bind recorder and every connector, datagram, resolver and
         gRPC guard.
 
-        The bind recorder goes first, so no ephemeral loopback port can be bound
-        between installing the connect guards and installing it.
+        The bind recorder and its release half go first, so no ephemeral loopback
+        port can be bound between installing the connect guards and installing
+        them.
         """
         bind_patcher = patch.object(
             socket.socket, "bind", self._guard_bind(socket.socket.bind)
         )
         bind_patcher.start()
         self._patchers.append(bind_patcher)
+
+        # The counterparts of the recorder. Without them a released port would go
+        # on authorizing connects for the rest of the run, and another process
+        # could rebind it in the meantime.
+        for attribute in ("close", "detach"):
+            release_patcher = patch.object(
+                socket.socket,
+                attribute,
+                self._guard_endpoint_release(getattr(socket.socket, attribute)),
+            )
+            release_patcher.start()
+            self._patchers.append(release_patcher)
 
         for attribute in ("connect", "connect_ex"):
             patcher = patch.object(
@@ -704,13 +1060,18 @@ class _EgressGuard:
         )
 
     def install_child_process_guards(self):
-        """Refuse child-process creation; see :data:`CHILD_PROCESS_FACTORIES`."""
+        """Refuse child-process creation; see :data:`CHILD_PROCESS_FACTORIES`.
+
+        Installed from :func:`pytest_configure`, which runs before collection,
+        and released only by :func:`pytest_unconfigure`, so the refusal covers
+        collection, every test, every teardown and session finish.
+        """
         for module_name, attribute in CHILD_PROCESS_FACTORIES:
-            self._add(module_name, attribute, self._refuse_inside_a_test)
+            self._add(module_name, attribute, self._refuse_unless_allowlisted)
         popen_patcher = patch.object(
             subprocess.Popen,
             "__init__",
-            self._refuse_construction_inside_a_test(
+            self._refuse_construction_unless_allowlisted(
                 "subprocess.Popen", subprocess.Popen.__init__
             ),
         )
@@ -861,9 +1222,10 @@ def _spawns_worker_processes(config):
 
 
 #: Values the four fields ``app/core/config.py`` declares for testability must
-#: carry on the singleton. Each name is removed from the environment by the
-#: prologue, so the declared default at ``app/core/config.py`` lines 22-25 is the
-#: only possible source and these are exactly those defaults.
+#: carry on the singleton. Each name is assigned the string form of its declared
+#: default by the prologue, through :data:`DEFAULTED_SETTINGS_ENV`, so no ambient
+#: value and no ``.env`` entry can decide it; these are the parsed results of
+#: those assignments and equal the defaults at ``app/core/config.py`` lines 22-25.
 TESTABILITY_SETTINGS_VALUES = {
     "ALLOWED_ORIGINS": [],
     "ALGORITHM": "HS256",
@@ -877,6 +1239,77 @@ TESTABILITY_SETTINGS_VALUES = {
 DEFAULTED_SETTINGS_ENV_NAMES = UNPINNABLE_SETTINGS_NAMES + UNDECLARED_CONSUMER_FIELDS
 
 
+def describe_unexpected_value(field_name, actual):
+    """Return a non-disclosing description of ``actual`` for a failure message.
+
+    Every field this module checks is either a credential or a threshold the
+    suite pins, and the credential fields are exactly the ones whose real values
+    must never be printed: a failure here means an ambient variable or a
+    ``backend/.env`` supplied a *real* secret, and both pytest's own output and
+    ``reports/junit.xml`` are read, archived and pasted into tickets. A message
+    carrying the value would publish the secret it exists to warn about.
+
+    A field named in :data:`SENSITIVE_SETTINGS_FIELDS` is therefore described by
+    its shape alone -- type, character length, and the short digest
+    :func:`_value_fingerprint` computes -- which is enough to tell two wrong
+    values apart and to recognise the same wrong value twice, and not enough to
+    reconstruct either. Any other field is shown, because a threshold or a
+    collection name is diagnostic rather than secret and seeing it is what makes
+    the failure actionable.
+
+    :param field_name: ``Settings`` field the value was read from.
+    :param actual: Value found on the settings object.
+    :returns: A description safe to print in any context the suite writes to.
+    """
+    if field_name not in SENSITIVE_SETTINGS_FIELDS:
+        return repr(actual)
+    if actual is None:
+        return "absent (None)"
+    rendered = actual if isinstance(actual, str) else repr(actual)
+    return "a {kind} of {length} characters, fingerprint {digest} " "(value withheld)".format(
+        kind=type(actual).__name__,
+        length=len(rendered),
+        digest=_value_fingerprint(rendered),
+    )
+
+
+def describe_expected_value(field_name):
+    """Return how a failure message should name the value the suite assigns.
+
+    The expected values are committed constants in this module rather than
+    secrets, so naming one discloses nothing. A credential field is still
+    described by reference rather than by value, so that no message written by
+    this suite pairs a credential field name with a credential-shaped literal --
+    which is what makes an operator reading a failure able to tell at a glance
+    that nothing sensitive is in it.
+
+    :param field_name: ``Settings`` field being reported.
+    :returns: The expected value, or a pointer to where it is declared.
+    """
+    if field_name in SENSITIVE_SETTINGS_FIELDS:
+        return "the synthetic placeholder declared for it in backend/tests/conftest.py"
+    expected_values = dict(REQUIRED_SETTINGS_ENV)
+    expected_values.update(TESTABILITY_SETTINGS_VALUES)
+    return repr(expected_values[field_name])
+
+
+def _value_fingerprint(rendered):
+    """Return a short keyed digest of ``rendered``, for telling values apart.
+
+    Keyed with :data:`_FINGERPRINT_KEY`, a value generated once per process, so
+    the digest is stable for the length of a run -- two messages naming the same
+    fingerprint refer to the same value -- and carries no information about the
+    input outside it. An unkeyed digest of a short, low-entropy secret is
+    recoverable by enumeration, which is the whole reason this is keyed.
+    """
+    digest = hashlib.blake2s(
+        rendered.encode("utf-8", "replace"),
+        key=_FINGERPRINT_KEY,
+        digest_size=_FINGERPRINT_DIGEST_BYTES,
+    )
+    return digest.hexdigest()
+
+
 def _settings_normalisation_failures(settings):
     """Return a message per field whose value is not the one assigned above.
 
@@ -885,6 +1318,10 @@ def _settings_normalisation_failures(settings):
     :data:`REQUIRED_SETTINGS_ENV` or :data:`TESTABILITY_SETTINGS_VALUES`, and
     every name in :data:`DEFAULTED_SETTINGS_ENV_NAMES` is additionally required
     to be absent from the environment so its declared default governs.
+
+    A mismatched credential field is reported through
+    :func:`describe_unexpected_value`, so the message names the field and the
+    shape of what was found without disclosing it.
     """
     failures = []
     expected_values = dict(REQUIRED_SETTINGS_ENV)
@@ -893,9 +1330,10 @@ def _settings_normalisation_failures(settings):
         actual = getattr(settings, field_name, None)
         if actual != expected:
             failures.append(
-                "settings.{field} is {actual!r}; the suite assigns "
-                "{expected!r}".format(
-                    field=field_name, actual=actual, expected=expected
+                "settings.{field} is {actual}; the suite assigns {expected}".format(
+                    field=field_name,
+                    actual=describe_unexpected_value(field_name, actual),
+                    expected=describe_expected_value(field_name),
                 )
             )
     for field_name in DEFAULTED_SETTINGS_ENV_NAMES:
@@ -970,6 +1408,13 @@ def pytest_unconfigure(config):
     logging factory and no socket guard survives.
     """
     _EGRESS_GUARD.release()
+
+    # The recorder is gone, so nothing can add to the registry; emptying it means
+    # a second pytest invocation in this interpreter starts with no endpoint
+    # authorized rather than inheriting this run's.
+    with _OWNED_ENDPOINTS_LOCK:
+        _OWNED_ENDPOINTS.clear()
+        _OWNED_ENDPOINT_REFERENCES.clear()
 
     # Installed at this module's scope; a run inside a larger session - an IDE
     # test runner, or a second pytest invocation in one interpreter - would
@@ -1183,15 +1628,19 @@ def _application_shims():
     (``app/api/routes/tweets.py`` line 7 and ``app/tasks/tweet_processor.py``
     line 4, which ``app/main.py`` line 5 pulls in).
 
-    All three refuse rather than succeed. Nothing in the import graph uses any
-    of them at import time — ``TwitterService`` is imported and never referenced
-    again, and both ``LLMService()`` calls sit inside function bodies — so the
-    application still assembles, while a request that reaches one fails loudly.
-    ``verify_token`` is the reason this matters: a truthy stand-in would make
-    ``app/api/dependencies.py`` line 13 return a principal for any token at all.
+    All three refuse rather than succeed: each raises
+    :class:`MissingProductionSymbolError` on call or construction. Nothing in the
+    import graph uses any of them at import time — ``TwitterService`` is imported
+    and never referenced again, and both ``LLMService()`` calls sit inside function
+    bodies — so the application still assembles, while a request that reaches one
+    fails loudly. In particular no token authorizes anything:
+    ``app/api/dependencies.py`` line 13 returns whatever ``verify_token``
+    produced, and this stand-in produces nothing.
 
     A test that needs a controlled result patches the attribute on the module
     under test; ``backend/tests/unit/test_api_dependencies.py`` shows the idiom.
+
+    See ``docs/testing/DECISION-LOG.md`` row D106.
     """
     with _install_missing_symbol("verify_token"), _install_missing_symbol(
         "TwitterService"
@@ -1218,23 +1667,46 @@ def _import_get_db_consumers():
 
 
 def _assert_settings_are_synthetic(settings, description):
-    """Assert every required field on ``settings`` holds its test value."""
+    """Assert every required field on ``settings`` holds its test value.
+
+    The failure this raises is the one that fires when a *real* credential has
+    reached a settings singleton, so it is reported through
+    :func:`describe_unexpected_value` rather than by interpolating the value: an
+    assertion message travels into stdout and into ``reports/junit.xml``, and a
+    message carrying the secret would disclose exactly what it exists to warn
+    about.
+
+    Each check raises :class:`AssertionError` explicitly instead of using an
+    ``assert`` statement, and that is not a style choice. pytest rewrites the
+    assertions in this module and appends its own explanation, which renders the
+    ``repr`` of both operands -- so a bare ``assert actual == expected`` would
+    print the leaked credential, and the settings object holding it, underneath a
+    message written specifically to withhold them. Raising leaves nothing for the
+    rewriter to introspect.
+    """
     for field_name, expected in REQUIRED_SETTINGS_ENV.items():
         actual = getattr(settings, field_name)
-        assert actual == expected, (
-            "{description}.{field} is {actual!r}; the suite requires the "
-            "synthetic value {expected!r}. An ambient environment variable or a "
-            "backend/.env file is supplying a real one.".format(
+        if actual != expected:
+            raise AssertionError(
+                "{description}.{field} is {actual}; the suite requires "
+                "{expected}. An ambient environment variable or a backend/.env "
+                "file is supplying a real one.".format(
+                    description=description,
+                    field=field_name,
+                    actual=describe_unexpected_value(field_name, actual),
+                    expected=describe_expected_value(field_name),
+                )
+            )
+    if settings.NOTION_API_KEY is not None:
+        raise AssertionError(
+            "{description}.NOTION_API_KEY is {actual}; it must be None. "
+            "NOTION_API_KEY is set in the environment or in backend/.env.".format(
                 description=description,
-                field=field_name,
-                actual=actual,
-                expected=expected,
+                actual=describe_unexpected_value(
+                    "NOTION_API_KEY", settings.NOTION_API_KEY
+                ),
             )
         )
-    assert settings.NOTION_API_KEY is None, (
-        "{description}.NOTION_API_KEY is not None; NOTION_API_KEY is set in the "
-        "environment or in backend/.env.".format(description=description)
-    )
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -1315,16 +1787,19 @@ def block_network_access(request):
     nothing else. Nothing is installed or removed, so no window exists in which
     egress is permitted.
 
-    Refused: ``socket.socket.connect``/``connect_ex``/``sendto``,
+    Refused: ``socket.socket.connect``/``connect_ex``/``sendto``/``sendmsg``,
     ``socket.create_connection``, the five resolvers in :data:`DNS_RESOLVERS`,
     ``_overlapped.ConnectEx`` on Windows, every factory in
     :data:`GRPC_CHANNEL_FACTORIES` together with ``grpc._channel.Channel``, and
     the entry points in :data:`CHILD_PROCESS_FACTORIES`.
 
-    Allowed: loopback addresses and names, and ``AF_UNIX`` sockets. asyncio's
-    ``ProactorEventLoop`` self-pipe and starlette's ``TestClient`` blocking
-    portal both open loopback sockets in-process, and neither can reach a host
-    outside the machine.
+    Allowed: an endpoint recorded in :data:`_OWNED_ENDPOINTS`, meaning a live
+    socket in this process bound that exact ``(family, protocol, address)`` -
+    which is what asyncio's ``ProactorEventLoop`` self-pipe and starlette's
+    ``TestClient`` blocking portal open. A loopback address alone is not allowed,
+    and neither is an ``AF_UNIX`` path this process did not bind. Resolving a
+    loopback name is allowed; whether the connect that follows is admitted is
+    decided by the endpoint, not by the name.
 
     Yields the guard, whose ``refuse`` method a test may use to assert the error
     text.
@@ -1380,6 +1855,36 @@ def firestore_client():
 
 
 @pytest.fixture
+def firestore_client_constructor():
+    """Patch ``app.db.firestore.Client`` and yield the stand-in constructor.
+
+    The counterpart of :func:`firestore_client`: that fixture replaces ``get_db``,
+    so no test using it executes the function's body. This one leaves ``get_db``
+    in place and replaces the client class it constructs, which is what makes the
+    body assertable without a real client.
+
+    The constructor's ``return_value`` is a ``MagicMock`` specified against the
+    real ``google.cloud.firestore.Client``, so the object handed back has that
+    class's attribute surface and nothing more - reading an attribute the real
+    client does not define raises ``AttributeError`` exactly as production would.
+
+    Credential resolution is already neutralised for every test by
+    :func:`neutralize_google_credentials`, which patches the ``default`` name on
+    this module as well as on ``google.auth``.
+
+    Yields the patched ``Client`` mock, whose ``call_args`` carries the arguments
+    ``get_db`` passed and whose ``return_value`` is the client it returned.
+    """
+    firestore = importlib.import_module("app.db.firestore")
+    from google.cloud.firestore import Client as RealClient
+
+    constructor = MagicMock(name="firestore_Client")
+    constructor.return_value = MagicMock(spec=RealClient, name="constructed_client")
+    with patch.object(firestore, "Client", constructor):
+        yield constructor
+
+
+@pytest.fixture
 def bigquery_settings():
     """Replace ``app.db.bigquery.Settings`` with a project-carrying stand-in.
 
@@ -1422,16 +1927,16 @@ def tweet_processor_module():
     which exposes only the free function ``generate_response``, and
     instantiates it, so the shim has to be a class.
 
-    This is one of only two fixtures that install a *permissive* shim instead of
-    the fail-closed default, and the reason is the behaviour under test. The
-    shim is :class:`unittest.mock.MagicMock` itself. ``on_status`` line 32 feeds
+    The shim installed here is :class:`unittest.mock.MagicMock` itself, which is
+    *permissive* rather than fail-closed — one of only two fixtures in this module
+    that is. What that makes observable: ``on_status`` line 32 feeds
     ``self.llm_service.calculate_doubt_rating(text)`` straight into
     ``Tweet(doubt_rating=...)``, and a ``MagicMock`` coerces to ``1.0`` through
-    ``__float__``, so a status that clears the popularity gate raises a
-    pydantic ``ValidationError`` carrying exactly the eight field names the
-    schema declares and the listener never supplies. A fail-closed sentinel
-    would abort in ``TweetStreamListener.__init__`` at line 14 and that
-    documented outcome would become unobservable.
+    ``__float__``, so a status that clears the popularity gate reaches the schema
+    and raises a pydantic ``ValidationError`` carrying exactly the eight field
+    names the schema declares and the listener never supplies.
+
+    See ``docs/testing/DECISION-LOG.md`` row D106.
 
     The shim is written to ``app.tasks.tweet_processor`` as well as to the
     defining module, because ``app.main``'s import graph may already have bound
@@ -1492,19 +1997,19 @@ def app_module():
       ``app/tasks/tweet_processor.py`` line 4, which ``app/main.py`` line 5
       pulls in.
 
-    All three are fail-closed: each refuses every call or construction, so no
-    request can succeed against one. That is what keeps this fixture from
-    authorising an arbitrary bearer token — ``app/api/dependencies.py`` line 13
-    returns whatever ``verify_token`` produced, so a permissive stand-in is an
-    open door. A test wanting a particular result patches the attribute on the
-    module it is exercising.
+    All three are fail-closed: each raises
+    :class:`MissingProductionSymbolError` on every call or construction, so no
+    request can succeed against one and no bearer token is authorised. A test
+    wanting a particular result patches the attribute on the module it is
+    exercising.
 
-    The ``verify_token`` shim also makes ``app.api.dependencies`` importable,
-    so the suite covering that module consumes this fixture. That shim returns
-    ``None`` until a test configures it, which sends
-    ``get_current_user`` down the 401 path at ``app/api/dependencies.py`` line
-    12; a test asserting an authenticated result sets ``return_value`` on the
-    stand-in it patches in.
+    The ``verify_token`` shim also makes ``app.api.dependencies`` importable, so
+    the suite covering that module consumes this fixture. Calling that shim
+    **raises**; it does not return ``None``. So ``get_current_user`` reaches
+    neither its 401 path nor its success path until a test replaces the stand-in,
+    and ``backend/tests/unit/test_api_dependencies.py`` asserts that raise
+    directly. A test asserting the 401 or an authenticated result patches in its
+    own stand-in and sets ``return_value`` on it.
 
     ``app/main.py`` runs ``configure_cors(app)`` and ``include_routers(app)``
     at lines 41 and 42, so the module is left cached and the returned

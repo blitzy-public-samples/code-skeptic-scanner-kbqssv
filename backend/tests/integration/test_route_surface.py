@@ -286,8 +286,7 @@ def test_client_unset_base_path_returns_404(client, method, path):
 
     This is the server-side oracle for the frontend msw layer:
     ``frontend/src/test-utils/handlers.ts`` ``unsetBaseBackendHandlers()``
-    answers exactly this status, body and content type, and
-    ``frontend/src/test-utils/handlers.test.ts`` asserts it does.
+    answers exactly this status, body and content type.
     """
     response = client.request(method, path)
 

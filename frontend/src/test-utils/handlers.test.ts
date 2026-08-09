@@ -14,7 +14,7 @@
  * | Request                                        | Status | Body                                                        |
  * |------------------------------------------------|--------|-------------------------------------------------------------|
  * | any route under `/undefined`                   | 404    | `{"detail":"Not Found"}`, `application/json`                |
- * | `GET /tweets?page=2&limit=10`                  | 500    | `Internal Server Error`, `text/plain; charset=utf-8`         |
+ * | `GET /tweets?page=2&limit=10`, `get_db` resolved for real | 500 | `Internal Server Error`, `text/plain; charset=utf-8`  |
  * | ...with a SQLAlchemy-shaped `get_db` override  | 200    | the tweet list                                              |
  * | `GET /tweets?page=5&limit=undefined`           | 422    | one `detail` record naming `limit`                          |
  * | `GET /tweets?limit=undefined&skip=undefined`   | 422    | two records, `skip` first - declaration order, not query order |
@@ -219,6 +219,59 @@ describe('configuredBaseBackendHandlers: GET /tweets query coercion', () => {
     expect(response.data).toEqual(makeDefaultTweetsJson());
   });
 
+  /*
+   * pydantic v1 coerces by calling `int(value)`, so the domain is CPython's base-10 literal grammar: Unicode
+   * decimal digits, scripts freely mixed, with single `_` separators strictly between digits. Each value below
+   * is one the real endpoint accepts, asserted in
+   * `backend/tests/integration/test_http_tweets.py::test_get_tweets_coerces_an_unconventional_integer_limit`.
+   */
+  it.each([
+    ['1_0', 'underscore-separated'],
+    ['1_0_0', 'two underscore groups'],
+    ['+1_0', 'signed and underscore-separated'],
+    ['\u0661\u0660', 'Arabic-Indic digits'],
+    ['\uff11\uff10', 'full-width digits'],
+    ['\u06f1\u06f0', 'extended Arabic-Indic digits'],
+    ['\u0f21\u0f20', 'Tibetan digits'],
+    ['\u0661\u0031', 'mixed-script digits'],
+    ['\uff11_\uff10', 'full-width digits, underscore-separated'],
+  ])('accepts %j as a limit (%s), as the endpoint does', async (value) => {
+    server.use(...configuredBaseBackendHandlers({ dependencyOverridden: true }));
+
+    const response = await request(
+      'get',
+      `${CONFIGURED_TWEETS_URL}?page=1&limit=${encodeURIComponent(value)}`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.data).toEqual(makeDefaultTweetsJson());
+  });
+
+  /*
+   * The lookalikes `int()` refuses, asserted server-side in the same file by
+   * `test_get_tweets_refuses_an_integer_lookalike`. Without these the grammar could be widened to accept an
+   * underscore anywhere, or any digit-like character, and no case would fail.
+   */
+  it.each([
+    ['_10', 'leading underscore'],
+    ['10_', 'trailing underscore'],
+    ['1__0', 'doubled underscore'],
+    ['+_10', 'underscore after the sign'],
+    ['\u2070', 'superscript zero'],
+    ['\u00b2', 'superscript two'],
+    ['\u00bd', 'vulgar fraction'],
+  ])('answers 422 for %j as a limit (%s), as the endpoint does', async (value) => {
+    server.use(...configuredBaseBackendHandlers());
+
+    const response = await request(
+      'get',
+      `${CONFIGURED_TWEETS_URL}?page=1&limit=${encodeURIComponent(value)}`,
+    );
+
+    expect(response.status).toBe(BACKEND_UNPROCESSABLE_STATUS);
+    expect(response.data).toEqual({ detail: [integerError('limit')] });
+  });
+
   it('ignores page, which the backend does not declare', async () => {
     server.use(...configuredBaseBackendHandlers({ dependencyOverridden: true }));
 
@@ -230,6 +283,15 @@ describe('configuredBaseBackendHandlers: GET /tweets query coercion', () => {
 });
 
 describe('configuredBaseBackendHandlers: endpoint execution', () => {
+  /*
+   * Oracle: `backend/tests/integration/test_http_tweets.py::test_get_tweets_returns_500_without_an_override`
+   * issues this request against the assembled application with `Depends(get_db)` resolved for real - only the
+   * `Client` class replaced by a stand-in specified against `google.cloud.firestore.Client` - and asserts the
+   * same status, the same body and the same content type. `test_get_tweets_resolves_the_declared_dependency`
+   * asserts the override map was empty while it did so, and
+   * `test_get_tweets_returns_500_for_the_pagination_callers_send` asserts it for the `page`/`limit` query
+   * `fetchTweets` emits.
+   */
   it('answers 500 with a plain-text body for GET /tweets while the dependency is not overridden', async () => {
     server.use(...configuredBaseBackendHandlers());
 

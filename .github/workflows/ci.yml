@@ -47,36 +47,145 @@ jobs:
       run: |
         npm run lint
 
-    - name: Run backend tests
+    # Every step from here to the end of this job carries `if: ${{ !cancelled() }}`.
+    # The two steps above fail for reasons that predate the test suite, and a step
+    # without a condition is skipped once an earlier step has failed - which left
+    # the whole test and reporting path unreachable on every push. The condition
+    # runs the tests and their reports regardless of the lint conclusion while
+    # still leaving the job red, so neither signal hides the other.
+    # A cancelled run stops here, which is why this is `!cancelled()` and not
+    # `always()`.
+
+    - name: Check backend collection integrity
+      if: ${{ !cancelled() }}
       working-directory: backend
       run: |
-        pytest --cov=app/core --cov=app/services --cov=app/tasks --cov=app/db --cov-report=term-missing --cov-report=xml --cov-fail-under=90 --junitxml=reports/junit.xml
+        set -o pipefail
+        mkdir -p reports
+        pytest --collect-only -q | tee reports/collect-only.txt
+
+    - name: Check frontend test discovery
+      if: ${{ !cancelled() }}
+      working-directory: frontend
+      run: |
+        set -o pipefail
+        mkdir -p reports
+        npm run --silent test:list | tee reports/list-tests.txt
+
+    # `--cov-precision=2` makes `--cov-fail-under=90` an exact gate. Coverage.py
+    # compares the total against the threshold after rounding it to the report's
+    # precision, which defaults to zero decimals - so at the default a measured
+    # 89.5% rounds to 90, satisfies the threshold, and the run exits 0 while the
+    # report itself prints FAIL. backend/.coveragerc declares the same precision, so
+    # a local run is gated identically; the flag is repeated here so the gate is
+    # legible at the invocation site. backend/pytest.ini carries no coverage option
+    # at all, which is what keeps a bare `pytest` and `--collect-only` ungated.
+    - name: Run backend tests
+      id: backend_tests
+      if: ${{ !cancelled() }}
+      working-directory: backend
+      run: |
+        pytest --cov=app/core --cov=app/services --cov=app/tasks --cov=app/db --cov-report=term-missing --cov-report=xml --cov-report=json --cov-precision=2 --cov-fail-under=90 --junitxml=reports/junit.xml
 
     - name: Run frontend tests
+      id: frontend_tests
+      if: ${{ !cancelled() }}
       working-directory: frontend
       run: |
         npm run test:ci
 
+    - name: Verify backend report artifacts
+      if: ${{ !cancelled() && steps.backend_tests.outcome == 'success' }}
+      run: |
+        for f in backend/coverage.xml backend/coverage.json backend/reports/junit.xml; do
+          if [ ! -s "$f" ]; then
+            echo "::error file=$f::report missing or empty - the upload below would have carried nothing"
+            exit 1
+          fi
+          echo "ok $f ($(wc -c < "$f") bytes)"
+        done
+        if ! grep -Eq 'tests="[1-9][0-9]*"' backend/reports/junit.xml; then
+          echo "::error file=backend/reports/junit.xml::result stream declares no test cases - the collection step's stub was never replaced by a run"
+          exit 1
+        fi
+
+    - name: Verify frontend report artifacts
+      if: ${{ !cancelled() && steps.frontend_tests.outcome == 'success' }}
+      run: |
+        for f in frontend/coverage/coverage-final.json frontend/coverage/coverage-summary.json frontend/reports/jest-junit.xml; do
+          if [ ! -s "$f" ]; then
+            echo "::error file=$f::report missing or empty - the upload below would have carried nothing"
+            exit 1
+          fi
+          echo "ok $f ($(wc -c < "$f") bytes)"
+        done
+        if ! grep -Eq 'tests="[1-9][0-9]*"' frontend/reports/jest-junit.xml; then
+          echo "::error file=frontend/reports/jest-junit.xml::result stream declares no test cases"
+          exit 1
+        fi
+
     - name: Upload backend coverage to Codecov
+      if: ${{ !cancelled() && steps.backend_tests.outcome == 'success' }}
       uses: codecov/codecov-action@v1
       with:
         file: ./backend/coverage.xml
         flags: backend
+        fail_ci_if_error: true
 
     - name: Upload frontend coverage to Codecov
+      if: ${{ !cancelled() && steps.frontend_tests.outcome == 'success' }}
       uses: codecov/codecov-action@v1
       with:
         file: ./frontend/coverage/coverage-final.json
         flags: frontend
+        fail_ci_if_error: true
+
+    - name: Upload backend and frontend test evidence
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: build-test-evidence
+        path: |
+          backend/reports/
+          backend/coverage.xml
+          backend/coverage.json
+          frontend/reports/
+          frontend/coverage/
+        if-no-files-found: error
+        retention-days: 30
+
+    - name: Upload backend test results
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: backend-junit
+        path: backend/reports/junit.xml
+
+    - name: Upload frontend test results
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: frontend-junit
+        path: frontend/reports/jest-junit.xml
 
   e2e:
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: read
+    env:
+      # Names a browser the runner image already carries, so nothing in this job
+      # invokes Playwright's downloader. `e2e/playwright.config.ts` passes this
+      # through as `launchOptions.executablePath`.
+      PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
+
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        persist-credentials: false
 
     - name: Set up Node.js 16.x
-      uses: actions/setup-node@v2
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
       with:
         node-version: 16.x
 
@@ -90,21 +199,113 @@ jobs:
       run: |
         npm install
 
-    - name: Install Playwright browsers
+    # Discovery first: `playwright test --list` launches no browser, so running it
+    # ahead of the provisioning gate means a host with no browser still leaves a
+    # retained readiness result behind rather than nothing at all.
+    - name: Check end-to-end test discovery
       working-directory: e2e
       run: |
-        npx playwright install --with-deps chromium
+        set -o pipefail
+        mkdir -p reports
+        npm run --silent test:list | tee reports/list-tests.txt
 
-    - name: Run end-to-end tests
+    # No step in this job downloads a browser. Playwright 1.44.1's downloader does
+    # not verify the TLS chain of the host it fetches from (CVE-2025-59288), so the
+    # browser comes from a channel that signs its artifacts - the build the runner
+    # image already carries - and is named by PLAYWRIGHT_CHROMIUM_EXECUTABLE, which
+    # e2e/playwright.config.ts reads as launchOptions.executablePath. The pinned
+    # @playwright/test 1.44.1 declares no install script and e2e/package.json declares
+    # no download script, so nothing here fetches anything and this job must not add
+    # one. e2e/scripts/require-browser.js resolves a candidate (honouring an explicit
+    # PLAYWRIGHT_CHROMIUM_EXECUTABLE or CHROME_BIN first, then the image's usual
+    # paths), validates that it launches, publishes it through $GITHUB_ENV so no later
+    # step needs a step-level override that could blank it, and fails the job when no
+    # candidate is executable.
+    # See docs/testing/DECISION-LOG.md rows D111, D129, D212 and D264.
+    - name: Resolve and validate the pre-installed browser
+      working-directory: e2e
       run: |
-        npx playwright test --config e2e/playwright.config.ts
+        npm run browsers:require
+
+    # e2e/scripts/verify-browser.js validates the resolved executable and then the
+    # Playwright cache path, and exits non-zero when neither is launchable. It
+    # fetches nothing. The runner version is printed from the pinned local binary so
+    # the report records which runner produced the result.
+    - name: Verify the pinned runner and the pre-provisioned browser
+      working-directory: e2e
+      run: |
+        ./node_modules/.bin/playwright --version
+        npm run --silent browsers:verify
+        if [ ! -x "$PLAYWRIGHT_CHROMIUM_EXECUTABLE" ]; then
+          echo "::error::no executable browser at $PLAYWRIGHT_CHROMIUM_EXECUTABLE - provision one out of band and set PLAYWRIGHT_CHROMIUM_EXECUTABLE; this job never downloads one"
+          exit 1
+        fi
+        echo "browser executable: $PLAYWRIGHT_CHROMIUM_EXECUTABLE"
+        "$PLAYWRIGHT_CHROMIUM_EXECUTABLE" --version
+
+    # Invoked through the e2e package, never `npx` from the repository root: the root has
+    # no manifest, so a root `npx playwright` resolves no project-owned runner and can
+    # fetch an unpinned one. `npm test` runs e2e/node_modules/.bin/playwright, so the
+    # runner is the pinned local binary and the config is the one beside it.
+    # See docs/testing/DECISION-LOG.md row D49.
+    - name: Run end-to-end tests
+      id: e2e_run
+      working-directory: e2e
+      run: |
+        npm test
+
+    - name: Verify end-to-end report artifacts
+      if: ${{ !cancelled() && steps.e2e_run.outcome != 'skipped' }}
+      working-directory: e2e
+      run: |
+        for f in reports/e2e-junit.xml playwright-report/index.html; do
+          if [ ! -s "$f" ]; then
+            echo "::error file=e2e/$f::report missing or empty - the upload below would have carried nothing"
+            exit 1
+          fi
+          echo "ok e2e/$f ($(wc -c < "$f") bytes)"
+        done
+        if ! grep -Eq 'tests="[1-9][0-9]*"' reports/e2e-junit.xml; then
+          echo "::error file=e2e/reports/e2e-junit.xml::result stream declares no test cases"
+          exit 1
+        fi
 
     - name: Upload Playwright report
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: playwright-report
         path: e2e/playwright-report/
+        if-no-files-found: error
+        retention-days: 30
+
+    - name: Upload end-to-end result stream and discovery output
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: e2e-test-evidence
+        path: e2e/reports/
+        if-no-files-found: error
+        retention-days: 30
+
+    - name: Upload end-to-end failure artifacts
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: e2e-failure-artifacts
+        path: e2e/test-results/
+        # `warn`, not `error`: trace, screenshot and video are all retained on
+        # failure only, so a fully passing run writes nothing here. The two
+        # uploads above are unconditional artifacts and use `error`.
+        if-no-files-found: warn
+        retention-days: 30
+
+    - name: Upload e2e test results
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: e2e-junit
+        path: e2e/reports/e2e-junit.xml
 
 # HUMAN ASSISTANCE NEEDED
 # Please review the following:

@@ -12,6 +12,15 @@ interface TimeAgoCase {
 }
 
 const THRESHOLD_CASES: TimeAgoCase[] = [
+  /*
+   * One second, which is where the missing plural ternary is visible. Every other arm below carries
+   * `${n > 1 ? 's' : ''}`; the seconds arm at L12-13 interpolates `diffInSeconds` into a fixed
+   * `seconds` and has no ternary at all, so a difference of exactly one reads `1 seconds ago`. That is
+   * the current behaviour and the oracle here - adding the ternary to production would fail this case,
+   * which is the point of pinning it.
+   */
+  { diff: 1, expected: '1 seconds ago', arm: 'seconds L12-13 at one second, no plural ternary' },
+  { diff: 0, expected: '0 seconds ago', arm: 'seconds L12-13 lower edge, the same instant' },
   { diff: 30, expected: '30 seconds ago', arm: 'seconds L12-13, no plural ternary' },
   { diff: 60, expected: '1 minute ago', arm: 'minutes L14-16 singular at the 60s threshold' },
   { diff: 120, expected: '2 minutes ago', arm: 'minutes L14-16 plural' },
