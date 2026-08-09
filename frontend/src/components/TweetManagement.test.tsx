@@ -9,17 +9,13 @@
  * sits in - `div.tweet-list` - is not a live region either, so the tweets that eventually replace it
  * are not announced. The only signal is visual.
  *
- * `role="status"` (or `aria-live="polite"` plus `aria-busy` on the list) is what would make it
- * audible, and adding either means editing `frontend/src/components/TweetManagement`, which is
- * production code this programme is not authorized to change - the two authorized touches are both
- * in `backend/`. The behaviour is therefore pinned as it stands: the case below asserts the absence
- * of every announcement mechanism, so adding one becomes a deliberate, test-visible change. It is
- * recorded as a ceiling in `frontend/TESTING.md`, `docs/testing/TRACEABILITY-MATRIX.md` §G and the
- * suggested-next-tasks lists.
+ * The case below asserts the absence of every announcement mechanism, so adding one becomes a
+ * deliberate, test-visible change. The ceiling itself is recorded in `frontend/TESTING.md`,
+ * `docs/testing/TRACEABILITY-MATRIX.md` §G and the suggested-next-tasks lists.
  *
  * @see frontend/src/components/TweetManagement - the module under test.
  * @see frontend/src/components/Dashboard.test.tsx - the same ceiling on the polled feed.
- * @see docs/testing/DECISION-LOG.md - the single source of truth for why this is recorded, not fixed.
+ * @see docs/testing/DECISION-LOG.md - the single source of truth for this disposition.
  */
 
 import { act, waitFor } from '@testing-library/react';
@@ -168,7 +164,6 @@ describe('TweetList (src/components/TweetManagement)', () => {
       expect(list).not.toHaveAttribute(attribute);
     }
 
-    /* So no role query reaches it: the appearance of the indicator is a visual event only. */
     for (const role of ANNOUNCEMENT_ROLES) {
       expect(queryByRole(role)).toBeNull();
     }
@@ -328,7 +323,6 @@ describe('TweetList (src/components/TweetManagement)', () => {
     });
 
     expect(errorSpy).toHaveBeenCalledTimes(1);
-    /* Unmounting registers nothing new either. */
     expect(scrollListenerRegistrations()).toHaveLength(1);
   });
 
@@ -355,8 +349,8 @@ describe('TweetList (src/components/TweetManagement)', () => {
     /*
      * React's own diagnostics, recorded by the spy that keeps them out of the run's output.
      *
-     * Three properties are asserted, and deliberately only three: that React reported an invalid
-     * element type, that it named `TweetList` as the component responsible, and that it pointed at this
+     * Three properties are asserted: that React reported an invalid element type, that it named
+     * `TweetList` as the component responsible, and that it pointed at this
      * module. Those are facts about the product - `TweetCard` is imported by a module that does not
      * export it - and they are what a reader needs in order to act.
      *
@@ -364,10 +358,9 @@ describe('TweetList (src/components/TweetManagement)', () => {
      * each writes, how many arguments each record carries, which parts arrive as `console.error` format
      * substitutions rather than interpolated text, and whether jsdom forwards the same error as an
      * object alongside them. `react` and `react-dom` are declared as caret ranges and no lockfile is
-     * committed, so a patch release may legitimately reshape all of that while the product behaves
-     * identically - and a test that treated the shape as a contract would fail for a reason that has
-     * nothing to do with this repository. `renderedText` therefore flattens every record to searchable
-     * text and the assertions read it semantically.
+     * committed, so a patch release may reshape all of that while the product behaves identically.
+     * `renderedText` therefore flattens every record to searchable text and the assertions read it
+     * semantically.
      */
     const renderedText = errorSpy.mock.calls
       .map((call) =>
@@ -393,10 +386,8 @@ describe('TweetList (src/components/TweetManagement)', () => {
     expect(renderedText).toMatch(/type is invalid/);
     expect(renderedText).toMatch(/undefined/);
 
-    /* It attributed the element to the component that built it. */
     expect(renderedText).toContain('Check the render method of `TweetList`.');
 
-    /* And the component stack points into this module rather than somewhere else in the tree. */
     expect(renderedText).toMatch(/components[\\/]TweetManagement:\d+:\d+/);
 
     /* React tears the tree down: the container the list rendered into is left empty. */

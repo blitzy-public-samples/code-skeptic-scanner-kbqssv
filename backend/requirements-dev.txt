@@ -18,16 +18,11 @@ google-cloud-firestore==2.11.1
 google-cloud-bigquery==3.11.4
 google-auth==2.22.0
 google-api-core==2.11.1
-# SECURITY EXCEPTION, ESCALATED - pinned at the value AAP 0.6.1 declares. 3.3.0
-# is affected by CVE-2024-33663 / PYSEC-2024-232 (algorithm and key confusion)
-# and CVE-2024-33664 / PYSEC-2024-233 (compressed-JWE decompression bomb), both
-# fixed in 3.4.0. Neither is reachable from this suite: app/core/security.py
-# only encodes and decodes HS256 with an explicit key, so no JWE is decrypted
-# and no OpenSSH ECDSA key is loaded. Raising the pin is a change to a frozen
-# specification and belongs to whoever owns that specification, so it is
-# escalated as an open item rather than made here.
-# See docs/testing/DECISION-LOG.md.
-python-jose[cryptography]==3.3.0
+# CLOSURE: tests/conftest.py patches grpc, grpc.aio and grpc._channel directly.
+grpcio==1.80.0
+grpcio-status==1.62.3
+# SECURITY: above CVE-2024-33663 / CVE-2024-33664, fixed in 3.4.0.
+python-jose[cryptography]==3.5.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 pandas==1.5.3

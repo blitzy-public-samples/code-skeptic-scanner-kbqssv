@@ -35,9 +35,8 @@
  * {@link unsetBaseBackendHandlers} reproduces the third column and {@link configuredBaseBackendHandlers} the
  * fourth and fifth, the latter selected by its `dependencyOverridden` option. A suite installs the set
  * matching the disposition it means to assert; neither is part of the default array. Every value in the table
- * was measured against the assembled application, and
- * `backend/tests/integration/test_route_surface.py` and `test_http_tweets.py` assert the same values from the
- * server side.
+ * is asserted from the server side by `backend/tests/integration/test_route_surface.py` and
+ * `test_http_tweets.py`, which are the oracle a change to this table must agree with.
  *
  * The 422 is **not** conditional on the dependency: fastapi coerces the declared query parameters before it
  * calls the endpoint, so a request carrying `limit=undefined` is refused whichever object `Depends(get_db)`
@@ -59,9 +58,9 @@
  * ## Origin and path confinement
  *
  * Every handler is registered as an **absolute, fully spelled-out** pattern: an entry of
- * {@link ALLOWED_REQUEST_ORIGINS} - `http://localhost` and `http://127.0.0.1`, the origins jsdom serves the
- * suite from - then the base path prefix the layer is about, then the route path. No pattern carries a
- * leading `*` segment, so nothing absorbs the base prefix and no layer can answer a request whose prefix it
+ * {@link ALLOWED_REQUEST_ORIGINS} - the explicitly handled loopback origins, `http://localhost` and
+ * `http://127.0.0.1` - then the base path prefix the layer is about, then the route path. No pattern carries
+ * a leading `*` segment, so nothing absorbs the base prefix and no layer can answer a request whose prefix it
  * does not name. Each layer therefore registers two handlers per route.
  *
  * A request to any other origin, or to the right origin under a prefix no handler names, matches **nothing**:
@@ -69,17 +68,16 @@
  * `'unhandled-request'` entry to the isolation ledger and then raise, so the request is reported and never
  * performed. That is what makes a mis-set base URL visible instead of silently successful.
  *
- * The allow-list is a frozen constant with no mutator. A suite that deliberately drives an absolute
+ * The allow-list is a frozen constant with no mutator. A suite that explicitly drives an absolute
  * non-loopback URL registers a handler for that exact URL with `server.use(...)` for the duration of one
  * test.
  *
- * A status alone would not be enough. `services/twitterService.ts` and `services/llmService.ts` log and
- * rethrow a *replacement* error, `components/TweetManagement` catches and logs, and
- * `components/Dashboard` catches nothing at all and leaves an unhandled rejection - so an error raised
- * inside the request lifecycle can be lost before any assertion sees it. Every violation is therefore also
- * appended to a ledger, and {@link assertNoIsolationViolations} throws on it from `runSharedAfterEach` in
- * `src/test-utils/reset-shared-state.ts` - the global `afterEach` that `src/test-utils/setup-jest.ts`
- * registers - which fails the test that caused it.
+ * A status alone would not be enough, because an error raised inside the request lifecycle can be lost before
+ * any assertion sees it: the two services rethrow a *replacement* error, `components/TweetManagement` catches
+ * and logs, and `components/Dashboard` catches nothing and leaves an unhandled rejection. Every violation is
+ * therefore also appended to a ledger, and {@link assertNoIsolationViolations} throws on it from
+ * `runSharedAfterEach` in `src/test-utils/reset-shared-state.ts` - the global `afterEach` that
+ * `src/test-utils/setup-jest.ts` registers - which fails the test that caused it.
  *
  * ## API version
  *
@@ -124,8 +122,8 @@ export const DEFAULT_TWEET_RESPONSE = 'Draft reply stored for review.';
  * satisfy `tweetSchema` in full, and elements 1 and 2 override a different subset of fields so a suite can
  * tell them apart by index.
  *
- * A function rather than an array: the tweets are rebuilt on every call, so each request is handed its own
- * objects and a suite that mutates a response changes nothing for the next one.
+ * The tweets are rebuilt on every call, so each request is handed its own objects and a suite that mutates a
+ * response changes nothing for the next one.
  *
  * @returns Three freshly built, schema-valid tweets.
  */
@@ -188,8 +186,8 @@ export const UNSET_BASE_PATH_PREFIX = `/${UNSET_BASE_PATH_SEGMENT}`;
  * The value a suite assigns to `REACT_APP_API_BASE_URL` to put the client on the backend's own paths.
  *
  * An origin with no path, and a loopback one. The backend mounts its router at the root with no prefix -
- * `Settings.API_V1_STR` is declared and used by nothing - so a base carrying a path segment is unrouted
- * exactly as `/undefined` is; and a loopback origin is inside {@link ALLOWED_REQUEST_ORIGINS}, so the origin
+ * `Settings.API_V1_STR` is declared and used by nothing - so a base carrying a path segment would be unrouted
+ * exactly as `/undefined` is; and this origin is inside {@link ALLOWED_REQUEST_ORIGINS}, so the origin
  * confinement above still holds.
  *
  * @see importWithConfiguredBase - the loader below, which applies it before importing the subject.
@@ -208,14 +206,16 @@ export const CONFIGURED_BASE_PATH_PREFIX = '';
  *     const api = await importWithConfiguredBase(() => import('./api'));
  *     await expect(api.fetchTweets(2, 10)).rejects.toMatchObject({ response: { status: 500 } });
  *
- * `frontend/src/services/api.ts` line 5 reads `process.env.REACT_APP_API_BASE_URL` **once, at module scope**,
- * into the constant it prefixes every request with. An assignment inside a test therefore changes nothing
- * observable: the module has already been evaluated and its base URL is already the literal string
- * `undefined`. The variable has to be in place before the module is required, so this sets it, discards the
- * module registry and imports, in that order.
+ * `frontend/src/services/api.ts` reads `process.env.REACT_APP_API_BASE_URL` **once, at module scope**, into
+ * the constant it prefixes every request with, so the variable has to be in place *before* the module is
+ * required: an assignment inside a test changes nothing observable. This sets it, discards the module
+ * registry and imports, in that order.
  *
  * The returned module - and everything it imports, including a second `axios` instance - is a **fresh**
- * instance, distinct from the one the calling test file imported at its top. Two consequences for a caller:
+ * instance, distinct from the one the calling test file imported at its top. So a `jest.spyOn(axios, …)`
+ * installed on the suite's own import does not affect it: drive these cases through msw, which intercepts at
+ * the transport the fresh instance also uses. The request log and the msw server are unaffected, because this
+ * module and `./msw-server` are already loaded when this runs.
  *
  * - a `jest.spyOn(axios, …)` installed on the suite's own `axios` import does not affect the returned module,
  *   so drive these cases through msw, which intercepts at the transport the fresh instance also uses;
@@ -227,12 +227,12 @@ export const CONFIGURED_BASE_PATH_PREFIX = '';
  * every test, so the next test's subject reads it as unset again. That hook is the single owner of the
  * variable's lifecycle.
  *
- * `load` is a callback rather than a specifier string so the import stays a static-looking `import()` in the
- * calling file, which is what keeps the specifier resolving relative to that file and visible to the
- * transformer.
+ * `load` is a callback, so the import stays a static-looking `import()` in the calling file: the specifier
+ * resolves relative to that file and stays visible to the transformer.
  *
  * @typeParam T - The module's shape, usually written as `typeof import('./api')`.
- * @param load - Imports the subject. Called after the variable is set and the registry is reset.
+ * @param load - Imports the subject. Called after the variable is set and the registry is reset. A callback
+ *   rather than a specifier string, so the `import()` stays in the calling file and resolves relative to it.
  * @returns Whatever `load` resolves to: the freshly evaluated module.
  * @see configuredBaseBackendHandlers - the handler set that answers the paths this base produces.
  */
@@ -281,9 +281,9 @@ export interface BackendValidationError {
  * The 422 body FastAPI returns when one or more declared `int` query parameters cannot be coerced: one
  * `detail` record per failing parameter, each `loc` naming it.
  *
- * Takes a list rather than a single name because validation does **not** stop at the first failure - a request
- * whose `skip` and `limit` are both malformed is answered with two records - and the caller is responsible for
- * passing them in the order the endpoint declares them, which is the order fastapi reports.
+ * Takes a list: validation does **not** stop at the first failure, so a request whose `skip` and `limit` are
+ * both malformed is answered with two records. The caller passes them in the order the endpoint declares
+ * them, which is the order fastapi reports.
  *
  * @param parameters - Names of the failing query parameters, in declaration order.
  * @see backend/tests/integration/test_http_tweets.py -
@@ -570,24 +570,26 @@ export const ROUTE_CONTRACTS: readonly RouteContract[] = Object.freeze([
 ]);
 
 /* ------------------------------------------------------------------------------------------------------ *
- * Origins a handler answers. jsdom serves the suite from http://localhost and the callers' base URL is the
- * literal string `undefined`, so every request a caller emits is same-origin with the document.
+ * Origins a handler answers. The callers' base URL is the literal string `undefined`, so every request a
+ * caller emits is same-origin with the jsdom document.
  * ------------------------------------------------------------------------------------------------------ */
 
 /**
- * The only origins any handler in this module is registered for, as `URL.origin` reports them.
+ * The explicitly handled loopback origins: the only origins any handler in this module is registered for, as
+ * `URL.origin` reports them. `http://localhost` is jsdom's default document origin, and `http://127.0.0.1` is
+ * handled too so a suite that overrides `testEnvironmentOptions.url` to the numeric form - a jsdom document
+ * has one origin, whichever of the two it is - is served by the same handlers.
  *
- * Loopback only, and frozen: there is deliberately no mutator, because a process-global allow-list one test
- * can widen is order-dependent state of exactly the kind this layer exists to eliminate.
+ * Loopback only, and frozen: the constant carries no mutator, so no test can widen it for a later one.
  *
  * `http://localhost` is jsdom's default document origin; `http://127.0.0.1` is included so a suite that
  * overrides `testEnvironmentOptions.url` to the numeric form is served by the same handlers.
  *
- * A suite that deliberately drives some other origin registers a handler for that exact URL with
+ * A suite that explicitly drives some other origin registers a handler for that exact URL with
  * `server.use(...)`; without one the request matches nothing, reaches `onUnhandledRequest` and becomes a
  * ledger entry that {@link assertNoIsolationViolations} raises on.
  *
- * @see docs/testing/DECISION-LOG.md - rows D103 and D136.
+ * @see docs/testing/DECISION-LOG.md - rows D103, D136 and D343.
  */
 export const ALLOWED_REQUEST_ORIGINS: readonly string[] = Object.freeze([
   'http://localhost',
@@ -780,7 +782,7 @@ export function resetIsolationViolations(): void {
 /**
  * Takes the ledger's contents and empties it, so the breaches it held do not fail the current test.
  *
- * For the one case the ledger is not meant to catch: a test that *provokes* a screening on purpose and
+ * For the one case the ledger is not meant to catch: a test that *provokes* a screening and
  * asserts on it, rather than one that leaked a request without noticing. Call this after those assertions,
  * and assert on the returned entries if the ledger itself is the subject.
  *
@@ -914,9 +916,8 @@ function stringifyParam(value: unknown): string {
  * The absolute prefix the caller's base URL occupied: the request origin followed by the base path prefix the
  * answering handler was registered under.
  *
- * Read from the registration rather than parsed back out of the URL, because the handler is registered per
- * base and therefore already knows which one it is - `http://localhost/undefined` for the unset base URL,
- * `http://localhost` for {@link CONFIGURED_BASE_URL}.
+ * Read from the registration: a handler is registered per base, so it already knows which one it is -
+ * `http://localhost/undefined` for the unset base URL, `http://localhost` for {@link CONFIGURED_BASE_URL}.
  *
  * @param origin - `URL.origin` of the request.
  * @param basePathPrefix - The prefix the answering pattern named.
@@ -1024,8 +1025,7 @@ function screenRequest(contract: RouteContract, facts: RequestFacts): ScreenedRe
   return {
     contract,
     facts,
-    // Every pattern is absolute and names its base prefix, so the prefix is known from the registration
-    // rather than recovered from the URL.
+    // Every pattern is absolute and names its base prefix, so the prefix comes from the registration.
     base: baseFromRegistration(facts.url.origin, facts.basePathPrefix),
     query,
     pathParams,
@@ -1126,8 +1126,8 @@ function rejectScreenedRequest(screened: ScreenedRequest): ContractViolationBody
  *
  * All eight are registered under {@link UNSET_BASE_PATH_PREFIX}, which is the prefix every request carries
  * while `REACT_APP_API_BASE_URL` is unset - the state `src/test-utils/setup-jest.ts` guarantees. A suite that
- * configures the base URL therefore matches none of these and installs its own handlers, which is deliberate:
- * these fixtures must not follow a client onto a path they were never measured against.
+ * configures the base URL therefore matches none of these and installs its own handlers, so a fixture cannot
+ * follow a client onto a path it does not describe.
  *
  * These responses are fixtures, not backend behaviour: the assembled application answers **404** for every one
  * of these paths. A suite asserting an integration outcome installs {@link unsetBaseBackendHandlers} or
@@ -1223,11 +1223,11 @@ export const handlers: RestHandler[] = frontendIsolationHandlers;
 
 /* ------------------------------------------------------------------------------------------------------ *
  * Layer 2 - what the assembled application returns, one factory per base URL. Each reproduces the status,
- * body and content type measured against that application, and registers one handler per route per entry in
- * {@link ALLOWED_REQUEST_ORIGINS}, so a call site spreads the result:
+ * body and content type the backend suites named below assert, and registers one handler per route per entry
+ * in {@link ALLOWED_REQUEST_ORIGINS}, so a call site spreads the result:
  * `server.use(...unsetBaseBackendHandlers())`.
  *
- * The two factories are alternatives, not additions: a request carries one base URL, so a suite installs the
+ * Exactly one of the two is installed per suite: a request carries one base URL, so a suite installs the
  * set matching the base its subject was loaded under. {@link unsetBaseBackendHandlers} is the base every suite
  * runs under by default; {@link configuredBaseBackendHandlers} requires the subject to have been re-imported
  * with `REACT_APP_API_BASE_URL` set, which {@link importWithConfiguredBase} does.
@@ -1269,13 +1269,12 @@ function answerServerError(screened: ScreenedRequest, res: ResponseComposition, 
  * with the JSON body `{"detail":"Not Found"}`, for all four, because `services/api.ts` prefixes every path
  * with the literal `undefined` segment and no router declares anything under it.
  *
- * There is one handler per route rather than a single catch-all so that a request whose path is not one of the
- * four still matches nothing and is ledgered, and so the request log attributes each request to its route
- * contract.
+ * There is one handler per route and no catch-all, so a request whose path is not one of the four matches
+ * nothing and is ledgered, and the request log attributes each request to its route contract.
  *
  * Starlette answers this before the query string is coerced and before `Depends(get_db)` resolves, so the
  * status does not depend on the query values a caller sent or on whether a test overrode the database
- * dependency. That is why this factory takes no options.
+ * dependency, and this factory therefore takes no options.
  *
  * @returns One handler per route in {@link ROUTE_CONTRACTS}, per entry in {@link ALLOWED_REQUEST_ORIGINS}.
  * @see backend/tests/integration/test_route_surface.py -
@@ -1378,8 +1377,8 @@ export interface ConfiguredBaseBackendOptions {
  * Every route as the assembled application answers it once `REACT_APP_API_BASE_URL` is
  * {@link CONFIGURED_BASE_URL}, so the request reaches the backend's own path.
  *
- * The three stages a request passes through are reproduced in the order fastapi applies them, because the
- * stage that answers decides the status:
+ * The three stages a request passes through are reproduced in the order fastapi applies them; the stage that
+ * answers decides the status:
  *
  * 1. **Routing.** The path is one the backend declares, so routing succeeds - that is the difference from
  *    {@link unsetBaseBackendHandlers} - except for `POST /generate-response`, which no router declares under
@@ -1394,8 +1393,8 @@ export interface ConfiguredBaseBackendOptions {
  *    `GET /tweets` answers `200` with the list, while both tweet-detail routes still answer `500` because they
  *    read `Tweet.id`, which the pydantic model does not declare.
  *
- * Each of those three answers is fixed by a request made against the assembled application with the same
- * disposition, so no value here is a frontend literal:
+ * Each of those three answers is fixed by a backend case asserting the same disposition, so no value here is a
+ * frontend literal:
  *
  * | This factory answers | Backend case that fixes it, in `backend/tests/integration/` |
  * | --- | --- |

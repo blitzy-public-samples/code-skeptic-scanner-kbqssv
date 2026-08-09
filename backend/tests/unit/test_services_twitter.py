@@ -183,7 +183,7 @@ STAND_IN_ACCESS_TOKEN_SECRET = (
 UNREACHED = object()
 
 #: Failure types injected at the three reachable tweepy stages.  ``Exception``
-#: is included deliberately: it is the type a bare ``except Exception`` would
+#: is included: it is the type a bare ``except Exception`` would
 #: name, so a clause of that shape wrapped around the stream starter would stop
 #: the exception these cases expect to arrive.  The other two are subclasses of
 #: it and none of them is caught either -- the subject holds no ``try`` at all.

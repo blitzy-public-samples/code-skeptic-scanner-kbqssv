@@ -12,16 +12,13 @@
  * any it did not declare. Each test therefore installs its own interception before
  * navigating, declares the failures it expects, and holds no state shared with another test.
  *
- * What each test asserts, and the production lines it reads from:
+ * The mount call at `components/Dashboard` L10 passes no argument, so `services/api.ts` builds the
+ * literal `undefined/tweets?page=undefined&limit=undefined` - which is the URL every interception
+ * below is anchored to. A non-empty collection reaches `TweetCard` at L24-L26, which no module
+ * exports.
  *
- * | Test | Behaviour asserted |
- * |------|--------------------|
- * | 1 | `components/Dashboard` L22-L23 render `div.real-time-feed` around `<h2>Real-Time Tweet Feed</h2>` |
- * | 2 | `components/Dashboard` L10 calls `getLatestTweets()` with no argument, once per mount, and `services/api.ts` L5-L9 build `undefined/tweets?page=undefined&limit=undefined` from it |
- * | 3 | `components/Dashboard` L24-L26 render every member of the collection through `TweetCard`, which no module exports |
- *
- * The 30-second `setInterval` at `components/Dashboard` L16 and the `clearInterval` at L18 are
- * covered by `frontend/src/components/Dashboard.test.tsx` under fake timers, not here.
+ * The 30-second `setInterval` at L16 and the `clearInterval` at L18 are covered by
+ * `frontend/src/components/Dashboard.test.tsx` under fake timers, not here.
  *
  * @see e2e/README.md - adding a spec to this directory.
  * @see docs/testing/DECISION-LOG.md - the interception, ceiling and layer-boundary rows for this file.
@@ -55,8 +52,9 @@ const FEED_HEADING_LEVEL = 2;
  * request, so each test below registers one handler function under every glob and records into
  * one array.
  *
- * Both are anchored to {@link HARNESS_ORIGIN}. A host-agnostic `'**\/tweets*'` would also claim a
- * request addressed to a foreign host that shares the path, and fulfilling it would hide that
+ * Both are anchored to {@link HARNESS_ORIGIN}, so each claims only requests addressed to the harness
+ * origin. A host-agnostic `'**\/tweets*'` also claims a request addressed to a foreign host that
+ * shares the path, and fulfilling it hides that
  * destination drift from the `noEgress` fixture's ledger - a green test over a request that left
  * the harness. Anchored, such a request falls through to that fixture, which aborts and records
  * it. `./isolation.spec.ts` asserts exactly that.
@@ -126,7 +124,6 @@ test.describe('harness route / - RealTimeFeed (frontend/src/components/Dashboard
     // No `browserDiagnostics.allow(...)` here, and that is an assertion: an empty collection reaches
     // no `TweetCard`, so this route must reach the end of the test with a clean console.
 
-    // An empty collection renders no `TweetCard`, leaving the container and its heading intact.
     for (const glob of TWEET_COLLECTION_GLOBS) {
       await page.route(glob, async (route) => {
         if (route.request().isNavigationRequest()) {
@@ -149,7 +146,6 @@ test.describe('harness route / - RealTimeFeed (frontend/src/components/Dashboard
         container.getByRole('heading', { level: FEED_HEADING_LEVEL, name: FEED_HEADING, exact: true }),
       ).toBeVisible();
 
-      // The map at L24-L26 produced no child, so the heading is the container's only element.
       await expect(container.locator('*')).toHaveCount(1);
     } finally {
       await test.info().attach('intercepted-requests', {
@@ -247,7 +243,6 @@ test.describe('harness route / - RealTimeFeed (frontend/src/components/Dashboard
         })
         .toMatch(INVALID_ELEMENT_TYPE);
 
-      // The same report names the resolved value and the component that rendered it.
       const reported = browserDiagnostics.text();
       expect(reported).toMatch(RESOLVED_ELEMENT_TYPE);
       expect(reported).toMatch(REPORTING_COMPONENT);
@@ -261,7 +256,6 @@ test.describe('harness route / - RealTimeFeed (frontend/src/components/Dashboard
       // shape does not declare.
       expect(reported).toMatch(DUPLICATE_KEY_WARNING);
 
-      // The invalid element type propagated out of the render, taking the route with it.
       await expect(page.locator(FEED_CONTAINER)).toHaveCount(0);
     } finally {
       await test.info().attach('intercepted-requests', {

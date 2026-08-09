@@ -3,8 +3,7 @@
  *
  * The group below is an ordinary `describe`, so this module is imported and every specifier in it
  * resolves on each run. Each individual test is marked `it.skip` and carries {@link BLOCKER} in its
- * own title, so the reason travels with the identity a result reader sees rather than sitting on the
- * group. No blanket `describe.skip` is used anywhere.
+ * own title, so the reason travels with the identity a result reader sees.
  *
  * The page cannot mount. Three facts of the current source establish that:
  *
@@ -31,14 +30,19 @@
  * un-skipped once `src/store/index.ts` exports the two hooks and the page's line 2 import agrees with what
  * `src/components/Dashboard` exports.
  *
- * The skip is declared in exactly one place - the `describe.skip` below, whose title carries the reason -
- * so removing that one `.skip` re-enables all eight tests. No leaf carries its own `.skip`, matching
- * `src/pages/Analytics.test.tsx` and `src/pages/Configuration.test.tsx`.
+ * Re-enabling is therefore per test: each of the eight `it.skip` calls below becomes `it`, and the
+ * ` - ${BLOCKER}` suffix comes off its title with it. Removing them one at a time is the point - a
+ * blocker cleared for one behaviour need not be cleared for the rest. Carrying the reason on the leaf
+ * rather than on the group is also what puts it in the result stream: `frontend/jest.config.js` gives
+ * `jest-junit` a `titleTemplate` that prefixes each test with its ancestor titles, so the blocker
+ * reaches every `<testcase>` this file contributes to `frontend/reports/jest-junit.xml`. This matches
+ * `src/pages/Analytics.test.tsx` (6 skipped tests) and `src/pages/Configuration.test.tsx` (10), which
+ * use the same per-test arrangement.
  *
  * @see frontend/src/store/index.test.ts - holds `src/store/index.ts` to the runtime export list above.
  * @see frontend/src/components/Dashboard.test.tsx - the suite for the feed component this page composes.
  * @see docs/testing/TRACEABILITY-MATRIX.md - the disposition this suite is recorded under.
- * @see docs/testing/DECISION-LOG.md - the single source of truth for why this disposition was chosen.
+ * @see docs/testing/DECISION-LOG.md - the single source of truth for this disposition.
  */
 
 import { screen, waitFor } from '@testing-library/react';
@@ -91,17 +95,12 @@ const INITIAL_STATUS = 'idle';
 const latestTweets = () => jest.mocked(getLatestTweets);
 
 /**
- * Blocker carried by every skipped test identity below.
+ * Blocker suffixed onto every skipped test title below, so each `<testcase>` in
+ * `frontend/reports/jest-junit.xml` carries the reason on the identity a result reader sees.
  *
- * Held in one constant and appended to each title rather than declared once on the `describe`: a
- * blanket `describe.skip` puts the reason on the group, so a result reader looking at an individual
- * `<testcase>` in `frontend/reports/jest-junit.xml` sees a skip with no reason at all. Suffixing
- * each title puts the blocker on the identity that is actually reported, and keeps the group itself
- * an ordinary `describe` so this module is collected and its imports are exercised.
- *
- * The named symbol is the first of the three independent blockers in the module docstring, because
- * it is the one that raises first: line 13 runs before line 14 reaches `useAppSelector` and before
- * line 31 reaches the undefined `RealTimeFeed`.
+ * It names the first of the three independent blockers in the module docstring, because it is the one
+ * that raises first: line 13 runs before line 14 reaches `useAppSelector` and before line 31 reaches
+ * the undefined `RealTimeFeed`.
  */
 const BLOCKER =
   'BLOCKED: src/store/index.ts exports no useAppDispatch, so src/pages/Dashboard.tsx line 13 ' +

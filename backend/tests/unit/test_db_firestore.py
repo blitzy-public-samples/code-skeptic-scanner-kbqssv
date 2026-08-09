@@ -26,42 +26,6 @@ here requests one of them:
 keeps that true for tests added later.  No test in this module constructs a real
 client, and none calls ``get_db`` with ``Client`` unpatched.
 
-What this suite asserts
------------------------
-* ``add_tweet`` returns the ``id`` of element **1** of the pair that
-  ``collection('tweets').add(...)`` reports, as a ``str``; element 0's ``id`` is
-  never returned.
-* ``add_tweet`` writes to the ``tweets`` collection and hands ``.add`` the
-  payload object it was given, unchanged and exactly once — including a
-  schema-valid payload from ``backend/tests/factories.py``.
-* ``get_tweet`` returns the very object ``doc.to_dict()`` produces when
-  ``doc.exists`` is truthy, and looks the document up by the id it was passed.
-* ``get_tweet`` returns ``None`` when ``doc.exists`` is falsy, and does not read
-  the snapshot.
-* ``update_tweet`` returns ``True`` when ``doc_ref.update`` returns, having
-  applied the update payload exactly once.
-* ``update_tweet`` returns ``False``, and raises nothing, when ``doc_ref.update``
-  raises — for a bare ``Exception`` and for a narrower type alike.
-* ``add_tweet`` and ``get_tweet`` propagate a failure raised at **any** link of
-  the chain they drive — client acquisition, ``collection``, ``add``,
-  ``document``, ``get`` and ``to_dict`` — as the very instance that was raised,
-  and neither produces a return value on that path.
-* A propagating link stops the chain: no later call on it is made.
-* Each wrapper acquires its client through exactly one ``get_db`` call.
-* The module exposes ``db``, ``get_db``, ``add_tweet``, ``get_tweet`` and
-  ``update_tweet``, and ``db`` is a ``google.cloud.firestore.Client`` distinct
-  from the client the wrappers obtain.
-* ``add_response`` is not defined on the module.
-* ``get_tweet`` is not a coroutine function.
-* ``get_db`` returns the object ``Client(...)`` produced, constructs one client
-  per call, passes ``project=Settings().PROJECT_ID`` and nothing else — no
-  positional argument and no credential — calls ``default()`` exactly once with no
-  arguments and discards its result, is synchronous, and propagates a failure from
-  either ``default()`` or ``Client(...)`` unchanged with no client constructed on
-  the first path.
-* The client ``get_db`` returns answers ``collection`` and refuses ``query``, which
-  is the fact the ``500`` in ``tests/integration/test_http_tweets.py`` rests on.
-
 Current behaviour captured as divergence
 ----------------------------------------
 A missing document makes ``get_tweet`` return ``None`` rather than raise, so a
@@ -97,12 +61,11 @@ other time.
 ``app/tasks/response_generator.py`` line 12 a ``TypeError``.  That call is
 asserted in the response-generator suite; the fact it rests on is pinned here.
 
-Coverage
---------
-Every statement of the module is executed.  Lines 8-10, the body of ``get_db``,
-are covered by the ``get_db`` section at the end of this file, which requests
-``firestore_client_constructor`` instead of ``firestore_client`` so the factory
-runs rather than being replaced.
+The body of ``get_db`` is reached by the ``get_db`` section at the end of this
+file, which requests ``firestore_client_constructor`` instead of
+``firestore_client`` so the factory runs rather than being replaced.  Measured
+coverage for this module is in the generated reports named by
+``docs/testing/DASHBOARD-TEMPLATE.md``, not here.
 
 Scope
 -----
@@ -191,7 +154,7 @@ UNDEFINED_IMPORTED_NAMES = ("add_response",)
 #: wrapper suites need; ``firestore_client_constructor`` leaves ``get_db`` in place
 #: and replaces the client class it constructs, which is what the ``get_db`` suite
 #: needs. Neither leaves a path to a real Firestore client.
-#: :func:`test_every_test_requests_an_isolation_fixture` enforces the choice.
+#: :func:`test_every_test_requests_an_isolation_fixture` enforces this.
 REQUIRED_ISOLATION_FIXTURES = (
     "firestore_client",
     "firestore_client_constructor",
@@ -910,7 +873,6 @@ def test_get_db_constructs_exactly_one_client(firestore_client_constructor):
 
 
 def test_get_db_constructs_a_client_per_call(firestore_client_constructor):
-    """Each call builds a client; nothing is memoized between calls."""
     firestore.get_db()
     firestore.get_db()
 
@@ -918,13 +880,7 @@ def test_get_db_constructs_a_client_per_call(firestore_client_constructor):
 
 
 def test_get_db_passes_the_project_the_settings_declare(firestore_client_constructor):
-    """The ``project`` keyword is ``Settings().PROJECT_ID``, read at call time.
-
-    ``PROJECT_ID`` is one of the four fields declared for testability, and the
-    conftest prologue removes its environment name so the declared default is the
-    only possible source. Comparing against a freshly built ``Settings`` rather
-    than against a literal keeps this assertion tied to the declaration.
-    """
+    """The ``project`` keyword is ``Settings().PROJECT_ID``, read at call time."""
     settings_class = importlib.import_module("app.core.config").Settings
 
     firestore.get_db()
@@ -968,7 +924,6 @@ def test_get_db_resolves_credentials_once(
 
 
 def test_get_db_does_not_return_the_module_level_client(firestore_client_constructor):
-    """The factory's client is a different object from the module-level ``db``."""
     assert firestore.get_db() is not firestore.db
 
 
@@ -981,7 +936,6 @@ def test_get_db_is_not_a_coroutine_function(firestore_client_constructor):
 def test_get_db_propagates_a_credential_resolution_failure(
     firestore_client_constructor, neutralize_google_credentials, failure_type
 ):
-    """A failure from ``default()`` reaches the caller unchanged."""
     failure = failure_type("credentials unavailable")
     firestore.default.side_effect = failure
 
@@ -995,7 +949,6 @@ def test_get_db_propagates_a_credential_resolution_failure(
 def test_get_db_stops_at_a_credential_resolution_failure(
     firestore_client_constructor, neutralize_google_credentials, failure_type
 ):
-    """No client is constructed once credential resolution has failed."""
     firestore.default.side_effect = failure_type("credentials unavailable")
 
     with pytest.raises(failure_type):

@@ -53,7 +53,7 @@ DATABASE_FAILURE_MESSAGE = "Database error"
 MEDIA_URL = "https://example.invalid/media/1.jpg"
 
 #: Failure types injected at each reachable tweepy stage of
-#: ``start_tweet_stream``.  ``Exception`` is included deliberately: it is the
+#: ``start_tweet_stream``.  ``Exception`` is included: it is the
 #: type a bare ``except Exception`` would name, so a clause of that shape
 #: wrapped around the wiring -- or a retry loop built on one -- would stop the
 #: exception these cases expect to arrive.  The other two are subclasses of it,

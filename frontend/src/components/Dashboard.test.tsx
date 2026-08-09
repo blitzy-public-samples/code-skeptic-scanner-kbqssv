@@ -11,17 +11,13 @@
  * so a screen-reader user is never told the feed changed, and there is no loading state to announce
  * either because the subject renders none at all.
  *
- * `role="log"` with `aria-live="polite"` on the wrapper is what would make the updates audible, and
- * adding it means editing `frontend/src/components/Dashboard`, which is production code this
- * programme is not authorized to change - the two authorized touches are both in `backend/`. The
- * behaviour is therefore pinned as it stands: the case below asserts the absence of every
- * announcement mechanism across a mount and a completed poll, so adding one becomes a deliberate,
- * test-visible change. It is recorded as a ceiling in `frontend/TESTING.md`,
- * `docs/testing/TRACEABILITY-MATRIX.md` §G and the suggested-next-tasks lists.
+ * The case below asserts the absence of every announcement mechanism across a mount and a completed
+ * poll, so adding one becomes a deliberate, test-visible change. The ceiling itself is recorded in
+ * `frontend/TESTING.md`, `docs/testing/TRACEABILITY-MATRIX.md` §G and the suggested-next-tasks lists.
  *
  * @see frontend/src/components/Dashboard - the module under test.
  * @see frontend/src/components/TweetManagement.test.tsx - the same ceiling on the loading indicator.
- * @see docs/testing/DECISION-LOG.md - the single source of truth for why this is recorded, not fixed.
+ * @see docs/testing/DECISION-LOG.md - the single source of truth for this disposition.
  */
 
 import { act, cleanup, screen } from '@testing-library/react';
@@ -190,7 +186,6 @@ describe('RealTimeFeed (src/components/Dashboard)', () => {
       expect(screen.queryByRole(role)).toBeNull();
     }
 
-    /* A completed poll changes nothing about that: the refetch is silent, before and after. */
     await advanceTimers(POLL_INTERVAL_MS);
     expect(getLatestTweets).toHaveBeenCalledTimes(2);
 
@@ -202,7 +197,6 @@ describe('RealTimeFeed (src/components/Dashboard)', () => {
       expect(screen.queryByRole(role)).toBeNull();
     }
 
-    /* The heading is the only thing a screen reader is offered, mounted and after the poll alike. */
     expect(screen.getByRole('heading', { level: 2, name: FEED_HEADING })).toBeInTheDocument();
   });
 

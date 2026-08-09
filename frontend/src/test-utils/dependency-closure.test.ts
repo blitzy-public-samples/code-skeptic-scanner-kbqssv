@@ -27,11 +27,10 @@
  * It is the Jest counterpart of `backend/tests/test_dependency_closure.py`, which does the same for
  * `backend/requirements-dev.txt` - a file this work created in full, and therefore pins throughout.
  *
- * ## What it deliberately does not assert
+ * ## What it does not assert
  *
  * The **transitive** graph, for either manifest. Without a lockfile there is no integrity-hashed reference to
- * compare a transitive tree against, and this module invents none: it would be asserting one uncontrolled tree
- * against another.
+ * compare a transitive tree against, and this module invents none.
  *
  * And, for the baseline set only, an *exact* installed version. Those declarations are ranges, so a clean
  * install may legitimately resolve a newer release than the one this suite last ran against; what is asserted
@@ -200,9 +199,8 @@ function admitsInstalledVersion(specifier: string, installed: string): boolean {
 /**
  * The `version` the installed copy of `name` reports.
  *
- * Read from the package's own `package.json` inside `node_modules` rather than through `require.resolve`,
- * which would follow the `main` field and fail on a package that exposes no entry point, and rather than
- * through `npm ls`, which would mean spawning a process from a test.
+ * Read from the package's own `package.json` inside `node_modules`, so the answer does not depend on the
+ * package exposing an entry point and no process is spawned from a test.
  *
  * @param name - Package name as declared.
  * @param specifier - Included in the failure message so an uninstalled package names what was expected.

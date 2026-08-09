@@ -24,8 +24,10 @@ Deny-by-default egress, from before collection until after teardown
     gRPC channel construction are refused unless the target is a socket this
     process itself owns - see :func:`_is_local_address`, and note that a loopback
     port stops being owned the moment its socket closes. Child-process creation
-    is refused in every phase unless the command is one of the commands
-    :data:`ALLOWED_CHILD_PROCESS_COMMANDS` names.
+    is refused in every phase: the shell entry points in
+    :data:`CHILD_PROCESS_FACTORIES` unconditionally, and
+    :class:`subprocess.Popen` unless :func:`is_allowed_child_process` admits the
+    invocation on its structure.
 
 No credential is ever printed
     A failure that fires because a *real* credential reached a settings singleton
@@ -44,27 +46,9 @@ Nothing survives the run
     :func:`pytest_unconfigure` restores the environment, the credential patch,
     ``builtins.Optional``, the logging record factory and the socket guard.
 
-Contents
---------
-Module-scope prologue
-    Snapshots and forces the managed ``Settings`` variables, points
-    ``GOOGLE_APPLICATION_CREDENTIALS`` at an absent path, installs the
-    ``Optional`` shim, neutralises ambient Google credentials, installs the
-    egress guard.
-Configuration hooks
-    :func:`pytest_configure` adds the child-process guard;
-    :func:`pytest_unconfigure` releases every global mutation.
 Test correlation
-    Puts ``test_id`` and ``correlation_id`` on every log record, which is what
+    Every log record carries ``test_id`` and ``correlation_id``, which is what
     the log formats in ``backend/pytest.ini`` print.
-Autouse fixtures
-    :func:`verify_settings_singletons`, :func:`neutralize_google_credentials`,
-    :func:`block_network_access`.
-Named fixtures
-    :func:`pinned_settings_env`, :func:`firestore_client`,
-    :func:`bigquery_settings`, :func:`tweet_processor_module`,
-    :func:`response_generator_module`, :func:`app_module`,
-    :func:`frozen_clock`.
 
 Reasoning for every choice in this module: ``docs/testing/DECISION-LOG.md``
 rows D25, D104, D105, D106, D121, D134 and D135.
@@ -74,17 +58,18 @@ covers.
 
 import builtins
 import contextlib
+import contextvars
 import hashlib
 import importlib
 import ipaddress
 import logging
 import os
 import platform
-import re
 import socket
 import subprocess
 import sys
 import threading
+import time
 import typing
 import weakref
 from types import SimpleNamespace
@@ -106,7 +91,7 @@ FROZEN_INSTANT = "2024-01-01 00:00:00"
 #: declares without a default: importing ``app.core.config`` without them
 #: raises a pydantic ``ValidationError``. ``Settings.Config.case_sensitive`` is
 #: ``True``, so the keys are upper-case exactly as the model declares them.
-#: ``NOTION_API_KEY`` is ``Optional[str] = None`` and is deliberately absent.
+#: ``NOTION_API_KEY`` is ``Optional[str] = None`` and is absent from this map.
 #: Every value is an obvious placeholder; the suite uses no real credential.
 #: Each is assigned unconditionally, so a value present in the surrounding
 #: environment cannot reach a production module through the suite.
@@ -124,19 +109,14 @@ REQUIRED_SETTINGS_ENV = {
 #: ``Settings`` field names whose value must never appear in anything this suite
 #: prints. Every credential the model declares is here, plus ``NOTION_API_KEY``,
 #: which is ``Optional[str] = None`` and therefore holds a real key whenever the
-#: surrounding environment carries one.
+#: surrounding environment carries one, and ``GOOGLE_CLOUD_PROJECT``, which
+#: identifies the infrastructure a leaked credential reaches.
 #:
 #: A mismatch on one of these means an ambient variable or a ``backend/.env``
-#: supplied a *real* secret in place of the synthetic one, and the failure
-#: message is written to stdout and into ``reports/junit.xml`` -- artifacts that
-#: are archived, uploaded and pasted into tickets. Reporting the value would
-#: publish the secret the check exists to warn about, so
-#: :func:`describe_unexpected_value` reports its shape instead.
-#:
-#: ``GOOGLE_CLOUD_PROJECT`` is included although a project id is not a
-#: credential: a real one identifies the infrastructure a leaked credential
-#: reaches, and it was the identifier a previous revision of the onboarding
-#: documents disclosed.
+#: supplied a *real* secret in place of the synthetic one. The failure message
+#: reaches stdout and ``reports/junit.xml``, so
+#: :func:`describe_unexpected_value` reports the value's shape and never the
+#: value.
 SENSITIVE_SETTINGS_FIELDS = frozenset(
     {
         "SECRET_KEY",
@@ -154,22 +134,25 @@ SENSITIVE_SETTINGS_FIELDS = frozenset(
 
 #: Key for the keyed digest :func:`_value_fingerprint` computes. Generated once
 #: per process, so a fingerprint is comparable within one run and carries no
-#: information about its input outside it -- an unkeyed digest of a short secret
-#: is recoverable by enumeration, which is the reason this key exists.
+#: information about its input outside it. An unkeyed digest of a short secret is
+#: recoverable by enumeration; a keyed one is not.
 _FINGERPRINT_KEY = os.urandom(16)
 
 #: Length of that digest. Long enough that two different values in one run do not
 #: collide in practice, short enough to read in a failure message.
 _FINGERPRINT_DIGEST_BYTES = 8
 
-#: ``Settings`` fields that carry a declared default. Every one is *removed*
-#: from the environment by the prologue rather than assigned a test value:
-#: pydantic v1 resolves a field from ``os.environ`` before falling back to its
-#: default, so an ambient variable named after one of these would decide the
-#: value the suites assert against — a shell exporting ``POPULARITY_THRESHOLD``
-#: would rewrite the popularity boundary matrix's oracle. Removing them makes
-#: the declared default the only possible source. ``NOTION_API_KEY`` is here
-#: too, which additionally keeps a real Notion key out of ``settings``.
+#: Every ``Settings`` field name that carries a declared default. The prologue
+#: manages all of them, and this tuple is what puts each one in
+#: :data:`MANAGED_ENVIRONMENT_NAMES` to be snapshotted and restored.
+#:
+#: Twelve of them are *pinned* to the string form of their declared default
+#: through :data:`DEFAULTED_SETTINGS_ENV`; ``NOTION_API_KEY`` is *removed*
+#: instead, through :data:`UNPINNABLE_SETTINGS_NAMES`. Either way an ambient
+#: variable named after one of these cannot decide the value a suite asserts
+#: against: pydantic v1 resolves a field from ``os.environ`` before falling back
+#: to its default, so a shell exporting ``POPULARITY_THRESHOLD`` would otherwise
+#: rewrite the popularity boundary matrix's oracle.
 DEFAULTED_SETTINGS_FIELDS = (
     "PROJECT_NAME",
     "API_V1_STR",
@@ -187,10 +170,10 @@ DEFAULTED_SETTINGS_FIELDS = (
 )
 
 #: Names ``app/services/twitter_service.py`` and ``app/tasks/tweet_processor.py``
-#: read off ``settings`` although ``Settings`` declares neither. They are removed
-#: for the same reason as :data:`DEFAULTED_SETTINGS_FIELDS`: a real consumer
-#: secret must not be reachable from a test process. The suites covering those
-#: modules supply them with ``monkeypatch``.
+#: read off ``settings`` although ``Settings`` declares neither. The prologue
+#: *removes* them, alongside :data:`UNPINNABLE_SETTINGS_NAMES`, so a real
+#: consumer secret is not reachable from a test process. The suites covering
+#: those modules supply them with ``monkeypatch``.
 UNDECLARED_CONSUMER_FIELDS = ("TWITTER_CONSUMER_KEY", "TWITTER_CONSUMER_SECRET")
 #: The value ``app/core/config.py`` declares for every field that carries a
 #: default and whose value a suite reads from a settings singleton, rendered as
@@ -250,6 +233,15 @@ MANAGED_ENVIRONMENT_NAMES = (
 #: :mod:`ipaddress` instead; see :func:`_is_local_host`.
 LOOPBACK_HOSTS = frozenset({"localhost", "ip6-localhost", ""})
 
+#: Host names a ``bind`` may name, which is :data:`LOOPBACK_HOSTS` **without the
+#: empty string**.
+#:
+#: For a connect, ``""`` means "this machine" and is harmless.  For a bind it
+#: means *every local interface*, exactly as ``0.0.0.0`` does, so a listener on it
+#: is reachable from off this host.  The distinction is the whole reason
+#: :func:`_is_bindable_address` does not reuse :func:`_is_local_host`.
+BINDABLE_LOOPBACK_HOSTS = frozenset({"localhost", "ip6-localhost"})
+
 #: ``socket.AF_UNIX`` where the platform provides it, and ``None`` where it does
 #: not - Windows builds of CPython 3.9 do not define it.  Read at call time by
 #: :func:`_endpoint_of` and :func:`_is_local_address`, so a suite exercising the
@@ -259,24 +251,13 @@ AF_UNIX_FAMILY = getattr(socket, "AF_UNIX", None)
 #: Socket families whose address is a ``(host, port)`` pair.
 INTERNET_FAMILIES = (socket.AF_INET, socket.AF_INET6)
 
-#: The unspecified address of each internet family, the value a bind to "every
-#: local interface" reports through ``getsockname()``.
-_UNSPECIFIED_ADDRESSES = {
-    socket.AF_INET: ipaddress.ip_address("0.0.0.0"),
-    socket.AF_INET6: ipaddress.ip_address("::"),
-}
-
 #: Endpoints this process has bound and not yet released, each mapped to the
 #: number of live sockets holding it.
 #:
 #: A key is the whole identity of an endpoint - ``(family, type, protocol,
-#: address)`` - rather than a port number.  A port number alone is not an
-#: authorization: on one number this host can carry a UDP service and a TCP
-#: service, one per loopback address and one per family, each belonging to a
-#: different process, and a number this process released can be rebound by
-#: another.  Recording the full identity, and releasing it when the socket that
-#: held it closes, is what keeps "a socket this run owns" from widening into "any
-#: socket on this host".
+#: address)`` - never a port number alone, and it is released when the socket
+#: holding it closes.  That is what confines "a socket this run owns" to this
+#: run's own sockets rather than any socket on this host.
 #:
 #: Written and read under :data:`_OWNED_ENDPOINTS_LOCK`.
 _OWNED_ENDPOINTS = {}
@@ -290,7 +271,14 @@ _OWNED_ENDPOINT_REFERENCES = {}
 #: Serialises access to :data:`_OWNED_ENDPOINTS` and
 #: :data:`_OWNED_ENDPOINT_REFERENCES`.  ``bind`` and ``close`` are reachable from
 #: any thread, and starlette's ``TestClient`` runs its event loop in one.
-_OWNED_ENDPOINTS_LOCK = threading.Lock()
+#:
+#: Re-entrant, and it has to be: :func:`_release_collected_endpoint` is a weak
+#: reference callback, so the garbage collector can run it on a thread that is
+#: already inside :func:`_acquire_endpoint` or :func:`_release_socket_endpoint`.
+#: A non-reentrant lock deadlocks that thread, taking the whole run with it.
+#: ``docs/testing/DECISION-LOG.md`` rows D224 and D330 record the requirement and
+#: ``backend/tests/unit/test_egress_guard.py`` asserts both halves.
+_OWNED_ENDPOINTS_LOCK = threading.RLock()
 
 #: ``(module, attribute)`` channel factories blocked by
 #: :func:`block_network_access`.  gRPC opens its sockets in the C core
@@ -337,42 +325,102 @@ METHOD_CONNECTORS = (
     ("asyncio.proactor_events", "BaseProactorEventLoop.sock_connect"),
 )
 
-#: ``(module, attribute)`` shell entry points refused unless the command they
-#: were handed is on :data:`ALLOWED_CHILD_PROCESS_COMMANDS`.
+#: ``(module, attribute)`` process-creation entry points refused unless the
+#: command they were handed is one :func:`is_allowed_child_process` admits.
+#:
 #: A child process is the one egress path invisible to every guard above, since
 #: its sockets belong to another process.  :class:`subprocess.Popen` is guarded
 #: at ``__init__`` rather than by replacing the class, so the type stays intact
-#: for anything that inspects it; ``os.popen`` needs no entry because it is
-#: implemented on top of ``Popen``.
-CHILD_PROCESS_FACTORIES = (("os", "system"),)
-
-#: The complete set of child-process commands this suite tolerates, matched
-#: against the whole command line rendered by :func:`child_process_command`.
+#: for anything that inspects it.
 #:
-#: The guard is otherwise unconditional, from :func:`pytest_configure` -- which
-#: is before collection -- through the last teardown. It used to be narrowed to
-#: "while a test is executing" instead, which left collection, module import and
-#: teardown open: a subprocess started in any of those phases owns its own
-#: sockets, so nothing else in this module can see what it does, and it could
-#: egress freely. Naming the permitted commands closes that window without
-#: reintroducing the breakage the narrowing existed to avoid.
+#: Every entry here takes the command as its **first** argument.  None of them can
+#: satisfy :func:`is_allowed_child_process`, which admits only an argument *vector*,
+#: so all three are refused for every command they are handed;
+#: :func:`child_process_command` renders the refusal message.  ``os.popen`` is built
+#: on ``Popen``, and ``subprocess.run``, ``call``, ``check_call`` and
+#: ``check_output`` all construct one, so those five are already covered by the
+#: ``Popen`` guard - ``os.popen`` is named anyway so that a refusal reports the entry
+#: point the caller actually used.
 #:
-#: One entry, and it earns its place: on Windows :func:`platform.uname` obtains
-#: the OS version by running ``cmd.exe /c ver``, and both ``platform.system()``
-#: and ``platform.node()`` reach it. The prologue calls ``platform.uname()``
-#: while no guard is installed, which caches the answer for the whole process,
-#: so in practice this pattern is never matched -- it is here because the cache
-#: is an implementation detail of the standard library and a run must not depend
-#: on it. The pattern is deliberately exact: it admits ``ver`` and no other
-#: argument, so it cannot be widened into a general ``cmd /c`` escape.
+#: A target this interpreter does not provide is skipped by
+#: :meth:`_EgressGuard._add`, so the Windows-only ``os.startfile`` sits here
+#: harmlessly on POSIX.
 #:
-#: See ``docs/testing/DECISION-LOG.md`` rows D105 and D223.
-ALLOWED_CHILD_PROCESS_COMMANDS = (
-    re.compile(
-        r"^\"?(?:[A-Za-z]:[\\/][^\"]*?)?(?:cmd|cmd\.exe)\"?\s+/c\s+ver\s*$",
-        re.IGNORECASE,
-    ),
+#: See ``docs/testing/DECISION-LOG.md`` rows D105, D223 and D311.
+CHILD_PROCESS_FACTORIES = (
+    ("os", "system"),
+    ("os", "popen"),
+    ("os", "startfile"),
 )
+
+#: ``(module, attribute)`` native process-creation calls whose command sits in
+#: their second positional argument rather than their first.
+#:
+#: ``_winapi.CreateProcess(application_name, command_line, ...)`` puts the
+#: application name first and the command line second, and ``subprocess`` passes
+#: ``None`` for the first on the common path, so the generic renderer would read
+#: "<no command>" and refuse the one allow-listed command.
+#: :func:`native_process_command` renders these two arguments instead.
+NATIVE_PROCESS_FACTORIES = (("_winapi", "CreateProcess"),)
+
+#: ``(module, attribute)`` process-creation entry points refused
+#: **unconditionally**, because no allow-list decision applies to them.
+#:
+#: Three reasons, one per group.  The ``spawn*`` and ``posix_spawn*`` families take
+#: a mode or a path first and the command later, so the allow-list - written
+#: against a rendered shell command line - has nothing to match; nothing in this
+#: suite launches a named binary, and the one command
+#: :func:`is_allowed_child_process` admits arrives through ``Popen`` or
+#: ``os.system``, never through these.  ``os.fork`` and ``os.forkpty`` duplicate
+#: this interpreter - the child inherits every socket and no guard in this module
+#: can observe what it then does - and take no arguments at all.  The ``exec*``
+#: family replaces this process, so it is refused too, which closes a
+#: fork-then-exec pair at both ends.
+#:
+#: ``multiprocessing.process.BaseProcess.start`` is the one method every start
+#: method (``spawn``, ``fork``, ``forkserver``) and
+#: :class:`concurrent.futures.ProcessPoolExecutor` funnel through.
+UNCONDITIONAL_PROCESS_FACTORIES = (
+    ("os", "spawnl"),
+    ("os", "spawnle"),
+    ("os", "spawnlp"),
+    ("os", "spawnlpe"),
+    ("os", "spawnv"),
+    ("os", "spawnve"),
+    ("os", "spawnvp"),
+    ("os", "spawnvpe"),
+    ("os", "posix_spawn"),
+    ("os", "posix_spawnp"),
+    ("os", "fork"),
+    ("os", "forkpty"),
+    ("os", "execl"),
+    ("os", "execle"),
+    ("os", "execlp"),
+    ("os", "execlpe"),
+    ("os", "execv"),
+    ("os", "execve"),
+    ("os", "execvp"),
+    ("os", "execvpe"),
+    ("multiprocessing.process", "BaseProcess.start"),
+)
+
+#: Argument vector, after the executable, of the one child process this suite
+#: tolerates: the Windows OS-version probe ``platform.uname()`` may run.
+#:
+#: See ``docs/testing/DECISION-LOG.md`` rows D105, D223 and D329.
+ALLOWED_CHILD_PROCESS_ARGUMENTS = ("/c", "ver")
+
+#: Basenames a trusted command interpreter may have, compared case-insensitively
+#: through :func:`os.path.normcase`.
+COMMAND_INTERPRETER_NAMES = ("cmd.exe",)
+
+#: Environment variables naming the platform's own command interpreter, read in
+#: this order by :func:`trusted_command_interpreters`.
+COMMAND_INTERPRETER_ENVIRONMENT = ("COMSPEC", "ComSpec")
+
+#: Environment variables naming the Windows installation root, under which
+#: ``System32/cmd.exe`` is the interpreter's canonical location.
+SYSTEM_ROOT_ENVIRONMENT = ("SystemRoot", "SYSTEMROOT", "windir")
 
 #: Symbols production code imports but that no production module defines, each
 #: mapped to the module the import reads from and to every module that binds the
@@ -430,6 +478,21 @@ GET_DB_CONSUMERS = ("app.main", "app.api.dependencies")
 #: which freezegun has replaced — and leaves the package half-initialised in
 #: :data:`sys.modules` for the rest of the process.
 PRE_FREEZE_IMPORTS = ("pydantic", "app.core.config", "app.core.security")
+
+
+#: Test a refusal is attributed to, per context.  ``None`` when no test owns the
+#: context the refusal was raised in: collection, module import, teardown, or a
+#: thread that did not inherit the context :func:`block_network_access` set.
+#:
+#: Context-local for the same reason :data:`_CURRENT_TEST_ID` is - see that
+#: variable, and ``docs/testing/DECISION-LOG.md`` row D313.
+_GUARD_SUBJECT = contextvars.ContextVar("blitzy_guard_subject", default=None)
+
+#: Subject :meth:`_EgressGuard.refuse` names when :data:`_GUARD_SUBJECT` holds
+#: nothing.  It begins with ``collection`` because that is the phase the case
+#: covers in practice - the prologue installs the guard before collection - while
+#: naming the other possibility rather than asserting the first.
+UNATTRIBUTED_SUBJECT = "collection or a thread outside any test context"
 
 
 class UnmockedNetworkAccessError(RuntimeError):
@@ -642,19 +705,10 @@ def _is_owned_endpoint(endpoint):
     if endpoint is None:
         return False
     with _OWNED_ENDPOINTS_LOCK:
-        if endpoint in _OWNED_ENDPOINTS:
-            return True
-        family, protocol, normalized = endpoint
-        if family not in INTERNET_FAMILIES:
-            return False
-        # A socket this process bound to the unspecified address of its family
-        # answers on every local address of that family, so it owns the port
-        # there too.  The widening is one family, one protocol and one port wide.
-        host, port = normalized
-        if not host.is_loopback and not host.is_unspecified:
-            return False
-        wildcard = family, protocol, (_UNSPECIFIED_ADDRESSES[family], port)
-        return wildcard in _OWNED_ENDPOINTS
+        # An exact match and nothing wider.  :func:`_is_bindable_address` refuses
+        # a bind to an unspecified address, so no unspecified endpoint can reach
+        # this registry and no rule wider than equality is justifiable here.
+        return endpoint in _OWNED_ENDPOINTS
 
 
 def _is_port_owned_by_this_process(port):
@@ -713,14 +767,54 @@ def _is_local_address(sock, address):
     return _is_owned_endpoint(_endpoint_of(family, socket_type, address))
 
 
+def _is_bindable_address(sock, address):
+    """Return ``True`` when ``address`` is one this suite may bind a socket to.
+
+    Deny by default, and narrower than :func:`_is_local_host`: an address is
+    bindable only when it is an ``AF_UNIX`` path or a **loopback** address of an
+    internet family.  The unspecified address of a family - ``0.0.0.0``, ``::``
+    and the empty host that spells the same thing - is refused, because a socket
+    bound there accepts connections on every interface this machine has. This
+    host runs many clones of this repository concurrently, so such a listener is
+    reachable by all of them, and by anything else that can route to the machine.
+
+    Called by the ``bind`` guard before the real call, so a refused bind never
+    reaches the operating system and never appears in the endpoint registry.
+
+    :param sock: The socket being bound; its ``family`` decides how ``address``
+        is read.
+    :param address: The address the caller asked to bind.
+    """
+    family = getattr(sock, "family", None)
+    if AF_UNIX_FAMILY is not None and family == AF_UNIX_FAMILY:
+        return True
+    if family not in INTERNET_FAMILIES:
+        return False
+    if not isinstance(address, tuple) or len(address) < 2:
+        return False
+    host = address[0]
+    if isinstance(host, (bytes, bytearray)):
+        host = bytes(host).decode("ascii", "ignore")
+    if not isinstance(host, str):
+        return False
+    if host in BINDABLE_LOOPBACK_HOSTS:
+        return True
+    try:
+        parsed = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return parsed.is_loopback
+
+
 def child_process_command(args, kwargs):
     """Render the command a child-process entry point was handed, as one string.
 
-    The two guarded entry points describe a command three different ways --
+    The guarded entry points describe a command three different ways --
     ``os.system("...")`` takes a string, ``subprocess.Popen(["a", "b"])`` takes a
     sequence, and either may arrive as the ``args`` keyword -- so they are
-    normalised here to the single form :data:`ALLOWED_CHILD_PROCESS_COMMANDS` is
-    written against and that a refusal message reports.
+    normalised here to the single form a refusal message reports.  This function
+    is for the message only; :func:`is_allowed_child_process` judges the
+    invocation on its structure and never on this string.
 
     :param args: Positional arguments the guarded callable received, with any
         bound instance already stripped.
@@ -744,20 +838,199 @@ def child_process_command(args, kwargs):
     return str(command)
 
 
-def is_allowed_child_process(command):
-    """Return ``True`` only for a command :data:`ALLOWED_CHILD_PROCESS_COMMANDS` names.
+def process_call_detail(args, kwargs):
+    """Render a whole process-creation call, whatever its signature.
 
-    Fails closed: a command that matches no pattern -- including one this
-    function cannot make sense of -- is refused.
+    The entry points in :data:`UNCONDITIONAL_PROCESS_FACTORIES` describe what they
+    would run in different positions - ``os.spawnv`` takes a mode first and
+    ``os.fork`` takes nothing at all - so a refusal names *every* argument rather
+    than guessing which one is the command. That keeps the message useful without
+    implying the allow-list read it.
 
-    :param command: A command line as :func:`child_process_command` renders it.
+    :param args: Positional arguments the guarded callable received.
+    :param kwargs: Keyword arguments it received.
+    :returns: The rendered call, or ``"<no arguments>"`` for a call that had none.
     """
-    if not isinstance(command, str):
-        return False
-    return any(
-        pattern.match(command.strip()) is not None
-        for pattern in ALLOWED_CHILD_PROCESS_COMMANDS
+    rendered = [child_process_command((value,), {}) for value in args]
+    rendered.extend(
+        "{name}={value}".format(name=name, value=child_process_command((value,), {}))
+        for name, value in sorted(kwargs.items())
     )
+    if not rendered:
+        return "<no arguments>"
+    return " ".join(rendered)
+
+
+def native_process_command(args, kwargs):
+    """Render the command a native process-creation call was handed.
+
+    ``_winapi.CreateProcess`` takes ``(application_name, command_line, ...)`` and
+    ``subprocess`` passes ``None`` for the first of those whenever the executable
+    is named inside the command line, so the command has to be read from both
+    positions.  Both are rendered by :func:`child_process_command` and the
+    non-empty results joined, which keeps one normalised form for the allow-list
+    and for the refusal message.
+
+    :param args: Positional arguments the guarded callable received.
+    :param kwargs: Keyword arguments it received.
+    :returns: The command line, or ``"<no command>"`` when there is none to name.
+    """
+    rendered = []
+    for position, keyword in ((0, "application_name"), (1, "command_line")):
+        if len(args) > position:
+            value = args[position]
+        else:
+            value = kwargs.get(keyword)
+        if value is None:
+            continue
+        part = child_process_command((value,), {})
+        if part and part != "<no command>":
+            rendered.append(part)
+    if not rendered:
+        return "<no command>"
+    return " ".join(rendered)
+
+
+def trusted_command_interpreters():
+    """Return the normalised realpaths of the platform's own command interpreter.
+
+    Built from :data:`COMMAND_INTERPRETER_ENVIRONMENT` and from
+    ``System32/cmd.exe`` under each root in :data:`SYSTEM_ROOT_ENVIRONMENT`.  A
+    candidate is admitted only when it resolves to an existing file whose
+    basename is in :data:`COMMAND_INTERPRETER_NAMES`, so a symlink or a
+    directory junction is judged by its target rather than by its name.
+
+    :returns: A :class:`frozenset` of ``os.path.normcase(os.path.realpath(...))``
+        strings, empty on a platform that names no interpreter.
+    """
+    candidates = []
+    for variable in COMMAND_INTERPRETER_ENVIRONMENT:
+        value = os.environ.get(variable)
+        if value:
+            candidates.append(value)
+    for variable in SYSTEM_ROOT_ENVIRONMENT:
+        value = os.environ.get(variable)
+        if value:
+            candidates.append(os.path.join(value, "System32", "cmd.exe"))
+
+    trusted = set()
+    for candidate in candidates:
+        try:
+            resolved = os.path.realpath(candidate)
+            if not os.path.isfile(resolved):
+                continue
+        except (OSError, ValueError):
+            continue
+        if os.path.normcase(os.path.basename(resolved)) not in [
+            os.path.normcase(name) for name in COMMAND_INTERPRETER_NAMES
+        ]:
+            continue
+        trusted.add(os.path.normcase(resolved))
+    return frozenset(trusted)
+
+
+def is_trusted_command_interpreter(candidate):
+    """Return ``True`` when ``candidate`` resolves to a trusted interpreter.
+
+    :param candidate: An ``argv[0]`` or an ``executable=`` value.
+    """
+    if not isinstance(candidate, (str, bytes, bytearray)):
+        return False
+    if isinstance(candidate, (bytes, bytearray)):
+        candidate = bytes(candidate).decode("utf-8", "replace")
+    if candidate.strip() == "":
+        return False
+    try:
+        resolved = os.path.realpath(candidate)
+    except (OSError, ValueError):
+        return False
+    return os.path.normcase(resolved) in trusted_command_interpreters()
+
+
+#: Depth of admitted child-process constructions on this thread.
+#:
+#: ``_winapi.CreateProcess`` is a command **line** API: it has no argument-vector
+#: form, so :func:`is_allowed_child_process` - which judges structure and never
+#: text - can never admit it directly, and parsing the string here would reopen
+#: exactly the question that structural admission exists to close.  It is judged
+#: by provenance instead: ``subprocess.Popen`` reaches it while constructing a call
+#: this guard has already admitted, and nothing else in a test run has any reason
+#: to call it.  A direct call is therefore refused, and the one admitted
+#: construction still completes.
+#:
+#: Per-thread, because two threads may construct concurrently and one must not
+#: admit the other; depth-counted, because ``Popen`` may be re-entered.
+_ADMITTED_CONSTRUCTION = threading.local()
+
+
+def in_admitted_construction():
+    """Report whether this thread is inside an admitted child-process construction.
+
+    :returns: ``True`` while :meth:`_EgressGuard._refuse_construction_unless_allowlisted`
+        is running the real constructor for an admitted invocation.
+    """
+    return getattr(_ADMITTED_CONSTRUCTION, "depth", 0) > 0
+
+
+def child_process_argv(args, kwargs):
+    """Return the argument vector a child-process entry point was handed.
+
+    Only a sequence is an argument vector.  A string, a bytes object or anything
+    else is a command line for a platform shell to parse, which this function
+    reports as ``None`` so :func:`is_allowed_child_process` refuses it.
+
+    :param args: Positional arguments the guarded callable received, with any
+        bound instance already stripped.
+    :param kwargs: Keyword arguments it received.
+    :returns: A list of :class:`str`, or ``None`` when there is no argument
+        vector or when a member is neither text nor bytes.
+    """
+    command = args[0] if args else kwargs.get("args", kwargs.get("cmd"))
+    if not isinstance(command, (list, tuple)):
+        return None
+    argv = []
+    for part in command:
+        if isinstance(part, (bytes, bytearray)):
+            argv.append(bytes(part).decode("utf-8", "replace"))
+        elif isinstance(part, str):
+            argv.append(part)
+        else:
+            return None
+    return argv
+
+
+def is_allowed_child_process(args, kwargs):
+    """Return ``True`` only for the one child process this suite tolerates.
+
+    The invocation is judged on its structure, never on the text of a command
+    line: it must be an argument vector whose executable resolves to a trusted
+    command interpreter, whose remaining members are exactly
+    :data:`ALLOWED_CHILD_PROCESS_ARGUMENTS`, and which asks for no shell.  A
+    string command line, a shell request, an ``executable=`` override outside the
+    trusted set and any extra argument are all refused, so no character sequence
+    inside a path or an argument can widen what runs.
+
+    Fails closed: an invocation this function cannot make sense of is refused.
+
+    :param args: Positional arguments the guarded callable received, with any
+        bound instance already stripped.
+    :param kwargs: Keyword arguments it received.
+    """
+    if kwargs.get("shell"):
+        return False
+
+    argv = child_process_argv(args, kwargs)
+    if argv is None or len(argv) != len(ALLOWED_CHILD_PROCESS_ARGUMENTS) + 1:
+        return False
+    if tuple(argv[1:]) != ALLOWED_CHILD_PROCESS_ARGUMENTS:
+        return False
+    if not is_trusted_command_interpreter(argv[0]):
+        return False
+
+    override = kwargs.get("executable")
+    if override is not None and not is_trusted_command_interpreter(override):
+        return False
+    return True
 
 
 class _EgressGuard:
@@ -771,14 +1044,29 @@ class _EgressGuard:
 
     ``test_id`` is set by :func:`block_network_access` for the duration of each
     test and reported in the error, so a refusal names the test that caused it.
-    Outside a test the subject is reported as ``collection``.
+    It is held in a :class:`contextvars.ContextVar`, so a refusal raised on a
+    thread that did not inherit the test's context reports
+    :data:`UNATTRIBUTED_SUBJECT` rather than borrowing the name of whichever test
+    the main thread was running - naming the wrong test is worse than naming
+    none. Outside a test the subject reads the same way, which covers collection,
+    module import and teardown.
 
-    See ``docs/testing/DECISION-LOG.md`` rows D25, D105 and D121.
+    See ``docs/testing/DECISION-LOG.md`` rows D25, D105, D121 and D313.
     """
 
     def __init__(self):
         self._patchers = []
-        self.test_id = None
+
+    # -- attribution ------------------------------------------------------- #
+
+    @property
+    def test_id(self):
+        """Nodeid attributed to a refusal raised in **this** context, or ``None``."""
+        return _GUARD_SUBJECT.get()
+
+    @test_id.setter
+    def test_id(self, value):
+        _GUARD_SUBJECT.set(value)
 
     # -- error construction ------------------------------------------------ #
 
@@ -791,7 +1079,7 @@ class _EgressGuard:
             "app.db.firestore.get_db, app.db.bigquery.Client, "
             "app.services.llm_service.Completion.create, or "
             "sys.modules['tweepy'].".format(
-                subject=self.test_id or "collection",
+                subject=self.test_id or UNATTRIBUTED_SUBJECT,
                 operation=operation,
                 detail=detail,
             )
@@ -842,17 +1130,30 @@ class _EgressGuard:
         return guarded
 
     def _guard_bind(self, real):
-        """Record the endpoint a successful ``bind`` assigned.
+        """Refuse a bind that would publish a listener, then record the rest.
 
-        Binding is not egress, so nothing is refused here. This is what makes a
-        later connect to that endpoint admissible: :func:`_is_local_address` admits
-        a target only when a live socket in this process bound it, and
-        :func:`socket.socketpair` - which asyncio's proactor self-pipe and
-        starlette's ``TestClient`` portal both reach - binds a listener on an
-        ephemeral loopback port before connecting to it.
+        Two jobs.
+
+        The refusal: a bind to a routable address, or to the unspecified address
+        of a family - ``0.0.0.0`` or ``::`` - answers on interfaces this machine
+        shares with everything else on the network. This host runs many clones of
+        this repository at once, so a listener there is reachable by all of them
+        and by anything else on the segment, which is neither offline nor
+        isolated. Only a loopback address and an ``AF_UNIX`` path may be bound.
+
+        The record: a permitted bind is what makes a later connect to that
+        endpoint admissible. :func:`_is_local_address` admits a target only when a
+        live socket in this process bound it, and :func:`socket.socketpair` -
+        which asyncio's proactor self-pipe and starlette's ``TestClient`` portal
+        both reach - binds a listener on an ephemeral loopback port before
+        connecting to it.
+
+        See ``docs/testing/DECISION-LOG.md`` row D312.
         """
 
         def guarded(sock, address, *args, **kwargs):
+            if not _is_bindable_address(sock, address):
+                raise self.refuse("socket.bind", address)
             result = real(sock, address, *args, **kwargs)
             _record_bound_endpoint(sock)
             return result
@@ -913,41 +1214,80 @@ class _EgressGuard:
 
         Used for the child-process entry points.  A child process owns its own
         sockets, so nothing else in this module can observe what it does - which
-        makes it the one egress path that has to be judged by *what is being
-        run* rather than by where the traffic goes.
+        makes it the one egress path judged by *what is being run* rather than by
+        where the traffic goes.
 
-        Unconditional in time.  An earlier revision permitted any command
-        whenever ``test_id`` was ``None``, which is true during collection,
-        during module import and during teardown, so a spawn in any of those
-        phases escaped the guard entirely.  The allow-list in
-        :data:`ALLOWED_CHILD_PROCESS_COMMANDS` replaces that timing test: the one
-        spawn the standard library itself needs is named, and everything else is
-        refused whenever it is attempted.
+        Unconditional in time: :func:`is_allowed_child_process` is consulted in
+        every phase, so a spawn during collection, during module import or during
+        teardown is refused exactly as one inside a test is.  Admission is
+        structural - the one spawn the standard library itself needs is recognised
+        by the shape of its argument vector, never by a command string.
 
         See ``docs/testing/DECISION-LOG.md`` rows D105 and D223.
         """
 
         def guarded(*args, **kwargs):
-            command = child_process_command(args, kwargs)
-            if is_allowed_child_process(command):
+            if is_allowed_child_process(args, kwargs):
                 return real(*args, **kwargs)
-            raise self.refuse(name, command)
+            raise self.refuse(name, child_process_command(args, kwargs))
+
+        return guarded
+
+    def _refuse_native_unless_allowlisted(self, name, real):
+        """Return a callable that refuses a native process-creation call on its own.
+
+        ``_winapi.CreateProcess`` takes a command *line*, so there is no argument
+        vector for :func:`is_allowed_child_process` to judge and no string this guard
+        will judge instead.  It is admitted only as the continuation of a construction
+        already admitted on this thread - see :func:`in_admitted_construction` - which
+        refuses a direct call while leaving the one admitted ``Popen`` able to finish.
+        The refusal names the command line through :func:`native_process_command`.
+        """
+
+        def guarded(*args, **kwargs):
+            if in_admitted_construction():
+                return real(*args, **kwargs)
+            raise self.refuse(name, native_process_command(args, kwargs))
+
+        return guarded
+
+    def _refuse_process_creation(self, name, real):
+        """Return a callable that refuses a process-creation call outright.
+
+        For the entry points in :data:`UNCONDITIONAL_PROCESS_FACTORIES`, whose
+        signatures put no command where an allow-list could read one. The whole
+        call is rendered by :func:`process_call_detail`, so a refusal still names
+        what was attempted whatever the signature.
+        """
+
+        def guarded(*args, **kwargs):
+            raise self.refuse(name, process_call_detail(args, kwargs))
 
         return guarded
 
     def _refuse_construction_unless_allowlisted(self, name, real):
-        """As :meth:`_refuse_unless_allowlisted`, for an ``__init__`` replacement.
+        """Return an ``__init__`` replacement that refuses every child process
+        outside :func:`is_allowed_child_process`.
 
         The instance is the :class:`subprocess.Popen` being constructed, so the
-        command sits in the remaining positional arguments exactly as it does for
-        a plain call.
+        invocation sits in the remaining positional arguments exactly as it does
+        for a plain call.  The refusal is unconditional in time: the guard is
+        installed by :func:`pytest_configure`, which runs before collection, and
+        released only by :func:`pytest_unconfigure`, so a spawn during
+        collection, module import, a test or a teardown is judged identically.
+
+        See ``docs/testing/DECISION-LOG.md`` rows D105, D223 and D329.
         """
 
         def guarded(instance, *args, **kwargs):
-            command = child_process_command(args, kwargs)
-            if is_allowed_child_process(command):
-                return real(instance, *args, **kwargs)
-            raise self.refuse(name, command)
+            if is_allowed_child_process(args, kwargs):
+                depth = getattr(_ADMITTED_CONSTRUCTION, "depth", 0)
+                _ADMITTED_CONSTRUCTION.depth = depth + 1
+                try:
+                    return real(instance, *args, **kwargs)
+                finally:
+                    _ADMITTED_CONSTRUCTION.depth = depth
+            raise self.refuse(name, child_process_command(args, kwargs))
 
         return guarded
 
@@ -1060,14 +1400,33 @@ class _EgressGuard:
         )
 
     def install_child_process_guards(self):
-        """Refuse child-process creation; see :data:`CHILD_PROCESS_FACTORIES`.
+        """Refuse process creation at every Python-level entry point.
+
+        Three groups, each named by its own constant:
+        :data:`CHILD_PROCESS_FACTORIES` and
+        :data:`NATIVE_PROCESS_FACTORIES` are judged by
+        :func:`is_allowed_child_process`, and
+        :data:`UNCONDITIONAL_PROCESS_FACTORIES` is refused outright.
+        :class:`subprocess.Popen` is guarded at ``__init__`` below, which is what
+        also closes ``subprocess.run``, ``call``, ``check_call`` and
+        ``check_output``.
 
         Installed from :func:`pytest_configure`, which runs before collection,
         and released only by :func:`pytest_unconfigure`, so the refusal covers
         collection, every test, every teardown and session finish.
+
+        Residual, stated because the guarantee is bounded: these are Python-level
+        patches, so a process created by a C extension or through
+        :mod:`ctypes` - neither of which this suite contains - would not pass
+        through any of them. ``backend/tests/test_guard_contract.py`` probes every
+        entry point named here.
         """
         for module_name, attribute in CHILD_PROCESS_FACTORIES:
             self._add(module_name, attribute, self._refuse_unless_allowlisted)
+        for module_name, attribute in NATIVE_PROCESS_FACTORIES:
+            self._add(module_name, attribute, self._refuse_native_unless_allowlisted)
+        for module_name, attribute in UNCONDITIONAL_PROCESS_FACTORIES:
+            self._add(module_name, attribute, self._refuse_process_creation)
         popen_patcher = patch.object(
             subprocess.Popen,
             "__init__",
@@ -1096,6 +1455,68 @@ _EGRESS_GUARD = _EgressGuard()
 
 #: Recorded for a name the process environment did not carry.
 _ABSENT = object()
+
+#: Every ``(module name, symbol name)`` pair :func:`_install_missing_symbol` has
+#: written a stand-in onto, mapped to the value that module carried *before* the
+#: first write - :data:`_ABSENT` when it carried none.
+#:
+#: The context manager restores the defining module on exit but deliberately
+#: leaves the fail-closed sentinel on every cached consumer, so that a consumer
+#: which is never evicted from :data:`sys.modules` cannot be left holding a
+#: permissive stand-in. That is the right state *during* a session and the wrong
+#: one after it: the sentinels are test objects, and an interpreter that outlives
+#: this run - an IDE runner, or a second pytest invocation in one process - would
+#: keep resolving production names to them. :func:`_restore_shimmed_bindings`
+#: replays this record at :func:`pytest_unconfigure`.
+#:
+#: See ``docs/testing/DECISION-LOG.md`` row D314.
+_SHIMMED_BINDINGS = {}
+
+
+def _record_shimmed_binding(module, symbol_name):
+    """Record ``module``'s pre-shim binding for ``symbol_name``, once."""
+    key = (module.__name__, symbol_name)
+    if key not in _SHIMMED_BINDINGS:
+        _SHIMMED_BINDINGS[key] = getattr(module, symbol_name, _ABSENT)
+
+
+def _restore_optional_shim():
+    """Return ``builtins.Optional`` to whatever this run found there.
+
+    Two branches, and the distinction is the point: a name this run introduced is
+    **deleted**, because leaving it behind would let unrelated code in this
+    interpreter resolve a name Python does not define; a name that was already
+    bound is set back to the **exact object** it held, because replacing someone
+    else's ``Optional`` with ``typing.Optional`` is still a mutation this module
+    has no right to leave behind.
+
+    Called from :func:`pytest_unconfigure`; a separate function so both branches
+    are assertable - see ``backend/tests/test_guard_contract.py``.
+    """
+    if _BUILTINS_PREVIOUS_OPTIONAL is _ABSENT:
+        with contextlib.suppress(AttributeError):
+            delattr(builtins, "Optional")
+    else:
+        builtins.Optional = _BUILTINS_PREVIOUS_OPTIONAL
+
+
+def _restore_shimmed_bindings():
+    """Return every shimmed module to the binding it had before this run.
+
+    A module the run evicted from :data:`sys.modules` is skipped: there is nothing
+    left holding the stand-in. A name that was absent before is deleted rather
+    than set to ``None``, so the module is left in its real production shape.
+    """
+    for (module_name, symbol_name), previous in list(_SHIMMED_BINDINGS.items()):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        if previous is _ABSENT:
+            with contextlib.suppress(AttributeError):
+                delattr(module, symbol_name)
+        else:
+            setattr(module, symbol_name, previous)
+    _SHIMMED_BINDINGS.clear()
 
 #: Pre-prologue value of every environment variable the prologue changes,
 #: keyed by name, holding :data:`_ABSENT` for a name that was unset.
@@ -1130,17 +1551,15 @@ for _managed_name in MANAGED_ENVIRONMENT_NAMES:
     _record_environment(_managed_name)
 del _managed_name
 
-# Unconditional assignment, not setdefault: an ambient real credential must not
-# be able to win, because a suite running against one is neither deterministic
-# nor offline.
+# Unconditional assignment, not setdefault: an ambient value never wins, so the
+# suite is deterministic and offline whatever the surrounding machine carries.
 for _setting_name, _setting_value in REQUIRED_SETTINGS_ENV.items():
     os.environ[_setting_name] = _setting_value
 del _setting_name, _setting_value
 
-# Pinning, not removal: pydantic v1 reads os.environ *before* the ``.env`` file
-# named by Settings.Config.env_file, so assigning each declared default is what
-# makes the singleton independent of a .env on disk as well as of an ambient
-# value.  Removing the name would leave a .env free to decide it.
+# Pinned, not removed: pydantic v1 reads os.environ *before* the ``.env`` file
+# named by Settings.Config.env_file, so assigning each declared default makes the
+# singleton independent of a .env on disk as well as of an ambient value.
 for _setting_name, _setting_value in DEFAULTED_SETTINGS_ENV.items():
     os.environ[_setting_name] = _setting_value
 del _setting_name, _setting_value
@@ -1162,7 +1581,15 @@ os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = ABSENT_CREDENTIALS_PATH
 # line 11 without importing ``Optional``, so importing it raises
 # ``NameError: name 'Optional' is not defined``.  ``app/api/dependencies.py``
 # imports from that module and inherits the failure.
-_BUILTINS_HAD_OPTIONAL = hasattr(builtins, "Optional")
+#
+# The previous binding is snapshotted rather than merely tested for existence:
+# an interpreter that already carried a ``builtins.Optional`` - one this suite
+# did not put there, in a session that embeds this run - gets exactly that object
+# back in :func:`pytest_unconfigure`, and one that carried none gets the name
+# removed. Recording only "was it present" would restore presence but replace the
+# value with ``typing.Optional``, which is a mutation this module has no right to
+# leave behind.
+_BUILTINS_PREVIOUS_OPTIONAL = getattr(builtins, "Optional", _ABSENT)
 builtins.Optional = typing.Optional
 
 
@@ -1193,13 +1620,22 @@ _AMBIENT_CREDENTIAL_PATCH = patch(
 )
 _AMBIENT_CREDENTIAL_PATCH.start()
 
-# Populate platform's uname cache while no guard is installed. On Windows
-# ``platform.uname()`` obtains the OS version by running ``cmd /c ver`` in a
-# child process, and both ``platform.system()`` and ``platform.node()`` reach it.
-# This one call caches the result for the whole process, so the child-process
-# guard below never sees a spawn the standard library itself needed.
-# See ``docs/testing/DECISION-LOG.md`` row D105.
+# Populate platform's two caches while no guard is installed. On Windows both of
+# these obtain the OS version by running ``ver`` in a child process:
+#
+# * ``platform.uname()`` fills ``platform._uname_cache``, which
+#   ``platform.system()`` and ``platform.node()`` also read;
+# * ``platform.platform()`` fills ``platform._platform_cache``, which is a
+#   *separate* cache reached through ``platform.win32_ver()``. pytest-xdist calls
+#   it in every worker's ``pytest_sessionstart``, before any test runs and after
+#   this conftest has installed the guard, so without this line ``pytest -n auto``
+#   aborts at worker start-up with a refusal rather than running.
+#
+# Each call caches its result for the whole process, so the child-process guard
+# below never sees a spawn the standard library itself needed.
+# See ``docs/testing/DECISION-LOG.md`` rows D105 and D315.
 platform.uname()
+platform.platform()
 
 # Last step of the prologue: deny egress from here until pytest_unconfigure.
 _EGRESS_GUARD.install()
@@ -1347,6 +1783,111 @@ def _settings_normalisation_failures(settings):
     return failures
 
 
+#: Seconds :func:`reject_surviving_threads` spends, in total, waiting for the
+#: threads a run started to finish.  Long enough for an event-loop thread or a
+#: blocking portal to unwind, short enough that a thread which never exits is
+#: reported rather than waited on.
+SURVIVOR_JOIN_TIMEOUT_SECONDS = 5.0
+
+#: Threads alive when this module was imported, by identity.  Everything else
+#: alive at session finish was started by this run.
+_BASELINE_THREAD_IDS = frozenset(
+    thread.ident for thread in threading.enumerate() if thread.ident is not None
+)
+
+
+def _describe_thread(thread):
+    """Return one line naming a thread, its kind and where it came from."""
+    return "{name} (ident={ident}, daemon={daemon}, target={target})".format(
+        name=thread.name,
+        ident=thread.ident,
+        daemon=thread.daemon,
+        target=getattr(thread, "_target", None),
+    )
+
+
+def _threads_started_by_this_run():
+    """Return every live thread this run started, excluding the caller's own."""
+    current = threading.current_thread()
+    return [
+        thread
+        for thread in threading.enumerate()
+        if thread is not current
+        and thread.ident not in _BASELINE_THREAD_IDS
+        and thread.is_alive()
+    ]
+
+
+def reject_surviving_threads(timeout=SURVIVOR_JOIN_TIMEOUT_SECONDS):
+    """Join every thread this run started and report the ones still alive.
+
+    The guards in this module are process-wide monkey patches, so releasing them
+    while a thread a test started is still running hands that thread an
+    unguarded interpreter: it can wait for the release and then connect or spawn,
+    with nothing left to refuse it and no test left to attribute it to. Joining
+    first closes that window, and a thread that will not join is reported so the
+    run fails rather than ending quietly with work still in flight.
+
+    Called from :func:`pytest_sessionfinish`, which can fail the session, and
+    again from :func:`pytest_unconfigure` immediately before the release.
+
+    :param timeout: Total seconds to spend joining, shared across all survivors,
+        so one thread that never exits cannot stretch the wait per thread.
+    :returns: A description of every thread still alive afterwards, empty when
+        all of them finished.
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    for thread in _threads_started_by_this_run():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        with contextlib.suppress(RuntimeError):
+            thread.join(remaining)
+    return [_describe_thread(thread) for thread in _threads_started_by_this_run()]
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Fail the session when a thread it started is still running.
+
+    Runs after the last test and before :func:`pytest_unconfigure`, which is the
+    only point at which the outcome can still be changed: the guards are released
+    in that later hook, so a survivor detected here is one that would otherwise
+    outlive them.
+
+    Skipped on a pytest-xdist controller for the same reason the child-process
+    guard is: a controller runs no test of its own and keeps a communication
+    thread per worker, so every thread alive here is one it started on purpose.
+    Each worker runs this hook over its own tests.
+    """
+    if _spawns_worker_processes(session.config):
+        return
+
+    survivors = reject_surviving_threads()
+    if not survivors:
+        return
+
+    report = [
+        "{count} thread(s) started by this run are still alive after the last "
+        "test. The egress guards are released moments from now, so a thread that "
+        "is still running would then be free to connect or to spawn with nothing "
+        "left to refuse it. Join or stop every thread a test starts:".format(
+            count=len(survivors)
+        )
+    ]
+    report.extend("  - " + survivor for survivor in survivors)
+    message = "\n".join(report)
+
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is None:  # pragma: no cover - the plugin is always registered
+        print(message)
+    else:
+        reporter.write_sep("=", "surviving threads", red=True)
+        reporter.write_line(message)
+
+    if session.exitstatus == 0:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
 def pytest_configure(config):
     """Add the child-process guard, then refuse the run unless settings verify.
 
@@ -1404,9 +1945,17 @@ def pytest_unconfigure(config):
     is still alive.
 
     Invariant: the interpreter this run leaves behind is the one it entered - no
-    seeded variable, no credential patch, no injected builtin, no replaced
-    logging factory and no socket guard survives.
+    seeded variable, no credential patch, no injected builtin, no shimmed
+    production name, no replaced logging factory and no socket guard survives.
     """
+    # Before the release, not after: a thread still running when the patches come
+    # off has an unguarded interpreter. :func:`pytest_sessionfinish` has already
+    # failed the session if any of them refused to finish; this call is what
+    # actually waits for them. Skipped on an xdist controller, whose live threads
+    # are the worker channels it owns.
+    if not _spawns_worker_processes(config):
+        reject_surviving_threads()
+
     _EGRESS_GUARD.release()
 
     # The recorder is gone, so nothing can add to the registry; emptying it means
@@ -1426,12 +1975,12 @@ def pytest_unconfigure(config):
         _AMBIENT_CREDENTIAL_PATCH.stop()
     _restore_environment()
 
-    if not _BUILTINS_HAD_OPTIONAL:
-        # The shim exists only because app/core/security.py line 11 needs it;
-        # leaving it behind would let unrelated code in this interpreter resolve
-        # a name Python does not define.
-        with contextlib.suppress(AttributeError):
-            delattr(builtins, "Optional")
+    # Every module a shim was written onto goes back to the binding it had before
+    # this run, which for all five of them is no binding at all: production
+    # defines none of these names.
+    _restore_shimmed_bindings()
+
+    _restore_optional_shim()
 
 
 # --------------------------------------------------------------------------- #
@@ -1452,7 +2001,31 @@ _BASE_LOG_RECORD_FACTORY = logging.getLogRecordFactory()
 
 #: Test currently executing, as its pytest nodeid.  Maintained by
 #: :func:`pytest_runtest_logstart` and :func:`pytest_runtest_logfinish`.
-_current_test_id = SESSION_TEST_ID
+#:
+#: A :class:`contextvars.ContextVar` rather than a plain global, and the
+#: difference is an attribution guarantee. A thread starts with an empty context,
+#: so a record emitted from a background thread - one a test started and did not
+#: join, or the event-loop thread starlette's ``TestClient`` runs - reads
+#: :data:`SESSION_TEST_ID` here instead of the nodeid of whichever test happened
+#: to be executing on the main thread. Naming a test that did not emit the record
+#: is worse than naming none: it sends a reader to the wrong subject, and in a
+#: refusal message it attributes an egress attempt to the wrong test. An
+#: :class:`asyncio` task copies the current context, so an ``async`` test's own
+#: awaits keep their attribution.
+#:
+#: See ``docs/testing/DECISION-LOG.md`` row D313.
+_CURRENT_TEST_ID = contextvars.ContextVar(
+    "blitzy_current_test_id", default=SESSION_TEST_ID
+)
+
+
+def current_test_id():
+    """Return the nodeid of the test running in **this** context.
+
+    :data:`SESSION_TEST_ID` outside a test, and also inside a thread that did not
+    inherit the context the test set - see :data:`_CURRENT_TEST_ID`.
+    """
+    return _CURRENT_TEST_ID.get()
 
 
 def correlation_id_for(test_id):
@@ -1479,8 +2052,9 @@ def _log_record_factory(*args, **kwargs):
     guarantees and a per-logger filter would not.
     """
     record = _BASE_LOG_RECORD_FACTORY(*args, **kwargs)
-    record.test_id = _current_test_id
-    record.correlation_id = correlation_id_for(_current_test_id)
+    test_id = current_test_id()
+    record.test_id = test_id
+    record.correlation_id = correlation_id_for(test_id)
     return record
 
 
@@ -1488,15 +2062,17 @@ logging.setLogRecordFactory(_log_record_factory)
 
 
 def pytest_runtest_logstart(nodeid, location):
-    """Attribute subsequent log records to the test that is starting."""
-    global _current_test_id
-    _current_test_id = nodeid
+    """Attribute subsequent log records to the test that is starting.
+
+    Set on the context of the thread pytest runs the test on, which is the thread
+    the test body and its fixtures execute in.
+    """
+    _CURRENT_TEST_ID.set(nodeid)
 
 
 def pytest_runtest_logfinish(nodeid, location):
     """Return attribution to the session once a test has finished."""
-    global _current_test_id
-    _current_test_id = SESSION_TEST_ID
+    _CURRENT_TEST_ID.set(SESSION_TEST_ID)
 
 
 # Shim installation.
@@ -1599,8 +2175,10 @@ def _install_missing_symbol(symbol_name, replacement=None):
 
     had_attribute = hasattr(definer, symbol_name)
     previous = getattr(definer, symbol_name, None)
+    _record_shimmed_binding(definer, symbol_name)
     setattr(definer, symbol_name, value)
     for consumer in _loaded_consumers(symbol_name):
+        _record_shimmed_binding(consumer, symbol_name)
         setattr(consumer, symbol_name, value)
     try:
         yield value
@@ -1610,6 +2188,7 @@ def _install_missing_symbol(symbol_name, replacement=None):
         else:
             delattr(definer, symbol_name)
         for consumer in _loaded_consumers(symbol_name):
+            _record_shimmed_binding(consumer, symbol_name)
             setattr(consumer, symbol_name, sentinel)
 
 

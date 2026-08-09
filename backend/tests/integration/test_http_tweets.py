@@ -17,40 +17,6 @@ and ``config`` routers ``app/main.py`` also includes are bare.  The census of
 paths that are *absent* belongs to
 ``backend/tests/integration/test_route_surface.py``.
 
-What this suite asserts
------------------------
-``GET /tweets``
-
-* A single row reaches the client as ``200`` and a one-element JSON list whose
-  object carries all ten field names ``app/schema/tweet.py`` declares, each
-  holding the value ``make_tweet`` supplied.
-* An empty result set is ``200`` and ``[]``, not ``404`` and not an error.
-* ``skip`` and ``limit`` are query parameters and reach ``.offset(...)`` and
-  ``.limit(...)`` unchanged, in that order.
-* Omitting both applies the declared defaults, ``0`` and ``100``.
-* A row missing a required field fails response-model validation and surfaces
-  as ``500``.
-* A failure raised by ``db.query(...)`` or by the terminal ``.all()``
-  propagates as the instance that was raised, and surfaces as ``500`` through a
-  client that reports; nothing later in the chain, and no serialization, runs.
-
-Every path that reaches ``query``
-
-* The model handed to ``db.query(...)`` is ``app.schema.tweet.Tweet`` itself --
-  the same object the subject imported -- on all three operations.
-
-``GET /tweets/{tweet_id}`` and ``POST /tweets/{tweet_id}/responses``
-
-* Both raise ``AttributeError`` naming the missing attribute ``id``.
-* Both surface as ``500`` through a client that reports handler exceptions.
-* The failure precedes ``.filter(...)`` itself, so neither ``.filter`` nor
-  ``.first`` is ever called, and ``LLMService`` is never constructed.
-
-Recorded gaps
-
-* No implemented operation declares a ``requestBody``.
-* ``dependency_overrides`` is empty when a test begins.
-
 Current behaviour captured as divergence
 ----------------------------------------
 ``Tweet.id`` does not exist.  ``app/schema/tweet.py`` declares ten fields and
@@ -160,7 +126,7 @@ MISSING_FIELD_VALIDATION_MESSAGE = "field required"
 RESPONSE_MODEL_NAME = "Tweet"
 
 #: Failure types injected into the collection endpoint's query chain.
-#: ``Exception`` is included deliberately: it is the type a bare
+#: ``Exception`` is included: it is the type a bare
 #: ``except Exception`` would name, and the subject holds no ``try`` at all, so a
 #: clause of that shape -- or a fallback returning an empty list -- would stop
 #: these exceptions from arriving.  The other two are subclasses of it.
@@ -341,19 +307,14 @@ def test_get_tweets_response_validation_raises_for_incomplete_row(
 ):
     """A row missing ``content`` fails the response model, and that is the cause.
 
-    Asserted through the raising client, because the exception is the only place
-    the *cause* is observable: the status a caller sees is a bare ``500``, and
-    this endpoint reaches ``500`` three other ways -- a failing ``db.query``, a
-    failing terminal ``.all()``, and any exception at all, since the handler holds
-    no ``try``. A test that asserted only the status would pass for every one of
-    them.
-
-    Three things establish this particular cause. The exception is a pydantic
-    :class:`ValidationError` against the response model rather than an arbitrary
-    error; its one entry is located at ``("response", 0, "content")``, which names
-    the response, the row and the omitted field; and the query chain ran to
-    completion, so the handler *did* obtain its result set and serialization is
-    what rejected it.
+    The status a caller sees is a bare ``500``, and this endpoint reaches ``500``
+    three other ways -- a failing ``db.query``, a failing terminal ``.all()``, and
+    any exception at all, since the handler holds no ``try``. The cause is
+    observable only in the exception, so it is asserted through the raising
+    client: a pydantic :class:`ValidationError` against the response model, one
+    entry located at ``("response", 0, "content")``, and a query chain that ran to
+    completion -- so the handler obtained its result set and serialization is what
+    rejected it.
     """
     override_get_db(mock_db)
     incomplete = make_tweet()
@@ -387,13 +348,10 @@ def test_get_tweets_response_validation_rejects_incomplete_row(
 ):
     """The same failure answers ``500`` through a client that reports.
 
-    This is the status a caller observes.  The body is starlette's own
-    server-error text under ``text/plain`` rather than a JSON array, which
-    establishes that the ``List[Tweet]`` response model produced nothing, and the
-    completed query chain establishes that it was nonetheless *reached* -- the
-    pair that distinguishes this 500 from the two where the chain failed first.
-    The cause itself is asserted by
-    :func:`test_get_tweets_response_validation_raises_for_incomplete_row`.
+    The body is starlette's own server-error text under ``text/plain`` rather than
+    a JSON array, so the ``List[Tweet]`` response model produced nothing, and the
+    completed query chain shows it was nonetheless *reached* -- the pair that
+    distinguishes this 500 from the two where the chain failed first.
     """
     override_get_db(mock_db)
     incomplete = make_tweet()

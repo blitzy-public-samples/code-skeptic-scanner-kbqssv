@@ -22,8 +22,15 @@
  * | Request | Disposition |
  * |---------|-------------|
  * | Not the harness origin | aborted `blockedbyclient`, recorded, thrown at teardown |
+ * | Harness origin, a {@link CONTROL_PATH_PREFIX} path | aborted `blockedbyclient`, recorded, thrown at teardown |
  * | Harness origin, a {@link HARNESS_API_PATHS} path | passed to the dev server, which fails it closed, recorded, thrown at teardown |
- * | Harness origin, anything else | `route.fallback()` - documents, modules, assets |
+ * | Harness origin, anything else | recorded as a census entry, then `route.fallback()` - documents, modules, assets |
+ *
+ * The third row is why the second exists. Falling through is right for the harness graph and wrong for a
+ * dev-server control endpoint: those do filesystem and process work inside the Node process, which no
+ * browser-level rule can contain, and the fallback used to carry them there without recording anything.
+ * The census in the last row closes the other half of the same gap - what the harness served is now
+ * attached to every test as evidence rather than left unrecorded.
  *
  * Both ledgers are read at teardown rather than in the request, because every caller in this
  * codebase swallows or replaces what it is handed, so a refusal expressed only as a response can be
@@ -38,7 +45,7 @@
  * ledger. Every pattern in this directory is consequently spelled `` `${HARNESS_ORIGIN}/<path>` ``,
  * so a foreign origin falls through to the rule above and is aborted and recorded.
  * `e2e/tests/isolation.spec.ts` asserts that property for every path any spec here intercepts, using
- * {@link consumeAbortedRequestUrls} to acknowledge the refusal it deliberately caused.
+ * {@link consumeAbortedRequestUrls} to acknowledge the refusal it provoked.
  *
  * @see docs/testing/DECISION-LOG.md - rows D130, D131 and D213.
  * ## What the diagnostics fixture enforces
@@ -101,8 +108,33 @@ const HARNESS_API_PATHS: readonly string[] = Object.freeze([
   '/api/config/twitter',
 ]);
 
+/**
+ * Prefix of every Vite dev-server control endpoint - the editor launcher, the inspector, the liveness
+ * ping. Mirrors `CONTROL_PATH_PREFIX` in `e2e/vite.harness.config.ts`, which refuses the same prefix
+ * server-side.
+ *
+ * Nothing in the harness graph is addressed under it: the entry document, the modules, the four
+ * component files and the three API paths are all outside it. A same-origin request that carries it is
+ * therefore never the application's, and it is the one class of same-origin request that must not be
+ * allowed to fall through to the server - a control endpoint does filesystem and process work in Node,
+ * where no browser-level rule reaches.
+ */
+const CONTROL_PATH_PREFIX = '/__';
+
 /** Every URL aborted by {@link test}'s `noEgress` fixture, in the order they were seen. */
 const abortedUrls: string[] = [];
+
+/** Every same-origin control-path URL that fixture aborted, in the order they were seen. */
+const deniedControlPathUrls: string[] = [];
+
+/**
+ * Every same-origin request that fixture let through to the dev server, in the order they were seen.
+ *
+ * A census rather than a verdict: the entry document, every module in the graph and every asset
+ * legitimately arrive here. It is attached to the test as evidence so what the harness served is
+ * readable after the fact, which is what the fallback branch used to leave unrecorded.
+ */
+const servedHarnessRequests: string[] = [];
 
 /** Every harness API request that reached the dev server, in the order they were seen. */
 const unInterceptedApiRequests: string[] = [];
@@ -130,14 +162,12 @@ export function unInterceptedApiRequestUrls(): readonly string[] {
  * than reported as a breach at teardown.
  *
  * Exists for one caller shape: a test whose subject *is* the refusal. `e2e/tests/isolation.spec.ts`
- * drives a foreign origin on a path a spec has a route for, in order to prove that the route does
- * not claim it and that this fixture aborts and records it instead. Without a way to consume the
- * entry, that proof would fail its own test at teardown and the property could not be asserted at
- * all.
+ * drives a foreign origin on a path a spec has a route for, to prove that the route does not claim
+ * it and that this fixture aborts and records it instead. Consuming the entry is what lets that
+ * proof reach teardown green.
  *
- * Consume only what the test deliberately caused, and only after asserting it. An entry left in the
- * ledger still fails the test, which is what keeps this from becoming a way to silence a real
- * breach: clearing it is meaningless unless the test has already asserted the exact URL.
+ * Consume only what the test provoked, and only after asserting it. An entry left in the ledger
+ * still fails the test, so clearing one is meaningful only once the test has asserted the exact URL.
  *
  * @returns A frozen snapshot of the aborted URLs, oldest first, taken before the ledger was cleared.
  */
@@ -145,6 +175,40 @@ export function consumeAbortedRequestUrls(): readonly string[] {
   const seen = Object.freeze([...abortedUrls]);
   abortedUrls.length = 0;
   return seen;
+}
+
+/**
+ * Reads the control-path ledger **and clears it**, so a test whose subject *is* that refusal can
+ * assert it rather than have it reported as a breach at teardown.
+ *
+ * Same contract as {@link consumeAbortedRequestUrls}: consume only what the test deliberately caused,
+ * and only after asserting the exact URL. `e2e/tests/isolation.spec.ts` is the one caller.
+ *
+ * @returns A frozen snapshot of the denied control-path URLs, oldest first, taken before clearing.
+ */
+export function consumeDeniedControlPathUrls(): readonly string[] {
+  const seen = Object.freeze([...deniedControlPathUrls]);
+  deniedControlPathUrls.length = 0;
+  return seen;
+}
+
+/**
+ * Every same-origin request the harness server answered for the current test, oldest first.
+ *
+ * @returns A frozen snapshot, each entry `<METHOD> <url>`.
+ */
+export function servedHarnessRequestUrls(): readonly string[] {
+  return Object.freeze([...servedHarnessRequests]);
+}
+
+/**
+ * Whether a same-origin URL addresses a dev-server control endpoint.
+ *
+ * @param url - Absolute request URL, already known to be same-origin.
+ */
+function isControlPathRequest(url: string): boolean {
+  const { pathname } = new URL(url);
+  return pathname.toLowerCase().startsWith(CONTROL_PATH_PREFIX);
 }
 
 /**
@@ -229,7 +293,7 @@ export interface BrowserDiagnostics {
  * @example
  * ```ts
  * browserDiagnostics.allow(resourceFailure(500), /console\.error: Error fetching trend data:/);
- * await page.route('**\/api\/trends*', (route) => route.fulfill({ status: 500, json: {} }));
+ * await page.route(`${HARNESS_ORIGIN}/api/trends*`, (route) => route.fulfill({ status: 500, json: {} }));
  * ```
  */
 export function resourceFailure(status: number): RegExp {
@@ -270,6 +334,8 @@ export const test = base.extend<{
   noEgress: [
     async ({ context }, use, testInfo) => {
       abortedUrls.length = 0;
+      deniedControlPathUrls.length = 0;
+      servedHarnessRequests.length = 0;
       unInterceptedApiRequests.length = 0;
 
       await context.route('**/*', async (route) => {
@@ -282,14 +348,32 @@ export const test = base.extend<{
           return;
         }
 
+        // Same-origin, but a dev-server control endpoint rather than the application: aborted here and
+        // refused again by the server-side guard, because reaching one means Node does filesystem or
+        // process work on the browser's behalf. Ledgered either way, so it cannot pass silently.
+        if (isControlPathRequest(url)) {
+          deniedControlPathUrls.push(`${request.method()} ${url}`);
+          await route.abort('blockedbyclient');
+          return;
+        }
+
         if (isHarnessApiRequest(url)) {
           unInterceptedApiRequests.push(`${request.method()} ${url}`);
         }
 
+        // Everything else same-origin is the harness graph - the document, its modules, its assets.
+        // Recorded before it is served, so the fallback branch leaves a census behind rather than
+        // nothing at all.
+        servedHarnessRequests.push(`${request.method()} ${url}`);
         await route.fallback();
       });
 
       await use();
+
+      await testInfo.attach('harness-requests-served', {
+        body: servedHarnessRequests.join('\n') || '(no same-origin request reached the harness)',
+        contentType: 'text/plain',
+      });
 
       const failures: string[] = [];
 
@@ -298,6 +382,17 @@ export const test = base.extend<{
           `${abortedUrls.length} request(s) outside the harness origin ${HARNESS_ORIGIN}. Each was ` +
             'aborted, not performed. Mock the request with page.route(...) instead of letting it ' +
             `leave the browser:\n${abortedUrls.map((url) => `  - ${url}`).join('\n')}`,
+        );
+      }
+
+      if (deniedControlPathUrls.length > 0) {
+        failures.push(
+          `${deniedControlPathUrls.length} request(s) to a dev-server control endpoint under ` +
+            `${CONTROL_PATH_PREFIX}. Each was aborted, not performed. Nothing in the harness graph is ` +
+            'addressed there, so such a request is either a mistake or an attempt to make the Node ' +
+            `process act on the page's behalf:\n${deniedControlPathUrls
+              .map((entry) => `  - ${entry}`)
+              .join('\n')}`,
         );
       }
 

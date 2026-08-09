@@ -2,12 +2,9 @@
  * The suite for `TwitterAPISettings`, the default export of
  * `frontend/src/components/Configuration`.
  *
- * Two properties of the implemented form are pinned here as **ceilings**, not fixed. Both would need
- * an edit to `frontend/src/components/Configuration`, which is production code this programme is not
- * authorized to change - the two authorized touches are both in `backend/`. Each is recorded in
- * `frontend/TESTING.md`, `docs/testing/TRACEABILITY-MATRIX.md` §G and the suggested-next-tasks lists,
- * and the cases at the end of this file assert them so that closing either becomes a deliberate,
- * test-visible change.
+ * Two properties of the implemented form are pinned here as **ceilings**. The cases at the end of this
+ * file assert them, so closing either becomes a deliberate, test-visible change. Both are recorded in
+ * `frontend/TESTING.md`, `docs/testing/TRACEABILITY-MATRIX.md` §G and the suggested-next-tasks lists.
  *
  * ## 1. The submit has no pending state
  *
@@ -294,7 +291,6 @@ describe('TwitterAPISettings (src/components/Configuration)', () => {
       expect(form).not.toHaveAttribute(attribute);
     }
 
-    /* Nor is any pending indicator rendered for a screen reader to announce. */
     for (const role of PENDING_ROLES) {
       expect(screen.queryByRole(role)).toBeNull();
     }
@@ -327,7 +323,6 @@ describe('TwitterAPISettings (src/components/Configuration)', () => {
 
     await fillCredentials(user);
 
-    /* Two activations of a control that was never disabled between them. */
     await submitForm(user);
     await waitFor(() => expect(updateTwitterAPIConfigMock).toHaveBeenCalledTimes(1));
     await submitForm(user);
@@ -342,7 +337,6 @@ describe('TwitterAPISettings (src/components/Configuration)', () => {
       await Promise.resolve();
     });
 
-    /* And each opened its own dialog. */
     await waitFor(() => {
       expect(alertSpy).toHaveBeenCalledTimes(2);
     });
@@ -352,10 +346,7 @@ describe('TwitterAPISettings (src/components/Configuration)', () => {
   it('renders the API key and the access token in clear text, masking only the secret-suffixed fields', () => {
     renderWithProviders(<TwitterAPISettings />);
 
-    /*
-     * `type="text"`, so the value is on screen as typed. Both are credentials: an API key and an
-     * access token authenticate exactly as their secrets do.
-     */
+    /* `type="text"`, so the value is on screen as typed. */
     for (const label of CLEAR_TEXT_FIELDS) {
       expect(screen.getByLabelText(label)).toHaveAttribute('type', 'text');
     }
@@ -364,16 +355,12 @@ describe('TwitterAPISettings (src/components/Configuration)', () => {
       expect(screen.getByLabelText(label)).toHaveAttribute('type', 'password');
     }
 
-    /*
-     * Two of four reachable as textboxes is the observable consequence: `type="password"` carries no
-     * role, so only the unmasked pair answers a role query.
-     */
+    /* `type="password"` carries no role, so only the unmasked pair answers a textbox query. */
     const textboxes = screen.getAllByRole('textbox');
 
     expect(textboxes).toHaveLength(CLEAR_TEXT_FIELDS.length);
     expect(textboxes.map((input) => input.getAttribute('id'))).toEqual(['apiKey', 'accessToken']);
 
-    /* And no field states an autofill policy, so the browser's default applies to all four. */
     for (const label of Object.values(FIELD_LABELS)) {
       expect(screen.getByLabelText(label)).not.toHaveAttribute('autocomplete');
     }

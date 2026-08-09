@@ -8,31 +8,27 @@
  * and `end` query parameter names are the contract the end-to-end specs intercept,
  * fulfilling from `e2e/fixtures/trends.json`.
  *
- * Contract this module guarantees to every spec:
+ * Contract this module guarantees to every spec. `getTrendData` **resolves on exactly one
+ * path and rejects on every other**, and the response a spec fulfils with is what selects
+ * between them:
  *
- * 1. `getTrendData` checks the response status, then parses the body. The body is read
- *    to completion on both paths.
+ * 1. It checks the response status, then parses the body. The body is read to completion
+ *    on both paths.
  * 2. A parsed body that is not a {@link TrendSeries} rejects with
  *    {@link TrendSeriesContractError}, which names the member at fault.
  * 3. A parsed body that *is* a {@link TrendSeries} rejects with
- *    {@link UnrenderableTrendSeriesError}, *unless* the response carries
- *    {@link FORWARD_TREND_SERIES_HEADER}, in which case it resolves with that series.
+ *    {@link UnrenderableTrendSeriesError} - **unless** the response carries
+ *    {@link FORWARD_TREND_SERIES_HEADER}, in which case it **resolves** with that series.
  *
- * So it rejects by default, the three rejections are distinguishable by type, and one
- * spec at a time can opt into the fourth path.
- *
- * That opt-in is what makes the chart ceiling assertable rather than merely described.
- * Forwarding a series carries the subject into `renderCharts`, whose `new Chart(...)`
- * throws out of a passive effect and unmounts the route - so it is a destructive path
- * no other spec wants, and the default has to stay refusal. Selecting it through a
- * *response header* is the only channel available: the request URL is built here from
- * the component's own prop, so a spec cannot influence it, and an envelope field in the
- * body would fail the {@link TrendSeries} shape check this module and
- * `e2e/fixtures/trends.json` share.
+ * So refusal is the default, the three rejections are distinguishable by type, and a spec
+ * opts into the resolving path by setting that header. Doing so carries the subject into
+ * `renderCharts`, whose `new Chart(...)` throws out of a passive effect and unmounts the
+ * route, so the opt-in is what makes the chart ceiling assertable and why refusal is the
+ * default.
  *
  * @see docs/testing/DECISION-LOG.md - row D127, which refines D44.
  * @see docs/testing/DECISION-LOG.md - row D143, the non-ok body read.
- * @see docs/testing/DECISION-LOG.md - row D231, the opt-in forwarding header.
+ * @see docs/testing/DECISION-LOG.md - rows D231 and D346, the opt-in forwarding header.
  * @see docs/testing/TRACEABILITY-MATRIX.md - the unreachable chart branch as an
  *   assertion obligation.
  */
@@ -170,16 +166,16 @@ function describeTrendSeriesViolation(payload: unknown): string | null {
 }
 
 /**
- * Requests the trend series covering one date range, then rejects.
+ * Requests the trend series covering one date range, then resolves with it only if the
+ * response opted in with {@link FORWARD_TREND_SERIES_HEADER}, and otherwise rejects.
  *
- * Called as `getTrendData(dateRange)` at line 16 of
- * `frontend/src/components/Analytics` - a single argument carrying the whole range
- * object.
+ * Called by `frontend/src/components/Analytics` with a single argument carrying the whole
+ * range object.
  *
  * @param dateRange - Range whose two members become the `start` and `end` query
  *   parameters, interpolated verbatim.
- * @returns The fetched series, and only when the response opted in with
- *   {@link FORWARD_TREND_SERIES_HEADER}. Never resolves otherwise.
+ * @returns The fetched series, on the one path where the response carried
+ *   {@link FORWARD_TREND_SERIES_HEADER}.
  * @throws Error - When the response status falls outside 200-299. The body is read to
  *   completion and discarded first; the message names the request URL and that status,
  *   and carries nothing the body held.
@@ -209,7 +205,7 @@ export const getTrendData = async (dateRange: DateRange): Promise<TrendSeries> =
   const series = payload as TrendSeries;
 
   if (response.headers.get(FORWARD_TREND_SERIES_HEADER) === FORWARD_TREND_SERIES_VALUE) {
-    // The spec asked for the destructive path, having asserted what it destroys.
+    // The one resolving path, reached only when the response opted in by name.
     return series;
   }
 

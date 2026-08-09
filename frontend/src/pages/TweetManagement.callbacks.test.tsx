@@ -151,8 +151,8 @@ describe('pages/TweetManagement with its child substituted', () => {
      * The ceiling this page carries, reached for the first time here. A resolved lookup makes
      * `selectedTweet` truthy, so lines 44-49 build elements from `TweetCard` and `ResponseGenerator` -
      * two names line 2 imports and `@/components/TweetManagement` does not export. React refuses the
-     * first of them and tears the tree down. Asserted as current behaviour: supplying the components
-     * would be implementing a missing product feature.
+     * first of them and tears the tree down. Asserted as current behaviour; supplying the components is
+     * outside this programme's scope.
      */
     getTweetDetails.mockResolvedValue({ id: SELECTED_TWEET_ID, text: 'a selected tweet' });
     renderWithProviders(<TweetManagement />);

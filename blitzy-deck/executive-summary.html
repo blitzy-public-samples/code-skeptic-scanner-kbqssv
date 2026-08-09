@@ -3,26 +3,29 @@
 <head>
   <meta charset="utf-8" />
 
-  <!-- Origin allow-list for this file, delivered as exactly ONE policy element. A browser
-       enforces the *intersection* of every Content-Security-Policy it is given, so a second
-       tag cannot relax this one - it can only silently contradict it, which is what a
-       `connect-src 'none'` beside this line did to the source-map allowance below.
+  <!-- Origin allow-list for this file, delivered as exactly ONE policy element - and there
+       must not be a second: a browser enforces the intersection of every
+       Content-Security-Policy it is given, so an added tag can only contradict this one.
 
-       `default-src 'none'` blocks every destination not named here; only the pinned jsDelivr
-       origin and the Google Fonts pair may serve this file anything. reveal.js and Mermaid both
-       inject style elements at runtime and this deck's own style and bootstrap script are
-       inline, so those two directives admit 'unsafe-inline'. `img-src data:` covers the inline
-       favicon and `font-src data:` a font a stylesheet may inline. `connect-src` names the one
-       origin the scripts already come from, because reveal.js and lucide each end in a
-       sourceMappingURL comment that developer tools follow: naming it keeps an inspected load
-       free of policy violations, and it admits nothing the scripts themselves did not already
-       reach, since this file issues no fetch and no XHR of its own. `form-action 'none'` blocks
-       submission and `base-uri 'none'` blocks base-tag injection.
+       `default-src 'none'` blocks every destination not named here, so only the pinned
+       jsDelivr origin and the Google Fonts pair may serve this file anything. reveal.js and
+       Mermaid inject style elements at runtime and this deck's own style and bootstrap script
+       are inline, so those two directives admit 'unsafe-inline'. `img-src data:` covers the
+       inline favicon and `font-src data:` a font a stylesheet may inline. `connect-src` names
+       the jsDelivr origin the scripts themselves come from, which is what developer tools
+       follow for their sourceMappingURL comments; this file issues no fetch and no XHR.
+       `form-action 'none'` blocks submission and `base-uri 'none'` blocks base-tag injection.
 
        `frame-ancestors` is deliberately absent: a meta-delivered policy ignores it, and
        declaring it here would only log "the directive is ignored when delivered via a <meta>
        element" on every load. Anti-framing for this file has to come from an HTTP response
-       header. See docs/testing/DECISION-LOG.md. -->
+       header, so this file cannot deliver it: a reader served this deck inside someone else's
+       frame is unprotected against UI redress. `script-src 'unsafe-inline'` likewise stays,
+       because Rule 4 requires one self-contained file - so this policy restricts *destinations*
+       and pins bytes, and does not prevent inline execution. Those two residuals, and the fact
+       that the deck cannot render without reaching its two pinned origins, are recorded in
+       docs/testing/SECURITY-GAPS.md §5 with docs/testing/DECISION-LOG.md rows D207, D251
+       and D325. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none';
     script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
     style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com;
@@ -36,12 +39,12 @@
   <link rel="icon" href="data:," />
 
   <!-- Typography (CDN)
-       No Subresource Integrity on the stylesheet below, and none is possible: the
-       fonts.googleapis.com/css2 response is generated per user agent, so its bytes - and
-       therefore its hash - differ between browsers. It is a font declaration only; every
-       family degrades to the local fallbacks named in --font-* if it fails to load. The
-       three pinned runtimes and the reveal.js stylesheet, whose bytes are immutable, all
-       carry integrity attributes. Recorded as a residual, not an oversight. -->
+       The stylesheet below carries no Subresource Integrity attribute and none is possible:
+       the fonts.googleapis.com/css2 response is generated per user agent, so its bytes differ
+       between browsers and there are no fixed bytes to hash. It declares fonts only, and every
+       family degrades to the local fallbacks named in --font-* if it fails to load. The three
+       pinned runtimes and the reveal.js stylesheet, whose bytes are immutable, each carry a
+       digest. See docs/testing/DECISION-LOG.md row D222. -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
@@ -51,15 +54,11 @@
   <!--
     reveal.js 5.1.0 core stylesheet (CDN).
 
-    Every executable or style asset below carries a Subresource Integrity digest and
-    crossorigin="anonymous", so the browser refuses a byte that does not match the
-    build this deck was authored against - the version pin in the URL alone would not
-    detect a substituted artifact. The digests are sha384 over the exact bytes each
-    pinned URL served; regenerate them if a version is ever changed.
-
-    The Google Fonts stylesheet above carries no digest on purpose: that response is
-    generated per user agent, so it has no fixed bytes to pin, and it delivers no
-    executable code.
+    Every executable or style asset below carries a sha384 Subresource Integrity digest
+    and crossorigin="anonymous", so the browser refuses a byte that does not match the
+    build this deck was authored against. Each digest is over the exact bytes the pinned
+    URL served; regenerate them whenever a version changes.
+    See docs/testing/DECISION-LOG.md row D222.
   -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css"
     integrity="sha384-YgvgKeZJykuztG+iQPoZHNZENTFZvOcOJ/uRzmJTje6GHYN9zAw+y5rx/L8MQKA/"
@@ -843,8 +842,7 @@
       text-align: center;
     }
 
-    /* Generated diagram labels paint in full rather than being clipped to the
-       measured label box. */
+    /* Generated diagram labels paint in full; the measured label box does not clip them. */
 
     .reveal .slides section .mermaid svg foreignObject {
       overflow: visible;
@@ -1097,63 +1095,44 @@
       <section>
         <span class="eyebrow">Headline numbers</span>
         <h2>Where we started, and what we delivered</h2>
-        <p>No check had ever run here. This suite is the first.</p>
         <div class="kpi-grid">
           <div class="kpi-card">
             <span class="kpi-icon" aria-hidden="true"><i data-lucide="circle-slash" aria-hidden="true" focusable="false"></i></span>
             <span class="kpi-value">0%</span>
-            <span class="kpi-label">Coverage actually executed before this work, across the 33
-              modules targeted for testing</span>
+            <span class="kpi-label">Coverage executed before this work</span>
           </div>
           <div class="kpi-card">
             <span class="kpi-icon" aria-hidden="true"><i data-lucide="list-checks" aria-hidden="true" focusable="false"></i></span>
-            <span class="kpi-value">1,136</span>
-            <span class="kpi-label">Tests now passing, across five layers</span>
+            <span class="kpi-value">1,390</span>
+            <span class="kpi-label">Tests passing now</span>
           </div>
           <div class="kpi-card">
             <span class="kpi-icon" aria-hidden="true"><i data-lucide="gauge" aria-hidden="true" focusable="false"></i></span>
             <span class="kpi-value">93%</span>
-            <span class="kpi-label">Backend coverage against a 90% bar</span>
+            <span class="kpi-label">Backend coverage, 90% bar</span>
           </div>
           <div class="kpi-card">
             <span class="kpi-icon" aria-hidden="true"><i data-lucide="bug" aria-hidden="true" focusable="false"></i></span>
             <span class="kpi-value">42</span>
-            <span class="kpi-label">Deliberate defects, every one caught</span>
+            <span class="kpi-label">Deliberate defects, all caught</span>
           </div>
         </div>
       </section>
 
       <!-- Slide 3 - Architecture, after state -->
       <section>
-        <span class="eyebrow">Architecture after the change</span>
-        <h2>Five layers, one isolation boundary</h2>
-        <p>Every layer tests real product code, and all of them reach it through a single boundary
-          that shuts out the outside world.</p>
-        <pre class="mermaid deck-diagram-md">flowchart LR
-  subgraph L["Five test layers"]
+        <span class="eyebrow">Architecture</span>
+        <h2>Five layers, one boundary</h2>
+        <pre class="mermaid deck-diagram-md" role="img" aria-label="Test architecture after the change: five test layers - backend unit, backend integration, frontend unit, frontend component and browser flows - reach the product code under test through one isolation boundary.">flowchart LR
+  subgraph L["Layers"]
     A["Backend unit"]
     B["Backend integration"]
     C["Frontend unit"]
     D["Frontend component"]
     E["Browser flows"]
   end
-  GUARD["Isolation boundary<br/>no network<br/>no real credentials<br/>no dependence on the clock"]
-  subgraph SUT["Real product code under test"]
-    S1["Backend service"]
-    S2["Frontend screens<br/>mounted by a test-owned shell,<br/>not the product's own start-up"]
-  end
-  REPORTS["Coverage and<br/>test-result reports"]
-  DASH["CI dashboards"]
-  L1 --> GUARD
-  L2 --> GUARD
-  L3 --> GUARD
-  L4 --> GUARD
-  L5 --> GUARD
-  GUARD --> S1
-  GUARD --> S2
-  S1 --> REPORTS
-  S2 --> REPORTS
-  REPORTS --> DASH
+  L --> G["Isolation boundary<br/>nothing leaves the machine<br/>synthetic credentials only<br/>clock held still"]
+  G --> S["Product code"]
 </pre>
       </section>
 
@@ -1170,13 +1149,11 @@
       <section>
         <span class="eyebrow">Migration</span>
         <h2>Nothing was quietly dropped</h2>
-        <p>Every old test was accounted for in writing.</p>
         <div class="deck-split deck-split-table-wide">
           <div class="deck-col">
-            <pre class="mermaid">flowchart TB
-  X["Three foundations"] --> Y["Nothing loaded"]
-  Y --> Z["One foundation"]
-  Z --> W["Every suite passes"]
+            <pre class="mermaid" role="img" aria-label="Migration of the previous test files: three separate foundations became one foundation, on which every suite passes.">flowchart TB
+  A["Three foundations"] --> B["One foundation"]
+  B --> C["All suites pass"]
 </pre>
           </div>
           <div class="deck-col">
@@ -1189,15 +1166,15 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>Rewritten against the product</td>
+                  <td>Rewritten</td>
                   <td>7</td>
                 </tr>
                 <tr>
-                  <td>Skipped, reason stated</td>
+                  <td>Skipped with reason</td>
                   <td>3</td>
                 </tr>
                 <tr>
-                  <td>Retired, reason recorded</td>
+                  <td>Retired with reason</td>
                   <td>15</td>
                 </tr>
                 <tr>
@@ -1226,33 +1203,25 @@
           <span class="kpi-icon" aria-hidden="true"><i data-lucide="git-compare" aria-hidden="true" focusable="false"></i></span>
           <h2>Change was deliberately contained</h2>
         </div>
-        <p>Everything else tested unchanged.</p>
         <table class="deck-table-compact">
           <thead>
             <tr>
               <th>Change</th>
               <th>Why unavoidable</th>
-              <th>Risk</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td>One combined route file became a folder of separate modules</td>
-              <td>The application could not start, and that file did not even compile</td>
-              <td>No behaviour change: no new features, and the framework connects them by name.
-                Two reading risks are on record — three of the four modules are empty and could be
-                mistaken for a place to add endpoints, and the reordered parameters could be
-                mistaken for a changed interface</td>
+              <td>One route file became four modules</td>
+              <td>It did not compile</td>
             </tr>
             <tr>
-              <td>Four configuration entries were given the narrowest safe defaults</td>
-              <td>The product reads them while running but never declared them</td>
-              <td>No existing setting had its name or value altered. One risk is on record: the
-                permitted-origins list now defaults to empty, so an unconfigured deployment permits
-                none — narrower than today, where it crashes instead</td>
+              <td>Four settings given the narrowest defaults</td>
+              <td>Read while running, never declared</td>
             </tr>
           </tbody>
         </table>
+        <p>No behaviour changed; risks are logged.</p>
       </section>
 
       <!-- Slide 8 - Divider -->
@@ -1267,23 +1236,22 @@
       <!-- Slide 9 - Isolation -->
       <section>
         <span class="eyebrow">Isolation</span>
-        <h2>Tests cannot reach the outside world</h2>
-        <p>An unguarded test now fails loudly instead of reaching outside.</p>
+        <h2>Tests cannot reach off the machine</h2>
         <div class="kpi-grid">
           <div class="kpi-card">
             <span class="kpi-icon" aria-hidden="true"><i data-lucide="cloud-off" aria-hidden="true" focusable="false"></i></span>
             <span class="kpi-value">Live cloud</span>
-            <span class="kpi-label">Reached by one unguarded database call</span>
+            <span class="kpi-label">Reached by one unguarded call</span>
           </div>
           <div class="kpi-card">
             <span class="kpi-icon" aria-hidden="true"><i data-lucide="timer-off" aria-hidden="true" focusable="false"></i></span>
             <span class="kpi-value">300s</span>
-            <span class="kpi-label">An unguarded listener hung on a live connection</span>
+            <span class="kpi-label">An unguarded listener hung</span>
           </div>
         </div>
-        <pre class="mermaid deck-diagram-sm">flowchart LR
-  T["A test"] --> G["Guards"]
-  G --> S["Stand-ins in memory"]
+        <pre class="mermaid deck-diagram-sm" role="img" aria-label="How a test is isolated: a test's calls reach the guards, which answer from fakes held in memory and block anything addressed off the machine.">flowchart LR
+  T["Test"] --> G["Guards"]
+  G --> S["Fakes"]
   G -.-> X["Outside blocked"]
 </pre>
       </section>
@@ -1299,26 +1267,16 @@
 
       <!-- Slide 11 - Coverage bars and the authored pipeline -->
       <section>
-        <span class="eyebrow">Enforcement and reporting</span>
-        <h2>The pipeline now enforces the standard</h2>
-        <p>The 90% bar is the client's own acceptance criterion. Reused: both coverage uploads,
-          labels unchanged. Added: machine-readable results, kept as downloads, and a readiness
-          check. Two pre-existing checks, outside this work, still halt the first job.</p>
-        <p>Runners fail the build below each bar; two pre-existing lint steps fail ahead of
-          them.</p>
+        <span class="eyebrow">Enforcement</span>
+        <h2>Runners fail below each bar</h2>
         <div class="deck-split deck-split-table-wide">
           <div class="deck-col">
-            <span class="eyebrow">Trigger and jobs</span>
-            <pre class="mermaid">flowchart TB
-  P["Push or pull request<br/>to the main branch"] --> B["Build job"]
-  P --> E["End-to-end job<br/>independent"]
-  B --> L["Lint and type check<br/>pre-existing, still failing<br/>out of scope here"]
-  L --> BT["Backend tests<br/>90% gate<br/>the client's own bar"]
-  L --> FT["Frontend tests<br/>80% gate"]
-  BT --> R["Coverage and<br/>test-result reports"]
-  FT --> R
+            <pre class="mermaid" role="img" aria-label="Continuous integration flow: a push starts an independent build job and browser job; the build job runs the coverage gates, and both jobs feed the reports.">flowchart TB
+  P["Push"] --> B["Build job"]
+  P --> E["Browser job"]
+  B --> G["Gates"]
+  G --> R["Reports"]
   E --> R
-  R --> D["CI dashboards<br/>labels unchanged"]
 </pre>
           </div>
           <div class="deck-col">
@@ -1327,29 +1285,22 @@
                 <tr>
                   <th>Scope</th>
                   <th>Bar</th>
-                  <th>Shape</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>Backend core, services, tasks, data</td>
+                  <td>Backend</td>
                   <td>90%</td>
-                  <td>One combined figure</td>
                 </tr>
                 <tr>
-                  <td>Frontend state, shapes, services</td>
+                  <td>Frontend</td>
                   <td>80%</td>
-                  <td>Each checked alone</td>
-                </tr>
-                <tr>
-                  <td>Every test file loads</td>
-                  <td>Zero load errors</td>
-                  <td>A one-command readiness check, run locally. Not yet a pipeline step</td>
                 </tr>
               </tbody>
             </table>
           </div>
         </div>
+        <p>Pipeline authored, not yet run.</p>
       </section>
 
       <!-- Slide 12 - Divider -->
@@ -1364,24 +1315,15 @@
       <!-- Slide 13 - Documented limits and open risks -->
       <section>
         <span class="eyebrow">Documented limits</span>
-        <h2>What cannot be tested, and why</h2>
-        <p>Product gaps, not test gaps. Closing them means building features this engagement did
-          not build.</p>
-        <pre class="mermaid deck-diagram-md">flowchart TB
-  subgraph L["Five documented limits"]
-    A["Screens cannot open<br/>shared helpers were<br/>never published"]
-    B["Tweet cards never<br/>appear; the card<br/>exists nowhere"]
-    C["A record lookup<br/>always errors; no<br/>identifier to match"]
-    D["Charts never draw;<br/>the chart engine is<br/>never switched on"]
-    E["No self-reported<br/>health; no metrics,<br/>tracing or probe"]
-  end
-  A --> H1["Test written, then<br/>skipped with a<br/>stated reason"]
-  B --> H2["Today's behaviour<br/>pinned down; gap<br/>recorded"]
-  C --> H2
-  D --> H3["Measured in a real<br/>browser: it fails<br/>unhandled and<br/>unmounts the view"]
-  E --> H4["Recorded for the<br/>backlog, not built"]
+        <h2>Five product gaps, not test gaps</h2>
+        <pre class="mermaid deck-diagram-md" role="img" aria-label="Five documented limits: blocked screens are covered by tests skipped with a stated reason; missing cards, erroring lookups and blank charts have today's behaviour pinned down; absent self-reported health is recorded for the backlog.">flowchart TB
+  A["Screens blocked"] --> S["Skipped"]
+  B["Cards missing"] --> P["Pinned"]
+  C["Lookup errors"] --> P
+  D["Charts blank"] --> P
+  E["Health absent"] --> Q["Backlogged"]
 </pre>
-        <p class="deck-note">Also open, and escalated rather than silent: an empty allowed-origin default and one deferred security patch.</p>
+        <p class="deck-note">Also open: lint failures, an empty allowed-origin default, a blocked vendor fix.</p>
       </section>
 
       <!-- Slide 14 - Divider -->
@@ -1396,22 +1338,22 @@
       <!-- Slide 15 - Onboarding and the delivered-to-backlog timeline -->
       <section>
         <span class="eyebrow">Handover</span>
-        <h2>A new engineer starts on day one</h2>
+        <h2>A new engineer starts unaided</h2>
         <div class="icon-row">
-          <span class="icon-row-item"><i data-lucide="server" aria-hidden="true" focusable="false"></i>Backend guide</span>
-          <span class="icon-row-item"><i data-lucide="monitor" aria-hidden="true" focusable="false"></i>Frontend guide</span>
-          <span class="icon-row-item"><i data-lucide="globe" aria-hidden="true" focusable="false"></i>End-to-end guide</span>
-          <span class="icon-row-item"><i data-lucide="book-open" aria-hidden="true" focusable="false"></i>Decision log</span>
+          <span class="icon-row-item"><i data-lucide="server" aria-hidden="true" focusable="false"></i>Backend</span>
+          <span class="icon-row-item"><i data-lucide="monitor" aria-hidden="true" focusable="false"></i>Frontend</span>
+          <span class="icon-row-item"><i data-lucide="globe" aria-hidden="true" focusable="false"></i>Browser</span>
+          <span class="icon-row-item"><i data-lucide="book-open" aria-hidden="true" focusable="false"></i>Decisions</span>
         </div>
-        <pre class="mermaid deck-diagram-sm">flowchart LR
-  A["Delivered<br/>five layers<br/>gates enforced"] --> B["Signed off<br/>browser run<br/>of suite and summary"]
-  B --> C["Next<br/>one pipeline run<br/>on the declared runtime"]
-  C --> D["Then<br/>prioritised backlog<br/>of known gaps"]
+        <pre class="mermaid deck-diagram-sm" role="img" aria-label="From delivery to backlog: delivered, then signed off, then one pipeline run, then a prioritised backlog of the known gaps.">flowchart LR
+  A["Delivered"] --> B["Signed off"]
+  B --> C["Pipeline run"]
+  C --> D["Backlog"]
 </pre>
         <ul>
-          <li>Three commands to install, three to run, per layer.</li>
-          <li>Every pitfall that cost time is written down.</li>
-          <li>A prioritised backlog of what was left alone.</li>
+          <li>Three commands install, three run.</li>
+          <li>Every pitfall is recorded.</li>
+          <li>A prioritised backlog remains.</li>
         </ul>
       </section>
 
@@ -1421,11 +1363,13 @@
         <h2>Quality is now measurable</h2>
         <div class="accent-bar"></div>
         <ul>
-          <li>Five layers deliver 1,136 passing tests, from zero.</li>
-          <li>Coverage bars enforced by the runners at 90 and 80.</li>
-          <li>Browser run: nineteen flows passed, none skipped.</li>
-          <li>Forty-two deliberate defects each turned the suite red.</li>
+          <li>From zero executed tests to a green suite.</li>
+          <li>Coverage bars enforced at 90 and 80.</li>
+          <li>Nineteen browser flows passed, none skipped.</li>
         </ul>
+        <p class="deck-note">This file loads three pinned third-party libraries, one of them
+          advisory-affected. Nothing it shows comes from outside the file, so that exposure is
+          bounded, and it is recorded with the other open items.</p>
         <div class="brand-lockup"><i data-lucide="zap" aria-hidden="true" focusable="false"></i><span>Blitzy</span></div>
       </section>
 
@@ -1435,7 +1379,14 @@
   <!-- Pinned CDN runtimes, each locked to the exact bytes jsDelivr serves for
        its version by a sha384 subresource integrity hash: reveal.js 107670
        bytes, mermaid 2571838 bytes, lucide 355975 bytes. A mismatch makes the
-       browser refuse to execute the file. -->
+       browser refuse to execute the file.
+
+       The mermaid pin is advisory-affected - 11.4.0 carries published XSS,
+       prototype-pollution and denial-of-service reports - and Rule 4 fixes the
+       version, so the pin is deliberate rather than clean. Every diagram source
+       in this file is a literal, so no untrusted input reaches the renderer.
+       That bound, and the deck's dependence on both pinned origins to render at
+       all, are recorded in docs/testing/SECURITY-GAPS.md §5 (D325). -->
   <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"
     integrity="sha384-M/JtqCVlLcK9lwVnBnMXP0V577CBULkjodKsR/PITOe4MSKNbbwqCemEyluOw0+5"
     crossorigin="anonymous" referrerpolicy="no-referrer"></script>
@@ -1458,6 +1409,10 @@
 
       mermaid.initialize({
         startOnLoad: false,
+        /* Mermaid 11.4.0 already defaults to 'strict'; declared so the posture is
+           read off the file rather than inherited from a pinned, advisory-affected
+           version. See docs/testing/SECURITY-GAPS.md row 17 (D325). */
+        securityLevel: 'strict',
         theme: 'base',
         themeVariables: {
           primaryColor: '#F2F0FE',

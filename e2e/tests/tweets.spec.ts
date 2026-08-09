@@ -2,8 +2,8 @@
  * End-to-end coverage of the harness client route `/tweets`.
  *
  * Subject: `TweetList`, the named export of `frontend/src/components/TweetManagement`,
- * which `e2e/harness/main.tsx` L71 mounts at `/tweets` with a module-scope `filters`
- * object. That module is an extension-less file; `e2e/vite.harness.config.ts` resolves and
+ * which `e2e/harness/main.tsx` mounts at `/tweets` with a module-scope `filters` object.
+ * That module is an extension-less file; `e2e/vite.harness.config.ts` resolves and
  * transforms it, and appends the two names it imports that no module declares - `getTweets`
  * from `services/twitterService` and `TweetCard` from itself - each carrying `undefined`.
  *
@@ -15,18 +15,13 @@
  * because the mount fetch fails on every one of them; nothing else is tolerated. Each test
  * installs its own interception before navigating, and holds no state shared with another.
  *
- * What each test asserts, and the production lines it reads from:
- *
- * | Test | Behaviour asserted |
- * |------|--------------------|
- * | 1 | `components/TweetManagement` L58 renders `div.tweet-list`, and neither the map at L59-L61 nor the loading node at L62 puts anything inside it |
- * | 2 | `components/TweetManagement` L34-L36 catch the call at L32 and report it through `console.error`, rather than letting it reach the page |
- * | 3 | That call throws on an import carrying `undefined` before `services/api.ts` L9 reaches axios, so the collection request L8 builds is never issued |
- *
- * The container renders with no child, and therefore with no bounding box.
+ * The mount call at `components/TweetManagement` L32 throws on an import carrying `undefined`
+ * before `services/api.ts` reaches axios, so no collection request is ever issued and L34-L36
+ * catch it and report it through `console.error`. The L58 container therefore renders with no
+ * child, and so with no bounding box.
  *
  * Rendering the `undefined` `TweetCard` needs a non-empty collection to reach the map at
- * L59-L61, which L32 throwing makes unreachable from this route; that ceiling is covered by
+ * L59-L61, which that throw makes unreachable from this route; that ceiling is covered by
  * `frontend/src/components/TweetManagement.test.tsx`.
  *
  * @see e2e/README.md - adding a spec to this directory.
@@ -45,7 +40,7 @@ import {
 /* Oracles                                                                    */
 /* -------------------------------------------------------------------------- */
 
-/** Client route `e2e/harness/main.tsx` L71 mounts the subject at. Resolved against `use.baseURL`. */
+/** Client route the harness mounts the subject at. Resolved against `use.baseURL`. */
 const TWEET_LIST_ROUTE = '/tweets';
 
 /** Container element `components/TweetManagement` L58 renders. */
@@ -57,8 +52,9 @@ const TWEET_LIST_CONTAINER = 'div.tweet-list';
  * for {@link TWEET_LIST_ROUTE} also matches the first of them, which is what every handler's
  * navigation guard hands back to the harness.
  *
- * Both are anchored to {@link HARNESS_ORIGIN}. A host-agnostic `'**\/tweets*'` would also claim a
- * request addressed to a foreign host that shares the path, and fulfilling it would hide that
+ * Both are anchored to {@link HARNESS_ORIGIN}, so each claims only requests addressed to the harness
+ * origin. A host-agnostic `'**\/tweets*'` also claims a request addressed to a foreign host that
+ * shares the path, and fulfilling it hides that
  * destination drift from the `noEgress` fixture's ledger. Anchored, such a request falls through
  * to that fixture, which aborts and records it. `./isolation.spec.ts` asserts exactly that.
  */
@@ -150,8 +146,6 @@ test.describe('harness route /tweets - TweetList (frontend/src/components/TweetM
   }) => {
     const interceptedUrls: string[] = [];
 
-    // Here that record is the subject rather than a tolerated side effect, and the assertions below
-    // read it out of the fixture's ledger.
     browserDiagnostics.allow(EXPECTED_FETCH_FAILURE);
 
     for (const glob of TWEET_COLLECTION_GLOBS) {
@@ -180,7 +174,6 @@ test.describe('harness route /tweets - TweetList (frontend/src/components/TweetM
 
       const [reported] = reportedFetchFailures(browserDiagnostics);
 
-      // One message carries the production prefix and what the call at L32 was made against.
       expect(reported).toMatch(UNCALLABLE_IMPORT);
       expect(reported).toMatch(MISSING_EXPORT_NAME);
 

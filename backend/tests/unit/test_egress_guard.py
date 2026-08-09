@@ -21,10 +21,16 @@ Positive, so the guard is not merely "deny all":
   ``socket.connect`` and through ``socket.create_connection``;
 * ``socket.socketpair()`` still works, which asyncio's proactor self-pipe and
   starlette's ``TestClient`` portal both need;
-* a bind to the unspecified address of a family authorizes that family's loopback
-  addresses on that port, and only that port.
+* a loopback bind - by address or by name - is admitted and recorded, and an
+  ``AF_UNIX`` path is bindable.
 
 Negative, one per over-admission the registry must not make:
+
+* **publication** - a bind to ``0.0.0.0``, to ``::``, to the empty host or to a
+  routable address is **refused outright**, so the suite cannot publish a listener
+  on an interface this machine shares. The registry consequently holds no
+  unspecified endpoint, and the admission path carries no widening to describe
+  one;
 
 * **transport** - a UDP bind does not authorize a TCP connect on the same port,
   and the reverse;
@@ -35,7 +41,11 @@ Negative, one per over-admission the registry must not make:
 * **lifetime** - closing or detaching the socket withdraws the authorization, so a
   port another process rebinds is not reachable;
 * **AF_UNIX** - a path this process did not bind is refused, and a path it did
-  bind is admitted only for itself.
+  bind is admitted only for itself;
+* **re-entrancy** - the registry lock is an ``RLock``, so the weak-reference
+  finalizer that releases an endpoint during garbage collection cannot deadlock a
+  thread that is already inside the registry. Both cases are bounded by a timeout,
+  so a regression to a plain ``Lock`` fails a test rather than hanging the run.
 
 Isolation
 ---------
@@ -56,6 +66,7 @@ the branch assertable on either platform.
 
 import socket
 import sys
+import threading
 
 import pytest
 
@@ -81,6 +92,11 @@ SUBSTITUTE_UNIX_FAMILY = -1
 
 UNIX_PATH = "/tmp/blitzy-owned.sock"
 FOREIGN_UNIX_PATH = "/tmp/blitzy-foreign.sock"
+
+#: Seconds the two re-entrancy cases wait before declaring a deadlock. Every
+#: operation they time is a dictionary update under a lock, so a second is orders
+#: of magnitude more than the work needs and short enough to fail promptly.
+REENTRY_TIMEOUT = 1.0
 
 
 class _StandInSocket:
@@ -210,42 +226,86 @@ def test_socketpair_still_works():
         right.close()
 
 
-def test_a_wildcard_bind_authorizes_its_loopback_address():
-    """A bind to ``0.0.0.0`` answers on every local address of its family."""
+@pytest.mark.parametrize("host", ["0.0.0.0", ""])
+def test_a_wildcard_bind_is_refused(host):
+    """A bind to every local interface never happens, so it authorizes nothing.
+
+    ``0.0.0.0`` and the empty host make the same request: accept connections on
+    every interface this machine has. This host runs many clones of this
+    repository at once, so a listener there is reachable by all of them and by
+    anything else that can route to the machine, which is neither offline nor
+    isolated.
+
+    The guard refuses the ``bind`` itself rather than declining to record it, so
+    the socket is never published and no widening is needed in the admission path
+    to describe what such a socket would have answered on.
+    """
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.bind(("0.0.0.0", 0))
-    listener.listen(1)
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        assert (
-            suite_conftest._is_local_address(
-                probe,
-                (LOOPBACK_V4, _port_of(listener)),
-            )
-            is True
-        )
+        with pytest.raises(suite_conftest.UnmockedNetworkAccessError) as excinfo:
+            listener.bind((host, 0))
+
+        reported = str(excinfo.value)
+
+        assert "socket.bind" in reported
+        assert repr((host, 0)) in reported
     finally:
-        probe.close()
         listener.close()
 
 
-def test_a_wildcard_bind_authorizes_no_other_port():
-    """The widening is one port wide, not the whole loopback interface."""
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.bind(("0.0.0.0", 0))
-    listener.listen(1)
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+def test_an_ipv6_wildcard_bind_is_refused():
+    """``::`` is the IPv6 spelling of the same request, and is refused too."""
+    listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
     try:
-        assert (
-            suite_conftest._is_local_address(
-                probe,
-                (LOOPBACK_V4, _port_of(listener) + 1),
-            )
-            is False
-        )
+        with pytest.raises(suite_conftest.UnmockedNetworkAccessError):
+            listener.bind(("::", 0))
     finally:
-        probe.close()
         listener.close()
+
+
+def test_a_bind_to_a_routable_address_is_refused():
+    """A routable bind is refused one layer earlier than it used to be.
+
+    The classifier used to record nothing for such a bind, which left the socket
+    bound and reachable while merely unauthorized as a connect *target*. Refusing
+    the call means the listener never exists at all.
+    """
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        with pytest.raises(suite_conftest.UnmockedNetworkAccessError):
+            listener.bind((ROUTABLE_HOST, 0))
+    finally:
+        listener.close()
+
+
+@pytest.mark.parametrize("host", [LOOPBACK_V4, OTHER_LOOPBACK_V4, "localhost"])
+def test_a_loopback_bind_is_admitted(host):
+    """The permitted side, so the refusal above is not a deny-all."""
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.bind((host, 0))
+
+        assert suite_conftest._is_port_owned_by_this_process(_port_of(listener)) is True
+    finally:
+        listener.close()
+
+
+def test_a_family_whose_address_cannot_be_read_is_not_bindable():
+    """Classification fails closed: an unknown family is refused, not admitted."""
+    assert (
+        suite_conftest._is_bindable_address(
+            _StandInSocket(SUBSTITUTE_UNIX_FAMILY - 1), (LOOPBACK_V4, 0)
+        )
+        is False
+    )
+
+
+def test_a_unix_path_is_bindable(unix_family):
+    """An ``AF_UNIX`` path is filesystem-scoped, so it publishes nothing to a network."""
+    assert (
+        suite_conftest._is_bindable_address(_StandInSocket(unix_family), UNIX_PATH)
+        is True
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -490,4 +550,64 @@ def test_releasing_a_unix_path_withdraws_it(unix_family):
 
     suite_conftest._release_socket_endpoint(stand_in)
 
+    assert suite_conftest._is_local_address(stand_in, UNIX_PATH) is False
+
+
+# --------------------------------------------------------------------------- #
+# The registry lock is re-entrant, because a finalizer releases through it.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_registry_lock_can_be_acquired_twice_by_one_thread():
+    """The lock is re-entrant, which a plain ``Lock`` is not.
+
+    ``_release_collected_endpoint`` is a weak-reference callback, so the garbage
+    collector can run it on a thread that is already inside
+    ``_acquire_endpoint``. With a non-reentrant lock that thread waits for itself
+    and the run stops there, which is why ``DECISION-LOG.md`` row D224 records the
+    lock as an ``RLock``.
+
+    Bounded by ``timeout`` rather than left to block, so a regression fails this
+    test instead of hanging the suite.
+    """
+    assert suite_conftest._OWNED_ENDPOINTS_LOCK.acquire(timeout=REENTRY_TIMEOUT) is True
+    try:
+        reacquired = suite_conftest._OWNED_ENDPOINTS_LOCK.acquire(
+            timeout=REENTRY_TIMEOUT
+        )
+        assert reacquired is True, (
+            "the endpoint registry lock is not re-entrant, so a weakref finalizer "
+            "firing inside a held lock would deadlock the run"
+        )
+        suite_conftest._OWNED_ENDPOINTS_LOCK.release()
+    finally:
+        suite_conftest._OWNED_ENDPOINTS_LOCK.release()
+
+
+def test_a_finalizer_can_release_an_endpoint_from_inside_the_held_lock(unix_family):
+    """The functional half: the release path re-enters and completes.
+
+    Run on a worker thread with a bounded join, so a non-reentrant lock shows up
+    as a thread that never finishes rather than as a suite that never returns.
+    """
+    stand_in = _StandInSocket(unix_family)
+    endpoint = suite_conftest._endpoint_of(unix_family, None, UNIX_PATH)
+    suite_conftest._acquire_endpoint(stand_in, endpoint)
+    completed = threading.Event()
+
+    def release_while_holding():
+        with suite_conftest._OWNED_ENDPOINTS_LOCK:
+            # The same call the weakref callback makes, from a frame that already
+            # holds the lock.
+            suite_conftest._release_socket_endpoint(stand_in)
+        completed.set()
+
+    worker = threading.Thread(target=release_while_holding, daemon=True)
+    worker.start()
+    worker.join(REENTRY_TIMEOUT)
+
+    assert completed.is_set(), (
+        "releasing an endpoint from inside the held registry lock did not "
+        "complete, which is the deadlock a non-reentrant lock produces"
+    )
     assert suite_conftest._is_local_address(stand_in, UNIX_PATH) is False

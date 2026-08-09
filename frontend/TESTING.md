@@ -91,9 +91,9 @@ Install the `frontend` tree **before** the `e2e` tree: the harness aliases React
 An `EBADENGINE` warning naming a **test** package is a different matter: it means a pin has drifted
 and the toolchain no longer matches the runtime. Investigate that one.
 
-### The six commands
+### The seven commands
 
-All six are declared in [`package.json`](./package.json) and all are run from `frontend/`.
+All seven are declared in [`package.json`](./package.json) and all are run from `frontend/`.
 
 | Command | Runs | Use it for |
 | --- | --- | --- |
@@ -101,21 +101,27 @@ All six are declared in [`package.json`](./package.json) and all are run from `f
 | `npm run test:watch` | `jest --watch` | Iterating on one suite. Needs a git checkout to diff against. |
 | `npm run test:coverage` | `jest --coverage` | A local coverage report plus the `coverageThreshold` gate. |
 | `npm run test:ci` | `jest --ci --coverage --watchAll=false` | **What CI runs.** Coverage, the gate, and every artifact in §[7](#7-coverage-gates-and-artifacts). |
-| `npm run test:list` | `jest --listTests` | The readiness check — every collectable test file, no assertion evaluated. **Also a CI step**, ahead of `test:ci`; see §[9](#9-observability-of-this-suite). |
+| `npm run test:list` | `jest --listTests` | **Discovery.** Which files a run would pick up. It imports nothing, so a module that no longer loads is listed exactly like a healthy one. **Also a CI step**, ahead of `test:load`. |
+| `npm run test:load` | `jest --ci --watchAll=false --runInBand --reporters=default -t "__readiness_probe_that_matches_no_test__"` | **The readiness gate.** Transforms and imports every suite and everything in its import graph, then runs no test body. Exits non-zero when one fails to load. **Also a CI step**, ahead of `test:ci`; see §[9](#9-observability-of-this-suite). |
 | `npm run test:e2e` | `npm --prefix ../e2e run test` | Hands off to the Playwright suite. Every e2e command goes through the `e2e` package, never `npx` from the repository root (`D49`). |
 
 ### Targeted runs
 
+Every example below goes through a `package.json` script, so the runner is always
+`frontend/node_modules/.bin/jest`. Anything after `--` is passed straight to it.
+
 ```bash
-npx jest src/store/tweetSlice.test.ts          # one file
-npx jest -t "does not refetch at 29999 ms"     # one test, by name
-npx jest --listTests                           # discovery only: which files match, nothing loaded
-npx jest --ci --watchAll=false --runInBand \
-  -t "__readiness_probe_that_matches_no_test__"  # loads and transforms every file, runs no test body
+npm test -- src/store/tweetSlice.test.ts          # one file
+npm test -- -t "does not refetch at 29999 ms"     # one test, by name
+npm run test:list                                 # discovery only: which files match, nothing loaded
+npm run test:load                                 # loads and transforms every file, runs no test body
 ```
 
-The last of those is the readiness gate described in §[9](#9-observability-of-this-suite); `--listTests`
-is not, because it resolves no import.
+The last of those is the readiness gate described in §[9](#9-observability-of-this-suite); `test:list`
+is not, because it resolves no import. Use the scripts rather than assembling the flags by hand: the
+readiness script carries `--reporters=default`, and without it the probe's own all-skipped result would be
+written over `reports/jest-junit.xml` by the configured `jest-junit` reporter. Both are scripts rather than
+ad-hoc invocations, so the command you run locally is the command CI runs.
 
 The `-t` pattern matches the full test name — every enclosing `describe` title and the leaf title,
 joined by single spaces. That is exactly the string the JUnit report puts in `<testcase name>`
@@ -390,6 +396,16 @@ test can widen is exactly the order-dependent state this layer exists to elimina
 deliberately drives some other origin registers a handler for that exact URL with `server.use(...)`
 for the duration of one test.
 
+**A `server.use(...)` override names its origin in full too, and that is not a stylistic preference.**
+A wildcard override such as `rest.get('*/tweets', …)` answers the path on *any* host, and because it
+answers, `onUnhandledRequest` never fires — so the one mechanism that would report a request leaving for
+a foreign origin is bypassed by the very handler that was supposed to be scoped to one test. There is a
+test for this: `src/test-utils/setup-jest.test.ts` installs an override against the allowed origin and
+then drives the same path on a remote one, asserting the override recorded nothing, the request was never
+performed, and the breach is in the ledger as `kind: 'unhandled-request'` with the exact URL. The reason
+that test exists is that this file's own override had been written host-agnostically, which made the suite
+most responsible for the guarantee the one contradicting it (`D322`).
+
 #### Why the base URL is the string `undefined`
 
 `src/services/api.ts` reads `process.env.REACT_APP_API_BASE_URL` **once, at module scope**, and
@@ -406,10 +422,19 @@ isolation ledger and *then* calls `print.error()`, which reports it and raises s
 it.
 
 The ordering is the point. An error raised inside the request lifecycle is lost by every caller in this
-codebase: `getLatestTweets` and `generateTweetResponse` log and rethrow a *replacement* error, the
-`TweetList` component catches and logs, and `RealTimeFeed` catches nothing at all and leaves an
-unhandled rejection. What survives is the ledger entry, and the global `afterEach` throws on it — so
-the test that caused the escape is the test that fails (`D136`).
+codebase, though they lose it in different ways, and the difference matters when you write the oracle:
+
+| Caller | What it does with the error |
+| --- | --- |
+| `twitterService.getLatestTweets` / `getTweetDetails` | logs it, then `throw error` — the **original** object, so an `AxiosError` arrives at the caller as an `AxiosError` |
+| `llmService.generateTweetResponse` | logs it, then throws a **replacement**: `new Error('Failed to generate tweet response')`. The original is only in the log |
+| `TweetList` (`src/components/TweetManagement`) | catches and logs; nothing propagates |
+| `RealTimeFeed` (`src/components/Dashboard`) | catches nothing at all, leaving an unhandled rejection |
+
+Assert accordingly: a `getLatestTweets` test can match the transport error's own message, a
+`generateTweetResponse` test must expect the fixed replacement string and can never see the cause.
+What survives all four is the ledger entry, and the global `afterEach` throws on it — so the test that
+caused the escape is the test that fails (`D136`).
 
 This is required rather than defensive. Before interception was in place, an unmocked axios call opened
 a real socket and produced `Error: connect ECONNREFUSED 127.0.0.1:80`, and because the rejection
@@ -497,6 +522,7 @@ emits:
 ```ts
 import { rest } from 'msw';
 import { server } from '../test-utils/msw-server';
+import { fetchTweets } from './api';
 
 it('surfaces a server error', async () => {
   server.use(
@@ -504,7 +530,10 @@ it('surfaces a server error', async () => {
       res(ctx.status(500), ctx.text('Internal Server Error')),
     ),
   );
-  // … drive the subject and assert
+
+  const caught = await fetchTweets(1, 10).catch((error: unknown) => error);
+
+  expect(caught).toMatchObject({ response: { status: 500 } });
 });
 ```
 
@@ -606,7 +635,15 @@ gated scopes is visible in the report even though it does not fail the run.
 Every figure below is a measurement rather than a target, so it carries where it came from. Re-measure
 before quoting any of it — a number that outlives the tree it was taken on is a claim, not evidence.
 
-Suites: 3 skipped, 21 passed, 21 of 24 total. Tests: 24 skipped, 346 passed, 370 total. 0 snapshots.
+| | |
+| --- | --- |
+| Command | `npm run test:ci` from `frontend/`, which is `jest --ci --coverage --watchAll=false` |
+| Runner | `jest` 29.7.0 with `ts-jest` 29.4.12 and `jest-environment-jsdom` 29.5.0, installed from [`package.json`](./package.json) |
+| Runtime | Node v22.23.1 / npm 10.9.8, Windows |
+| Artifacts | `frontend/reports/jest-junit.xml` for the counts (root `tests="371" failures="0" errors="0"`, 24 `<testsuite>` children) and `frontend/coverage/coverage-summary.json` for every percentage in the table |
+| Commit | Recorded by the tooling, not written here: `python ../docs/testing/dashboard-extract.py` prints the branch and commit of the tree it read in its §1.0 block, so re-run it beside the suite and quote that rather than a hash copied into prose |
+
+Suites: 3 skipped, 21 passed, 21 of 24 total. Tests: 24 skipped, 347 passed, 371 total. 0 snapshots.
 
 The 24 skips are the three page suites that cannot mount, and every one of them carries its own
 blocker reason — the skip is per test, not a blanket `describe.skip`, so a skipped identity still
@@ -639,7 +676,8 @@ override, which exits **1** with
 
 ### Artifacts
 
-`npm run test:ci` writes all six. Other files depend on these exact paths, so do not relocate them.
+`npm run test:ci` writes the first six; the seventh comes from the readiness step. Other files depend on
+these exact paths, so do not relocate them.
 
 | Path | Written by | Consumed by |
 | --- | --- | --- |
@@ -647,7 +685,8 @@ override, which exits **1** with
 | `frontend/coverage/lcov.info` and `coverage/lcov-report/` | `lcov` | local HTML browsing, most IDE gutters |
 | `frontend/coverage/coverage-summary.json` | `json-summary` | the dashboard in [`../docs/testing/DASHBOARD-TEMPLATE.md`](../docs/testing/DASHBOARD-TEMPLATE.md) |
 | `frontend/coverage/cobertura-coverage.xml` | `cobertura` | CI coverage annotators |
-| `frontend/reports/jest-junit.xml` | the `jest-junit` reporter | CI test reporting |
+| `frontend/reports/jest-junit.xml` | the `jest-junit` reporter, on a real suite run only | CI test reporting |
+| `frontend/reports/load-tests.txt` | the readiness step's `tee` around `npm run test:load` — written by CI, and by the documented local sequence | the readiness row of the dashboard's extractor |
 
 `'json'` has to stay in `coverageReporters`: it is the reporter that writes `coverage-final.json`, which
 is the file the pre-existing `frontend`-flagged Codecov step asks for (`D36`). That step's path was
@@ -686,40 +725,45 @@ there is no global coverage threshold. Do not spend time chasing them.
 | `src/index.tsx` — 0% | It calls `renderApp()` at module scope, so importing it would execute a full `ReactDOM.render` against the real store. No test imports it. |
 | Three of four page modules cannot mount | `useAppDispatch` / `useAppSelector` are not exported by `src/store/index.ts`. `src/pages/Dashboard.test.tsx` (8 tests), `src/pages/Configuration.test.tsx` (10) and `src/pages/Analytics.test.tsx` (6) are written, collected and skipped **per test**, each skip naming the missing export and the line that raises; `src/pages/TweetManagement.test.tsx` runs (`D215`). |
 | The tweet-rendering branch of both list components | `TweetCard` is imported by `src/components/Dashboard` and by `src/components/TweetManagement` — the latter **from itself** — and is defined nowhere. A non-empty list yields React's "Element type is invalid … got: undefined". The suites assert that diagnostic rather than silencing it (`D156`). |
-| Chart.js construction in `src/components/Analytics` | It imports the tree-shakeable `{ Chart }` and never calls `Chart.register`, so construction can never succeed — in a real browser either. The suite asserts what it can reach; the missing-registration failure itself is **unverified**, and the paragraph below says exactly which part of that is evidenced and which is not. |
+| Chart.js construction in `src/components/Analytics` | It imports the tree-shakeable `{ Chart }` and never calls `Chart.register`, so a working chart can never be produced — in a real browser either. What *is* produced there is a failure, and it is asserted: see the section below for which layer observes which part. |
 
-### The missing `Chart.register` is an unverified ceiling
+### The missing `Chart.register` is a ceiling, and it is asserted one layer up
 
-Be precise about this one, because it is easy to overstate. Three things are asserted by executing
-tests, and one is not:
+Be precise about this one, because it is easy to overstate in either direction. Four behaviours are
+asserted by executing tests, and no part of the ceiling is left unevidenced:
 
 | Behaviour | Where | State |
 | --- | --- | --- |
 | The subject constructs one chart, on `canvas#trendChart`, with the configuration it owns | `Analytics.test.tsx`, with `Chart` replaced by an inert spy | **Asserted** |
 | The subject constructs no chart when `getTrendData` resolves falsy, and swallows and logs a rejection without reaching `renderCharts` | `Analytics.test.tsx` | **Asserted** |
 | The real `chart.js` is entered once, jsdom reports it cannot supply a 2D rendering context, nothing propagates, and the component is still mounted with its canvas | `Analytics.test.tsx`, one case that puts the real library back | **Asserted** |
-| Chart.js reporting a scale or controller that no module registered | nowhere | **Unverified** |
+| Chart.js reporting a scale or controller that no module registered, the error escaping the unwrapped effect, and React unmounting the component | `e2e/tests/analytics.spec.ts` test 4, in real Chrome | **Asserted** |
 
-The last row is the ceiling. Observing it needs a real canvas context *and* a resolved trend series in
-the same run: under jsdom there is no 2D context, and jsdom says so before Chart.js looks anything up in
-its registry, so that notice — not the registration — is what the real-library case observes. The E2E
-layer has a browser and therefore a context, but `e2e/harness/stubs/analyticsService.ts` rejects on
-every path, so `renderCharts` is never reached there; `e2e/tests/analytics.spec.ts` carries the
-assertion and skips it unconditionally with that reason. Neither layer is hiding the other's gap, and
-neither should be described as covering it.
+The split follows from what each environment can supply. Observing the registration failure needs a real
+canvas context *and* a resolved trend series in the same run. Under jsdom there is no 2D context, and
+jsdom says so before Chart.js looks anything up in its registry — so that notice, not the registration,
+is what the real-library case here observes, and this suite asserts exactly that. The E2E layer has a
+browser and therefore a context, and its fourth test opts into `e2e/harness/stubs/analyticsService.ts`'s
+`x-harness-forward-trend-series` header so a well-formed series reaches `renderCharts`. It then asserts
+the unregistered-part error, that it arrived as an uncaught page error, and that the route came down.
+
+So neither layer hides the other's gap and neither should be described as covering the other's part:
+**jsdom pins the context notice, the browser pins the registration failure.** Forwarding stays opt-in
+because it is destructive — it unmounts the route — and only the test asserting the destruction wants it (`D327`).
 
 ### The four chart paths, kept apart
 
 `src/components/Analytics` has one `try`/`catch` and it wraps only the `getTrendData` call. Nothing
 wraps `new Chart(...)`. Four outcomes are therefore distinct, and conflating them is the single easiest
-mistake to make in this folder — three are asserted, the fourth is out of reach everywhere:
+mistake to make in this folder. All four are asserted; the fourth is out of reach under jsdom, so it is
+asserted in a real browser instead:
 
 | Path | What happens | Where it is asserted |
 | --- | --- | --- |
 | A controlled `Chart` constructor | `src/components/Analytics.test.tsx` substitutes the constructor, so nothing fails at all. The configuration object the component builds is the subject. | `src/components/Analytics.test.tsx` |
 | jsdom with the real library | `chart.js` cannot acquire a 2D context from jsdom's canvas and **returns early itself**. Nothing is thrown, so nothing is caught; the component stays mounted with its heading and canvas intact. | `src/components/Analytics.test.tsx`, and the E2E render check |
 | The trend request rejects | The `getTrendData` `catch` runs, `chartData` stays null, and `renderCharts` is never entered — a path that never reaches Chart.js. | `src/components/Analytics.test.tsx`, `e2e/tests/analytics.spec.ts` |
-| A real browser with a working canvas | `Chart.register` was never called, so construction raises **outside any `catch`**, the raise propagates out of the effect and React unmounts `TrendCharts`. | Nowhere. `e2e/tests/analytics.spec.ts` carries it as a skip naming this reason (`D216`). |
+| A real browser with a working canvas | `Chart.register` was never called, so construction raises **outside any `catch`**, the raise propagates out of the effect and React unmounts `TrendCharts`. | `e2e/tests/analytics.spec.ts` test 4, which opts into the harness stub's forwarding header for exactly this, and not reachable from jsdom (`D216`, superseded by `D327`, which records the promotion from ceiling to assertion). |
 
 **Do not install `jest-canvas-mock`, and do not add a `ResizeObserver` stub.** They look like the
 obvious fix and they make the result strictly worse — they move the suite from the second row to the
@@ -758,8 +802,8 @@ Audit your own suite against this before opening it for review:
 - [ ] No wall-clock dependence. Fake timers or fixed fixture dates, never `Date.now()` drift and never
       a sleep.
 - [ ] No order dependence. **Every test passes standalone**, in the full run, and with `--runInBand` —
-      check the first of those with `npx jest <file> -t "<the exact test name>"`, which runs one test and
-      skips the rest. In particular, never prove a cleanup or reset with a pair of tests where the second
+      check the first of those with `npm test -- <file> -t "<the exact test name>"`, which runs one test
+      and skips the rest. In particular, never prove a cleanup or reset with a pair of tests where the second
       inspects what the first left behind; call the shared helper inside one test instead
       (§[5](#the-per-test-cleanup-and-how-its-own-contract-is-proven)).
 - [ ] No snapshots.
@@ -820,7 +864,7 @@ nothing. The backend step was repointed the same way, `./coverage.xml` to `./bac
 are test-step prerequisites under the authorized CI surface; the flags are what Codecov keys on and they
 are untouched, so no dashboard history is orphaned by the move.
 
-**Added.** The `jest-junit` reporter (`D36`, `D37`, `D157`), and four coverage reporters beyond Jest's
+**Added.** The `jest-junit` reporter (`D36`, `D37`, `D157`, `D316`) — configured with `addFileAttribute` and `reportTestSuiteErrors`, and deliberately **without** `includeConsoleOutput`, because this suite drives production code that logs objects and that option filled the retained artifact with `<system-out>` sections carrying raw logged values and absolute host paths, in a file CI uploads unconditionally. The correlation it was added for is already carried by `classname`, `name` and the `file` attribute. Also four coverage reporters beyond Jest's
 default — `lcov`, `json`, `json-summary` and `cobertura`, alongside `text-summary` for the console. The
 per-test correlation identity described in §[7](#artifacts), and the request log in `handlers.ts` that
 stamps the same identity on every intercepted request (`D83`). Together these are this suite's metrics
@@ -829,26 +873,40 @@ surface (`D193`).
 **The readiness gate.** Two checks, and they prove different things — do not substitute one for the
 other.
 
-`npx jest --listTests` is **discovery only**. It walks `roots` against `testMatch` and prints the files
+`npm run test:list` (`jest --listTests`) is **discovery only**. It walks `roots` against `testMatch` and prints the files
 it would run — **23** on this run, exit 0. It loads nothing, transforms nothing and resolves no import,
 so it cannot tell you the suite is loadable: a file with a broken import or a failing transform is
 listed exactly like a healthy one.
 
-The load-and-execution gate is a non-watch run whose name filter matches nothing:
+The load-and-execution gate is `npm run test:load` — a non-watch, single-process run whose name filter
+matches nothing:
 
 ```bash
-npx jest --ci --watchAll=false --runInBand -t "__readiness_probe_that_matches_no_test__"
+jest --ci --watchAll=false --runInBand --reporters=default -t "__readiness_probe_that_matches_no_test__"
 ```
 
 Jest can only know a test's name after it has transformed the file, executed it at module scope and run
-its `describe` callbacks, so this transforms and loads all 23 files, evaluates every module in their
-import graphs, registers all **370** test identities, then runs zero test bodies. On this run it exits
-**0** in about 11 seconds reporting `24 skipped, 0 of 24 total` and `370 skipped, 370 total`.
-`--runInBand` keeps it in one process, which is what keeps the output clean — the worker pool otherwise
-adds a teardown warning that has nothing to do with readiness. Negative-validated: adding one
-unresolvable import to `src/utils/formatUtils.test.ts` turns it into exit **1** with
-`Test suite failed to run … Cannot find module`, `1 failed, 22 skipped, 1 of 23 total`; the import was
-removed again immediately.
+its `describe` callbacks, so this transforms and loads all **24** files, evaluates every module in their
+import graphs, registers all **371** test identities, then runs zero test bodies. On this run it exits
+**0** in about 13 seconds reporting `Test Suites: 24 skipped, 0 of 24 total` and
+`Tests: 371 skipped, 371 total`, retained at `frontend/reports/load-tests.txt`, which the dashboard
+extractor reads and requires.
+
+Two flags earn their place. `--runInBand` keeps it in one process, which is what keeps the retained output
+clean — the worker pool otherwise adds a teardown warning that has nothing to do with readiness.
+`--reporters=default` **replaces** the configured reporter list, and without it this probe is a real Jest
+run whose `jest-junit` reporter overwrites `reports/jest-junit.xml` with its own all-skipped stream: a file
+declaring `tests="371" failures="0"` in which every case is skipped, which no consumer can distinguish
+from a run in which nothing executed — the same zero-information stub `pytest --collect-only` and
+`playwright test --list` each write. Measured both ways: with the flag, that file's SHA-256 is unchanged
+either side of a probe; without it, it changed.
+
+Negative-validated: adding one unresolvable import to `src/utils/formatUtils.test.ts` turns the probe into
+exit **1** with `Cannot find module '../does-not-exist-readiness-probe' from 'src/utils/formatUtils.test.ts'`
+and `Test Suites: 1 failed, 24 skipped, 1 of 25 total`, while `test:list` on the same perturbation still
+lists all 24 files and exits **0** — which is the whole argument for the gate being the probe rather than
+the census, and the reason the two are separate checks. The import was removed again immediately and the
+file restored byte-for-byte.
 
 A clean `npm run test:ci` remains the full check — it is the only one of the three that executes an
 assertion.
@@ -863,6 +921,8 @@ hook or a health endpoint. The production instrumentation gaps are recorded in t
 production touches, and **both of those are in `backend/`, not here**. No production source under
 `frontend/src/` was modified at all; the only pre-existing file changed in this folder is
 [`package.json`](./package.json), and only its `devDependencies` and test scripts.
+
+The security exposures among them — the unmasked credential fields, the unencoded path segment in `api.ts`, and the advisories carried by the pinned `react-router`, `esbuild`, `cookie` and `postcss` versions — are written up individually in [`../docs/testing/SECURITY-GAPS.md`](../docs/testing/SECURITY-GAPS.md), with the clause that put each out of reach and what has to be done.
 
 Each item is a real defect or gap found while building the suite, with the impact of leaving it alone.
 Every one is traceable to [`../docs/testing/DECISION-LOG.md`](../docs/testing/DECISION-LOG.md) — the

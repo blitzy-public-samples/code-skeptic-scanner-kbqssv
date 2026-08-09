@@ -47,14 +47,11 @@ jobs:
       run: |
         npm run lint
 
-    # Every step from here to the end of this job carries `if: ${{ !cancelled() }}`.
-    # The two steps above fail for reasons that predate the test suite, and a step
-    # without a condition is skipped once an earlier step has failed - which left
-    # the whole test and reporting path unreachable on every push. The condition
-    # runs the tests and their reports regardless of the lint conclusion while
-    # still leaving the job red, so neither signal hides the other.
-    # A cancelled run stops here, which is why this is `!cancelled()` and not
-    # `always()`.
+    # Every step from here to the end of this job carries `if: ${{ !cancelled() }}`,
+    # and a step added without it is skipped once the two lint steps above fail. The
+    # condition runs the tests and their reports regardless of the lint conclusion
+    # without masking it - the job still ends red - and stops on cancellation.
+    # See docs/testing/DECISION-LOG.md row D256.
 
     - name: Check backend collection integrity
       if: ${{ !cancelled() }}
@@ -64,6 +61,9 @@ jobs:
         mkdir -p reports
         pytest --collect-only -q | tee reports/collect-only.txt
 
+    # The discovery census: which files a run would pick up. It imports none of them,
+    # so it is a census and not a gate - which is why the load step below exists as well.
+    # Ordered first, because a file that discovery does not list is never loaded.
     - name: Check frontend test discovery
       if: ${{ !cancelled() }}
       working-directory: frontend
@@ -72,20 +72,59 @@ jobs:
         mkdir -p reports
         npm run --silent test:list | tee reports/list-tests.txt
 
-    # `--cov-precision=2` makes `--cov-fail-under=90` an exact gate. Coverage.py
-    # compares the total against the threshold after rounding it to the report's
-    # precision, which defaults to zero decimals - so at the default a measured
-    # 89.5% rounds to 90, satisfies the threshold, and the run exits 0 while the
-    # report itself prints FAIL. backend/.coveragerc declares the same precision, so
-    # a local run is gated identically; the flag is repeated here so the gate is
-    # legible at the invocation site. backend/pytest.ini carries no coverage option
-    # at all, which is what keeps a bare `pytest` and `--collect-only` ungated.
+    # `jest --listTests` walks the filesystem: it prints the files that match
+    # `testMatch` and loads none of them, so a suite with a broken import or a failing
+    # transformer is listed exactly like a healthy one and readiness passes on a suite
+    # that cannot run. `test:load` is a real load gate - a non-watch run whose name
+    # filter matches nothing. Jest can only know a test's name after transforming the
+    # file, evaluating it at module scope and running its `describe` callbacks, so this
+    # transforms and imports every suite and every module in their import graphs, then
+    # runs zero test bodies. A broken import exits non-zero naming the suite.
+    # `--runInBand` keeps it in one process, which keeps the retained output free of
+    # worker-pool teardown noise that has nothing to do with readiness.
+    # `--reporters=default` replaces the configured reporter list, so the probe cannot
+    # overwrite reports/jest-junit.xml with its own all-skipped stream.
+    # See docs/testing/DECISION-LOG.md and section 9 of frontend/TESTING.md.
+    - name: Check that every frontend suite loads
+      if: ${{ !cancelled() }}
+      working-directory: frontend
+      run: |
+        set -o pipefail
+        mkdir -p reports
+        npm run --silent test:load 2>&1 | tee reports/load-tests.txt
+
+    # This is the canonical backend producer command: the four gated packages in one
+    # invocation, every report the dashboard and Codecov consume, and the in-run
+    # threshold. `--cov-precision=2` makes the number pytest-cov prints agree with the
+    # status it exits on; backend/.coveragerc declares the same precision so a local
+    # run reads identically. backend/pytest.ini carries no coverage option at all,
+    # which is what keeps a bare `pytest` and `--collect-only` ungated.
+    # `--cov-fail-under` is not the whole gate - see the exact gate step below.
     - name: Run backend tests
       id: backend_tests
       if: ${{ !cancelled() }}
       working-directory: backend
       run: |
         pytest --cov=app/core --cov=app/services --cov=app/tasks --cov=app/db --cov-report=term-missing --cov-report=xml --cov-report=json --cov-precision=2 --cov-fail-under=90 --junitxml=reports/junit.xml
+
+    # The binding half of the >=90% gate. `--cov-fail-under` compares
+    # round(total, precision) < threshold, so at two decimals it still admits a total
+    # in [89.995, 90) and at the library default it admits anything from 89.5 up. No
+    # precision closes that band. This step compares the integer counts out of
+    # coverage.json instead - covered * 100 >= 90 * statements as exact rational
+    # arithmetic - and also refuses a report whose measured files fall outside the
+    # four gated packages, which is what stops a whole-tree measurement being read as
+    # the gated figure. Its reading is retained beside the other evidence.
+    # See docs/testing/DECISION-LOG.md and backend/tests/test_coverage_gate.py.
+    - name: Enforce the exact backend coverage gate
+      if: ${{ !cancelled() && steps.backend_tests.outcome == 'success' }}
+      working-directory: backend
+      run: |
+        set -o pipefail
+        mkdir -p reports
+        python tests/coverage_gate.py --coverage-json coverage.json --fail-under 90 \
+          --require-scope app/core --require-scope app/services \
+          --require-scope app/tasks --require-scope app/db | tee reports/coverage-gate.txt
 
     - name: Run frontend tests
       id: frontend_tests
@@ -174,10 +213,12 @@ jobs:
     permissions:
       contents: read
     env:
-      # Names a browser the runner image already carries, so nothing in this job
-      # invokes Playwright's downloader. `e2e/playwright.config.ts` passes this
-      # through as `launchOptions.executablePath`.
-      PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
+      # Lowest Chromium major version this job accepts. The browser is provisioned out
+      # of band (see the provisioning step below), so this is what keeps "whatever the
+      # image ships" from silently becoming an unusably old build: the resolver reads the
+      # resolved executable's own version and fails the job when it is below this floor,
+      # naming the version it found.
+      E2E_MIN_CHROMIUM_MAJOR: '120'
 
     steps:
     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -199,9 +240,9 @@ jobs:
       run: |
         npm install
 
-    # Discovery first: `playwright test --list` launches no browser, so running it
-    # ahead of the provisioning gate means a host with no browser still leaves a
-    # retained readiness result behind rather than nothing at all.
+    # `test:list` launches no browser and must stay ahead of the provisioning gate
+    # below, so a host with no browser still produces a retained readiness result.
+    # See docs/testing/DECISION-LOG.md rows D254 and D255.
     - name: Check end-to-end test discovery
       working-directory: e2e
       run: |
@@ -209,45 +250,49 @@ jobs:
         mkdir -p reports
         npm run --silent test:list | tee reports/list-tests.txt
 
-    # No step in this job downloads a browser. Playwright 1.44.1's downloader does
-    # not verify the TLS chain of the host it fetches from (CVE-2025-59288), so the
-    # browser comes from a channel that signs its artifacts - the build the runner
-    # image already carries - and is named by PLAYWRIGHT_CHROMIUM_EXECUTABLE, which
-    # e2e/playwright.config.ts reads as launchOptions.executablePath. The pinned
-    # @playwright/test 1.44.1 declares no install script and e2e/package.json declares
-    # no download script, so nothing here fetches anything and this job must not add
-    # one. e2e/scripts/require-browser.js resolves a candidate (honouring an explicit
-    # PLAYWRIGHT_CHROMIUM_EXECUTABLE or CHROME_BIN first, then the image's usual
-    # paths), validates that it launches, publishes it through $GITHUB_ENV so no later
-    # step needs a step-level override that could blank it, and fails the job when no
-    # candidate is executable.
-    # See docs/testing/DECISION-LOG.md rows D111, D129, D212 and D264.
-    - name: Resolve and validate the pre-installed browser
+    # No step in this job downloads a browser. Playwright 1.44.1's downloader does not
+    # verify the TLS chain of the host it fetches from (CVE-2025-59288), so the browser
+    # is provisioned out of band from a channel that signs its artifacts and this job
+    # only resolves and validates the result. The pinned @playwright/test 1.44.1 declares
+    # no install script and e2e/package.json declares no download script, so nothing
+    # here fetches anything and this job must not add one.
+    #
+    # No path is hardcoded. e2e/scripts/require-browser.js searches, in order: an
+    # explicitly provisioned PLAYWRIGHT_CHROMIUM_EXECUTABLE (set it as a repository or
+    # environment variable to pin a specific artifact - a blank or undefined variable
+    # falls through), then CHROME_BIN, then the platform's vendor install locations,
+    # then the exact path chromium.executablePath() reports for this pin. It reads the
+    # resolved build's own version, refuses one below E2E_MIN_CHROMIUM_MAJOR, publishes
+    # the executable through $GITHUB_ENV so the path launched is provably the path
+    # logged, and fails the job when nothing is usable. Its reading is retained as
+    # evidence, so which browser produced a result is recoverable from the artifacts
+    # rather than only from the log.
+    # See docs/testing/DECISION-LOG.md rows D111, D129, D212 and D264, superseded by
+    # D300 for the resolution order, by D301 for this job's provisioning, and by D319
+    # for the digest that binds the validated executable to the launched one.
+    - name: Resolve, validate and record the pre-provisioned browser
       working-directory: e2e
       run: |
-        npm run browsers:require
+        set -o pipefail
+        mkdir -p reports
+        npm run --silent browsers:require -- --min-major "$E2E_MIN_CHROMIUM_MAJOR" | tee reports/browser.txt
 
-    # e2e/scripts/verify-browser.js validates the resolved executable and then the
-    # Playwright cache path, and exits non-zero when neither is launchable. It
-    # fetches nothing. The runner version is printed from the pinned local binary so
-    # the report records which runner produced the result.
-    - name: Verify the pinned runner and the pre-provisioned browser
+    # e2e/scripts/verify-browser.js is the narrower reporter over the same provision: it
+    # checks the executable now published in the environment and, only if none is set,
+    # the Playwright cache path, and exits non-zero when neither is launchable. It
+    # fetches nothing. The runner version is printed from the pinned local binary so the
+    # report records which runner produced the result.
+    - name: Verify the pinned runner against the resolved browser
       working-directory: e2e
       run: |
-        ./node_modules/.bin/playwright --version
-        npm run --silent browsers:verify
-        if [ ! -x "$PLAYWRIGHT_CHROMIUM_EXECUTABLE" ]; then
-          echo "::error::no executable browser at $PLAYWRIGHT_CHROMIUM_EXECUTABLE - provision one out of band and set PLAYWRIGHT_CHROMIUM_EXECUTABLE; this job never downloads one"
-          exit 1
-        fi
-        echo "browser executable: $PLAYWRIGHT_CHROMIUM_EXECUTABLE"
-        "$PLAYWRIGHT_CHROMIUM_EXECUTABLE" --version
+        set -o pipefail
+        ./node_modules/.bin/playwright --version | tee -a reports/browser.txt
+        npm run --silent browsers:verify | tee -a reports/browser.txt
 
-    # Invoked through the e2e package, never `npx` from the repository root: the root has
-    # no manifest, so a root `npx playwright` resolves no project-owned runner and can
-    # fetch an unpinned one. `npm test` runs e2e/node_modules/.bin/playwright, so the
-    # runner is the pinned local binary and the config is the one beside it.
-    # See docs/testing/DECISION-LOG.md row D49.
+    # Invoked through the e2e package, never `npx` from the repository root, which can
+    # fetch an unpinned runner. `npm test` runs e2e/node_modules/.bin/playwright, so
+    # the runner is the pinned local binary and the config is the one beside it.
+    # See docs/testing/DECISION-LOG.md rows D49, D197 and D237.
     - name: Run end-to-end tests
       id: e2e_run
       working-directory: e2e
@@ -270,6 +315,15 @@ jobs:
           exit 1
         fi
 
+    # Seven days, not thirty. The HTML reporter copies every attachment into
+    # playwright-report/data/, including the trace, screenshot and video a failing
+    # test retained - and e2e/tests/configuration.spec.ts drives credential-shaped
+    # values through a real browser, two of whose four fields render as type="text".
+    # Its attachments are redacted and use.trace.sources is off, but a DOM snapshot,
+    # filmstrip and video record what the browser showed and Playwright 1.44 cannot
+    # mask automatic failure evidence. Debugging a failed run is a matter of days, so
+    # the window is days; the result streams below carry no such content and keep 30.
+    # See docs/testing/DECISION-LOG.md row D318.
     - name: Upload Playwright report
       if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -277,7 +331,7 @@ jobs:
         name: playwright-report
         path: e2e/playwright-report/
         if-no-files-found: error
-        retention-days: 30
+        retention-days: 7
 
     - name: Upload end-to-end result stream and discovery output
       if: always()
@@ -294,11 +348,13 @@ jobs:
       with:
         name: e2e-failure-artifacts
         path: e2e/test-results/
-        # `warn`, not `error`: trace, screenshot and video are all retained on
-        # failure only, so a fully passing run writes nothing here. The two
-        # uploads above are unconditional artifacts and use `error`.
+        # `warn`, not `error`: trace, screenshot and video are retained on failure
+        # only, so a fully passing run writes nothing here.
         if-no-files-found: warn
-        retention-days: 30
+        # Seven days, for the same reason as the Playwright report above: this is the
+        # raw trace, screenshot and video, which is the richest carrier of anything a
+        # failing credential test typed. See docs/testing/DECISION-LOG.md row D318.
+        retention-days: 7
 
     - name: Upload e2e test results
       if: always()
@@ -306,10 +362,9 @@ jobs:
       with:
         name: e2e-junit
         path: e2e/reports/e2e-junit.xml
-
-# HUMAN ASSISTANCE NEEDED
-# Please review the following:
-# 1. Ensure that the Python and Node.js versions are appropriate for your project.
-# 2. Verify that the file paths for requirements.txt, test files, and coverage reports are correct.
-# 3. Confirm that the linting, type checking, and testing commands match your project's setup.
-# 4. Check if additional environment variables or secrets are needed for the workflow.
+        # Stated rather than inherited: with no value here the artifact takes the
+        # repository or organisation default, which is 90 days unless someone changed
+        # it - a longer window than any other artifact this job uploads, decided
+        # somewhere this file cannot see. The result stream carries no attachment
+        # body, so 30 days matches the other result artifacts.
+        retention-days: 30

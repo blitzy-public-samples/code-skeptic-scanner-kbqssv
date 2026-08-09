@@ -9,9 +9,9 @@
  *
  * Host, port and origin are resolved once below and exported; `e2e/playwright.config.ts`
  * imports them from here and computes none of them itself, so the socket the harness
- * binds and the origin the runner polls are the same value by construction. This file
- * owns them because it is the file that binds the socket, and because `npm run harness`
- * starts this server on its own, without loading `@playwright/test`.
+ * binds and the origin the runner polls are the same value by construction. This file is
+ * the one that binds the socket, and `npm run harness` starts this server on its own
+ * without loading `@playwright/test`.
  *
  * @see docs/testing/DECISION-LOG.md - section 4, every choice made below.
  */
@@ -51,19 +51,17 @@ const VITE_CLIENT_DIR = path.join(HERE, 'node_modules', 'vite', 'dist', 'client'
 /**
  * The origin the harness is served on, resolved once here and imported by
  * `e2e/playwright.config.ts`, which starts this server on it and navigates to it.
- * The runner resolves no port of its own, so the two can never disagree.
  *
  * Resolution order:
  *
  *   1. `HARNESS_PORT` - an explicit port, used verbatim.
- *   2. `E2E_PORT`     - the same thing under the name the CI job and `e2e/README.md`
- *                       use; accepted so one contract covers both spellings.
+ *   2. `E2E_PORT`     - the same thing under the name the CI job and `e2e/README.md` use.
  *   3. `CLONE_INDEX`  - an offset added to {@link BASE_PORT}, so `CLONE_INDEX=002`
  *                       resolves to 4175.
  *   4. none set        - {@link BASE_PORT}.
  *
- * Several checkouts of this repository run concurrently on one host, each with its own
- * `CLONE_INDEX`, and a TCP port is host-global. `e2e/README.md` documents both variables.
+ * A TCP port is host-global and several checkouts of this repository run concurrently on
+ * one host, each with its own `CLONE_INDEX`.
  *
  * @see docs/testing/DECISION-LOG.md - section 4, the origin-resolution decision and its risks.
  */
@@ -78,8 +76,8 @@ const MIN_PORT = 1024;
 const MAX_PORT = 65535;
 
 /**
- * Loopback interface the harness binds. A literal address rather than `localhost`, which
- * resolves to either `127.0.0.1` or `::1` depending on the host's resolver order.
+ * Loopback interface the harness binds, as a literal address: `localhost` resolves to
+ * either `127.0.0.1` or `::1` depending on the host's resolver order.
  */
 export const HARNESS_HOST = '127.0.0.1';
 
@@ -112,7 +110,7 @@ function isUsablePort(candidate: number): boolean {
 
 /**
  * Resolves the port, applying the order above. An out-of-range result from either
- * variable falls through to the next step rather than binding a port the harness cannot
+ * variable falls through to the next step, so the harness only ever binds a port it can
  * serve on.
  */
 function resolvePort(): number {
@@ -143,8 +141,6 @@ export const HARNESS_ORIGIN = `http://${HARNESS_HOST}:${HARNESS_PORT}`;
 
 /**
  * Component modules that exist on disk as extension-less FILES, not directories.
- *
- * Add a file name to extend the harness.
  */
 const EXTENSIONLESS_COMPONENTS = [
   'Dashboard',
@@ -159,8 +155,6 @@ const EXTENSIONLESS_COMPONENTS = [
  *
  * Keys are paths under `frontend/src` without an extension. Each redirect applies
  * only while the real module is absent.
- *
- * Add an entry plus the matching file under `e2e/harness/stubs` to extend.
  */
 const STUB_MODULES: Record<string, string> = {
   'services/analyticsService': 'analyticsService.ts',
@@ -181,7 +175,6 @@ const STUB_MODULES: Record<string, string> = {
  * Keys are paths under `frontend/src` without an extension. Values map an export
  * name to an expression evaluated in that module's own scope.
  *
- * Add an entry to extend.
  *
  * @see docs/testing/DECISION-LOG.md - row D42.
  */
@@ -214,8 +207,6 @@ const BARE_MODULE_SPECIFIERS: Record<string, string> = {
  * location for them.
  *
  * Ordered longest specifier first; `resolve.alias` matches in order.
- *
- * Add an entry to extend.
  */
 const FRONTEND_PACKAGES = [
   'react-dom/client',
@@ -329,10 +320,11 @@ const MAX_DECODE_PASSES = 4;
  * all.
  *
  * Add an entry to extend. Every remedy below is spelled with a `${HARNESS_ORIGIN}`
- * prefix rather than a leading `**`: a host-agnostic pattern also claims a request
- * addressed to a foreign host that shares the path, and fulfilling it would hide that
- * destination drift from the ledger in `e2e/tests/harness-fixtures.ts`. A remedy copied
- * out of this map must stay anchored.
+ * prefix and no leading `**`, so a pattern claims only requests addressed to the harness
+ * origin; a leading `**` would also claim a request addressed to a foreign host that
+ * shares the path, and fulfilling that would hide the destination drift from the ledger
+ * in `e2e/tests/harness-fixtures.ts`. A remedy copied out of this map must stay anchored,
+ * here and wherever it is copied to; `e2e/tests/isolation.spec.ts` asserts that it is.
  *
  * @see docs/testing/DECISION-LOG.md - row D126, which supersedes D43, and row D213.
  */
@@ -390,8 +382,31 @@ const FS_URL_PREFIX = '/@fs/';
  */
 const VIRTUAL_ID_URL_PREFIX = '/@id/';
 
-/** Dev-server endpoint that spawns a local editor process; the harness never uses it. */
+/**
+ * Dev-server endpoint that spawns a local editor process; the harness never uses it.
+ *
+ * Matched as a **path prefix, case-insensitively**, by {@link isOpenInEditorPath} rather than by
+ * equality, because that is how the endpoint is reachable. Vite mounts it with
+ * `middlewares.use('/__open-in-editor', launchEditorMiddleware())`, and connect's route matching
+ * lower-cases both sides and accepts the route followed by `/`, by a sub-path or by a query string.
+ * `/__open-in-editor/?file=x`, `/__open-in-editor/anything?file=x` and `/__OPEN-IN-EDITOR?file=x`
+ * therefore all reach the middleware while failing an equality test against the string below.
+ *
+ * @see docs/testing/DECISION-LOG.md - row D317.
+ */
 const OPEN_IN_EDITOR_PATH = '/__open-in-editor';
+
+/**
+ * Prefix of every dev-server control endpoint. No module, document or asset in the harness graph is
+ * addressed under it, so it is the one prefix that can be refused wholesale.
+ *
+ * Used by {@link isDevServerControlPath} for the paths that carry no legitimate traffic, and mirrored
+ * in `e2e/tests/harness-fixtures.ts`, which aborts them in the browser before they leave.
+ */
+const CONTROL_PATH_PREFIX = '/__';
+
+/** Placeholder Vite substitutes for the leading NUL of a virtual id in a URL. */
+const NULL_BYTE_URL_PLACEHOLDER = '__x00__';
 
 /**
  * esbuild TypeScript options in string form, which suppresses Vite's own tsconfig
@@ -700,9 +715,9 @@ function resolveRootRelativePath(url: string): string | null {
  * `fs.realpathSync` both preserve an ADS suffix, and a short name resolves to the long name only
  * after the deny check would already have passed.
  *
- * The `/@fs/` prefix and, on Windows, the drive letter are stripped before the check, because a
- * `/@fs/C:/...` URL carries one legitimate colon. Testing `LEADING_DRIVE_EXPRESSION` against the
- * unstripped path can never match, which would refuse every `/@fs/` request on Windows - React,
+ * The `/@fs/` prefix and, on Windows, the drive letter are stripped before the check: a
+ * `/@fs/C:/...` URL carries one legitimate colon. `LEADING_DRIVE_EXPRESSION` matches only the
+ * stripped path, which is what keeps every `/@fs/` request on Windows servable - React,
  * ReactDOM, the store slices and Vite's own dev client included.
  *
  * @see docs/testing/DECISION-LOG.md - rows D110 and D115.
@@ -726,6 +741,68 @@ function usesAlternateWindowsSpelling(pathname: string, isFsRequest: boolean): b
   return NTFS_STREAM_EXPRESSION.test(candidate) || SHORT_NAME_EXPRESSION.test(candidate);
 }
 
+/**
+ * Whether a request path addresses the open-in-editor endpoint in any spelling connect accepts.
+ *
+ * Compared lower-cased, and as a prefix that may be followed by nothing, by `/` or by a sub-path -
+ * which is exactly what `connect`'s `use(route, handler)` matching admits. Applied to the raw path and
+ * to the fully decoded one, so neither a percent-encoded separator nor a mixed-case spelling gets past
+ * it.
+ *
+ * @param pathname - Request path with query and fragment already removed.
+ */
+function isOpenInEditorPath(pathname: string): boolean {
+  const candidate = pathname.toLowerCase();
+  if (candidate === OPEN_IN_EDITOR_PATH) {
+    return true;
+  }
+  return candidate.startsWith(`${OPEN_IN_EDITOR_PATH}/`) || candidate.startsWith(`${OPEN_IN_EDITOR_PATH}?`);
+}
+
+/**
+ * Whether a request path addresses a dev-server control endpoint rather than the harness graph.
+ *
+ * Every Vite control endpoint - the editor launcher, the inspector, the liveness ping - is mounted
+ * under {@link CONTROL_PATH_PREFIX}, and nothing the harness serves is. Refusing the prefix means a
+ * future Vite version that adds another such endpoint is closed by default rather than on discovery.
+ *
+ * @param pathname - Request path with query and fragment already removed.
+ */
+function isDevServerControlPath(pathname: string): boolean {
+  return pathname.toLowerCase().startsWith(CONTROL_PATH_PREFIX);
+}
+
+/**
+ * Whether a `/@id/` request names a virtual module this configuration registered.
+ *
+ * The `/@id/` prefix is how Vite serves a module id that is not a path, and the harness has exactly
+ * four of them - the extension-less component files - plus the compatibility wrappers, all registered
+ * in {@link virtualModules} at config time. Anything else under that prefix is not a harness module,
+ * so it is refused here rather than handed to the plugin container: an unregistered id falls through to
+ * Vite's own transform pipeline, which resolves what is left as a filesystem path.
+ *
+ * Both the raw and the fully decoded spelling are accepted, because Vite applies `decodeURI` to the
+ * request before it unwraps the id, and both are checked against the same exact registry - so a
+ * spelling that decodes to anything other than a registered id is refused either way.
+ *
+ * @param pathname - Request path with query and fragment already removed.
+ * @param decoded - The same path, fully percent-decoded.
+ */
+function isRegisteredVirtualModulePath(pathname: string, decoded: string): boolean {
+  const unwrap = (candidate: string): string => {
+    const withoutPrefix = candidate.slice(VIRTUAL_ID_URL_PREFIX.length);
+    return withoutPrefix.startsWith(NULL_BYTE_URL_PLACEHOLDER)
+      ? `\0${withoutPrefix.slice(NULL_BYTE_URL_PLACEHOLDER.length)}`
+      : withoutPrefix;
+  };
+
+  return [pathname, decoded].some((candidate) =>
+    candidate.startsWith(VIRTUAL_ID_URL_PREFIX)
+      ? virtualModules.has(normalizeKey(withoutQuery(unwrap(candidate))))
+      : false,
+  );
+}
+
 /** Whether a resolved path is one of the allowed roots or sits inside one. */
 function isWithinAllowedRoot(candidate: string): boolean {
   const candidateKey = normalizeKey(candidate);
@@ -736,20 +813,32 @@ function isWithinAllowedRoot(candidate: string): boolean {
 }
 
 /**
- * Refuses four classes of dev-server request before any Vite middleware sees them:
+ * Refuses five classes of dev-server request before any Vite middleware sees them:
  *
- * - `/__open-in-editor`, which spawns a local editor process;
+ * - every spelling of `/__open-in-editor`, which spawns a local editor process, and then the whole
+ *   `/__` control prefix behind it - see {@link isOpenInEditorPath} and
+ *   {@link isDevServerControlPath};
+ * - a `/@id/` virtual-module request naming an id this configuration did not register - see
+ *   {@link isRegisteredVirtualModulePath};
  * - any request path, `/@fs/` or root-relative, that uses NTFS alternate-data-stream syntax or a
  *   Windows 8.3 short name - see {@link usesAlternateWindowsSpelling};
- * - a **root-relative** read that resolves onto a `DENIED_FILE_PATTERNS` name;
+ * - a **root-relative** read that resolves outside `ALLOWED_SERVE_ROOTS` or onto a
+ *   `DENIED_FILE_PATTERNS` name;
  * - a `/@fs/` read that resolves outside `ALLOWED_SERVE_ROOTS` or onto a `DENIED_FILE_PATTERNS`
  *   name. The check runs on the decoded, normalised, symlink-resolved path and covers every
  *   extension, `.html` included.
  *
- * Every check runs on the fully percent-decoded path *and* on the raw URL, so neither a nested
- * encoding nor an encoding Vite would not decode can carry a colon or a tilde past it.
+ * Containment applies to **both** path branches. It used to apply only to `/@fs/`, which left the
+ * root-relative branch judging names alone: `resolveRootRelativePath` keeps `..` segments, so an
+ * encoded traversal resolved outside the harness root and matched no denied name.
  *
- * @see docs/testing/DECISION-LOG.md - rows D110 and D115.
+ * Every check runs on the fully percent-decoded path *and* on the raw URL, so neither a nested
+ * encoding nor an encoding Vite would not decode can carry a colon, a tilde or a traversal past it.
+ *
+ * `e2e/tests/isolation.spec.ts` drives each class through `request.fetch`, which bypasses every
+ * `page.route`, so what it asserts is this middleware rather than a browser-side rule.
+ *
+ * @see docs/testing/DECISION-LOG.md - rows D110, D115 and D317.
  */
 function harnessFilesystemGuard(): Plugin {
   return {
@@ -773,14 +862,29 @@ function harnessFilesystemGuard(): Plugin {
           return;
         }
 
-        if (pathOnly === OPEN_IN_EDITOR_PATH) {
+        // Refused in every spelling connect would route to the editor launcher, and then the whole
+        // control prefix behind it, on the raw path and on the decoded one.
+        if (
+          isOpenInEditorPath(pathOnly) ||
+          isOpenInEditorPath(decoded) ||
+          isDevServerControlPath(pathOnly) ||
+          isDevServerControlPath(decoded)
+        ) {
           forbid();
           return;
         }
 
-        // A virtual module id is not a path; see VIRTUAL_ID_URL_PREFIX.
-        if (pathOnly.startsWith(VIRTUAL_ID_URL_PREFIX)) {
-          next();
+        // A virtual module id is not a path, so the path checks below do not apply to it - but only a
+        // *registered* id is exempt from them. See isRegisteredVirtualModulePath.
+        if (
+          pathOnly.startsWith(VIRTUAL_ID_URL_PREFIX) ||
+          decoded.startsWith(VIRTUAL_ID_URL_PREFIX)
+        ) {
+          if (isRegisteredVirtualModulePath(pathOnly, decoded)) {
+            next();
+          } else {
+            forbid();
+          }
           return;
         }
 
@@ -803,7 +907,15 @@ function harnessFilesystemGuard(): Plugin {
           }
         } else {
           const served = resolveRootRelativePath(url);
-          if (served === null || DENIED_PATH_EXPRESSION.test(served)) {
+          // `isWithinAllowedRoot` on this branch too, not only on the `/@fs/` one:
+          // `resolveRootRelativePath` preserves `..` segments, so `/%2e%2e/%2e%2e/frontend/package.json`
+          // resolves outside `e2e/harness` while matching no denied *name*. Containment is the check
+          // that refuses it; the deny list only ever covered sensitive names inside a root.
+          if (
+            served === null ||
+            !isWithinAllowedRoot(served) ||
+            DENIED_PATH_EXPRESSION.test(served)
+          ) {
             forbid();
             return;
           }
@@ -829,9 +941,9 @@ function harnessFilesystemGuard(): Plugin {
  * spec is missing, and the same line is written to the dev-server log, which
  * `e2e/playwright.config.ts` pipes into the run output.
  *
- * Runs ahead of Vite's own middleware, so these paths never reach the SPA fallback -
+ * Runs ahead of Vite's own middleware, so these paths never reach the SPA fallback:
  * `connect-history-api-fallback` answers `index.html` to a `fetch`, whose `Accept`
- * header is a bare wildcard, which would make `response.ok` true for an HTML body.
+ * header is a bare wildcard, and `response.ok` is then true for an HTML body.
  *
  * `Cache-Control: no-store`, so a reload re-issues the request and a spec sees it.
  */
@@ -953,8 +1065,8 @@ export default defineConfig({
   // not provide.
   //
   // Declaration order is load-bearing: the dev client assigns these keys onto the global
-  // object in the order below, so `process.env` must come first or it would replace the object
-  // the two keys under it were just written onto.
+  // object in the order below, and `process.env` must come first so it does not replace the
+  // object the two keys under it are written onto.
   //
   // `REACT_APP_API_BASE_URL` resolves to the `undefined` literal, which keeps the base URL
   // production computes today - hence the `/undefined/tweets` key in `HARNESS_API_SURFACE`.

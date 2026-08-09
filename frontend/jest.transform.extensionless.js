@@ -18,7 +18,7 @@
  *
  * @see https://jestjs.io/docs/code-transformation#writing-custom-transformers
  * @see frontend/src/components/Dashboard.test.tsx - one of the four component
- *   suites this transformer is what makes compilable.
+ *   suites this transformer makes compilable.
  * @see docs/testing/DECISION-LOG.md - rows D30-D32 and D138-D140.
  */
 

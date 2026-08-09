@@ -1,7 +1,15 @@
 /**
  * Test-only stand-in for the module specifier `../schema/configSchema`, which
  * `frontend/src/store/configSlice.ts` imports `Config` from and which has no
- * implementation in this repository. Nothing imports this file directly.
+ * implementation in this repository.
+ *
+ * Two routes reach it, and they are not interchangeable. Production modules keep
+ * their own specifier and are redirected here by `frontend/jest.config.js`, whose
+ * `moduleNameMapper` carries both forms the sources use, `^\.\./schema/configSchema$`
+ * and `^@/schema/configSchema$`. Test modules may import this path directly, and
+ * `frontend/src/pages/Configuration.test.tsx` does, for the `Config` type it annotates
+ * its fixtures with - a type-only import, erased by the transform, so it adds no
+ * runtime edge to the graph.
  *
  * `Config` carries the three sections `frontend/src/pages/Configuration.tsx`
  * reads. Every member of every section is optional, because `configSlice.ts`

@@ -23,24 +23,45 @@
  * | 1 | {@link HARNESS_ORIGIN} + the path | claimed by this spec's own route, recorded by it, answered `200` |
  * | 2 | {@link FOREIGN_ORIGIN} + the same path | not claimed; aborted by the fixture and entered in its ledger |
  *
- * Step 2 deliberately causes the breach the fixture exists to detect, so each test acknowledges it
- * with {@link consumeAbortedRequestUrls} - after asserting the exact URL - which is what keeps
- * teardown from failing the very test that proved the property.
+ * Step 2 provokes the breach the fixture exists to detect, so each test acknowledges it with
+ * {@link consumeAbortedRequestUrls} - after asserting the exact URL - which is what lets the test
+ * that proved the property reach teardown green.
  *
  * Both requests are issued from the `/configuration` route. `frontend/src/components/Configuration`
  * declares no mount effect, so that page issues no request of its own and every entry in either
  * ledger belongs to this file.
  *
+ * ## The second describe: the same-origin boundary
+ *
+ * Anchoring answers "may a spec route claim a foreign origin". It says nothing about a request the page
+ * addresses to the harness itself on a path the harness does not serve, and two of those are not
+ * ordinary 404s:
+ *
+ * - a **dev-server control endpoint** under `/__`, which makes the Node process launch an editor or
+ *   read the filesystem on the page's behalf;
+ * - a **`/@id/` virtual-module id** the harness never registered, or a root-relative **traversal**,
+ *   either of which ends in Vite's own resolution rather than in the harness graph.
+ *
+ * Both layers are asserted separately, because they fail independently. The browser layer is the
+ * `noEgress` fixture, driven with a page `fetch`. The server layer is `harnessFilesystemGuard` in
+ * `../vite.harness.config.ts`, driven with `request.fetch` - Playwright's APIRequestContext, which no
+ * `page.route` or `context.route` intercepts, so a 403 there is the middleware's answer and not a
+ * browser-side rule standing in for it. The last test then loads a route that *is* in the graph, so the
+ * containment cannot pass by refusing everything.
+ *
  * @see e2e/tests/harness-fixtures.ts - the fixture under test and the ledger contract.
  * @see e2e/README.md - the isolation guarantees this layer offers.
- * @see docs/testing/DECISION-LOG.md - rows D130, D131 and D213.
+ * @see docs/testing/DECISION-LOG.md - rows D130, D131, D213 and D317.
  */
+
+import http from 'node:http';
 
 import type { Page } from '@playwright/test';
 
 import {
   blockedByEgressGuard,
   consumeAbortedRequestUrls,
+  consumeDeniedControlPathUrls,
   expect,
   HARNESS_ORIGIN,
   test,
@@ -67,6 +88,63 @@ const FOREIGN_ORIGIN = 'https://tweets.example.com';
 
 /** Status this spec's own route answers a harness-origin request with. */
 const CLAIMED_STATUS = 200;
+
+/** Status `harnessFilesystemGuard` in `../vite.harness.config.ts` refuses with. */
+const FORBIDDEN_STATUS = 403;
+
+/** Body it refuses with, asserted so a 403 from anything else would not satisfy these tests. */
+const FORBIDDEN_BODY = '403 Forbidden';
+
+/** Accessible name of the `<h2>` the `/configuration` route renders when it mounts. */
+const QUIET_ROUTE_HEADING = 'Twitter API Settings';
+
+/**
+ * Every spelling of Vite's open-in-editor endpoint that `connect` would route to the editor launcher.
+ *
+ * `middlewares.use('/__open-in-editor', …)` matches case-insensitively and admits the route followed by
+ * nothing, by `/`, by a sub-path or by a query string, so all five reach the same handler - which
+ * resolves the `file` parameter and spawns an editor process. An equality test against the first entry
+ * refuses only that one.
+ *
+ * The `file` values are UNC and traversal shapes: harmless because the endpoint is refused, and they
+ * name what the refusal is protecting.
+ */
+const EDITOR_SPELLINGS = [
+  '/__open-in-editor?file=harness.tsx',
+  '/__open-in-editor/?file=harness.tsx',
+  '/__open-in-editor/anything?file=harness.tsx',
+  '/__OPEN-IN-EDITOR?file=harness.tsx',
+  '/__open-in-editor?file=%5C%5Cattacker.example%5Cshare%5Cx',
+] as const;
+
+/**
+ * Same-origin paths that address neither the harness graph nor a control endpoint, and must not be
+ * served.
+ *
+ * The first two are `/@id/` requests: that prefix carries a module id rather than a path, and only the
+ * ids this configuration registered are harness modules. An unregistered one used to skip every check
+ * in the guard. The rest are root-relative traversals: `resolveRootRelativePath` keeps `..` segments, so
+ * each resolves outside `e2e/harness` while matching no denied *name* - which is why containment, not
+ * the deny list, is what refuses them.
+ */
+const OUT_OF_GRAPH_PATHS = [
+  {
+    what: 'an unregistered virtual module id',
+    path: '/@id/__x00__extless:C:/not/a/harness/module',
+  },
+  {
+    what: 'a traversal dressed as a virtual module id',
+    path: '/@id/../../package.json',
+  },
+  {
+    what: 'an encoded traversal onto a file outside the harness root',
+    path: '/%2e%2e/%2e%2e/frontend/package.json',
+  },
+  {
+    what: 'a plain traversal onto the repository root',
+    path: '/../../package.json',
+  },
+] as const;
 
 /**
  * Every request shape a spec in this directory installs a route for.
@@ -115,9 +193,8 @@ type FetchOutcome =
  * Issues one request from inside the page and reports how it settled, without letting a rejection
  * escape as an unhandled one.
  *
- * Run in the page rather than through `request.fetch` deliberately: `page.route` and
- * `context.route` intercept what the *page* issues, and an APIRequestContext call would bypass the
- * very layer under test.
+ * Run in the page: `page.route` and `context.route` intercept what the *page* issues, so an
+ * APIRequestContext call does not reach the layer under test.
  *
  * @param page - Page to issue the request from.
  * @param url - Absolute URL to request.
@@ -137,6 +214,41 @@ async function fetchFromPage(page: Page, url: string, method: string): Promise<F
       return { settled: 'rejected', message: (error as Error).message };
     }
   }, { url, method });
+}
+
+/**
+ * Issues one GET to the harness with the request line **exactly** as given, and reports the status and
+ * body.
+ *
+ * `node:http` is used rather than `request.fetch` or a page `fetch` because every HTTP client that
+ * parses a URL first normalises the path: Chromium and Playwright's APIRequestContext both collapse
+ * `..` segments and decode `%2e`, so a traversal probe sent through either arrives at the server as an
+ * already-resolved path and tests nothing. A raw request line is what a traversal actually looks like on
+ * the wire, and it is the only way to put one in front of the middleware.
+ *
+ * @param path - Request target, sent verbatim; not encoded, normalised or validated.
+ */
+async function requestRawPath(path: string): Promise<{ status: number; body: string }> {
+  const { hostname, port } = new URL(HARNESS_ORIGIN);
+
+  return new Promise((resolve, reject) => {
+    const request = http.request(
+      { host: hostname, port, path, method: 'GET' },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer) => chunks.push(chunk));
+        response.on('end', () =>
+          resolve({
+            status: response.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString('utf8'),
+          }),
+        );
+      },
+    );
+
+    request.on('error', reject);
+    request.end();
+  });
 }
 
 test.describe('harness isolation - an anchored spec route claims only the harness origin', () => {
@@ -194,4 +306,68 @@ test.describe('harness isolation - an anchored spec route claims only the harnes
       }
     });
   }
+});
+
+test.describe('harness isolation - a same-origin dev-server control path is refused twice', () => {
+  test('the browser layer aborts and records it before it leaves the page', async ({
+    page,
+    browserDiagnostics,
+  }) => {
+    /*
+     * The abort this test causes is reported by Chrome as a console error, exactly as the
+     * foreign-origin case above is, so the notice is declared rather than tolerated.
+     */
+    browserDiagnostics.allow(blockedByEgressGuard());
+
+    await page.goto(QUIET_ROUTE);
+
+    const controlUrl = `${HARNESS_ORIGIN}${EDITOR_SPELLINGS[0]}`;
+    const outcome = await fetchFromPage(page, controlUrl, 'GET');
+
+    expect(outcome.settled).toBe('rejected');
+
+    // Recorded, not merely blocked: the fallback branch it replaced left no trace at all.
+    expect(consumeDeniedControlPathUrls()).toEqual([`GET ${controlUrl}`]);
+  });
+
+  for (const spelling of EDITOR_SPELLINGS) {
+    test(`the dev server answers 403 to the editor endpoint spelled ${spelling}`, async ({
+      request,
+    }) => {
+      /*
+       * `request.fetch` uses Playwright's APIRequestContext, which is not routed by `page.route` or by
+       * the `noEgress` fixture, so this assertion is about the middleware in
+       * `e2e/vite.harness.config.ts` and nothing else. Without it the browser-side abort above would be
+       * the only evidence, and it cannot speak for a request that does not come from a page.
+       */
+      const response = await request.fetch(`${HARNESS_ORIGIN}${spelling}`, {
+        method: 'GET',
+        failOnStatusCode: false,
+      });
+
+      expect(response.status()).toBe(FORBIDDEN_STATUS);
+      expect(await response.text()).toBe(FORBIDDEN_BODY);
+    });
+  }
+
+  for (const shape of OUT_OF_GRAPH_PATHS) {
+    test(`the dev server answers 403 to ${shape.what}`, async () => {
+      const response = await requestRawPath(shape.path);
+
+      expect(response.status).toBe(FORBIDDEN_STATUS);
+      expect(response.body).toBe(FORBIDDEN_BODY);
+    });
+  }
+
+  test('while the module graph the harness does serve still loads', async ({ page }) => {
+    /*
+     * The other half of every refusal: containment that also refused a legitimate module would turn a
+     * green suite red for the right reason and the wrong cause. The `/configuration` route is mounted
+     * through a registered virtual module - one of the four extension-less component files - so a
+     * rendered heading here is proof that the `/@id/` allow-list admits what it should.
+     */
+    await page.goto(QUIET_ROUTE);
+
+    await expect(page.getByRole('heading', { level: 2 })).toHaveText(QUIET_ROUTE_HEADING);
+  });
 });

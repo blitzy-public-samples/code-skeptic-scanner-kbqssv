@@ -20,7 +20,7 @@
  *    tree-shakeable `{ Chart }` export of `chart.js` and never registers a controller or a scale,
  *    so a working chart is out of reach in every environment including a real browser.
  *
- * ## Three distinct paths through `renderCharts`, and one that is out of reach
+ * ## Four distinct paths through `renderCharts`, and where each is asserted
  *
  * The subject's only `try`/`catch` wraps the `getTrendData` call at L16-L21. `renderCharts` and the
  * `new Chart(...)` inside it are **not** wrapped by anything, so "the failure is caught" is never a
@@ -30,31 +30,25 @@
  * |------|--------------|----------------------|
  * | Controlled constructor | The `Chart` spy returns an inert instance. Nothing fails at all, and the subject writes nothing to `console.error` | the configuration, falsy-resolution and re-fetch cases |
  * | jsdom, real library | `chart.js` asks the canvas for a 2D context, jsdom has none, and the library **returns early of its own accord** rather than throwing. Nothing was caught: nothing was thrown | the "cannot acquire a canvas context" case |
- * | Fetch rejection | The L18-L20 `catch` runs, `chartData` stays `null`, and `renderCharts` is never entered - so no chart path is exercised at all. This is also the only path the E2E layer can reach, because the harness stub rejects on every route | the rejection case here, and `e2e/tests/analytics.spec.ts` |
- * | Real browser, real canvas | `_acquireContext` succeeds, the unregistered `'line'` controller raises, and because nothing wraps the effect the error propagates and React **unmounts** the subject | out of reach: no environment in this repository supplies a working canvas. Recorded as a ceiling, asserted nowhere |
+ * | Fetch rejection | The L18-L20 `catch` runs, `chartData` stays `null`, and `renderCharts` is never entered - so no chart path is exercised at all | the rejection case here, and tests 1 to 3 of `e2e/tests/analytics.spec.ts`, which hold the subject on this path deliberately |
+ * | Real browser, real canvas | `_acquireContext` succeeds, the unregistered `'line'` controller raises, and because nothing wraps the effect the error propagates and React **unmounts** the subject | `e2e/tests/analytics.spec.ts` test 4, which opts into the harness stub's forwarding header and asserts the unregistered part, the uncaught escape and the unmount |
  *
- * The fourth row is the ceiling. It is deliberately not simulated: forcing it would assert the
- * behaviour of a stand-in rather than of the subject.
+ * The fourth row is out of reach under jsdom and is not simulated here: forcing it would assert the
+ * behaviour of a stand-in rather than of the subject. It is measured one layer up instead, in a real
+ * browser, where a live 2D context carries `chart.js` as far as the empty registry.
  *
  * ## The Chart boundary is controlled
  *
- * `chart.js` is declared `^4.3.0` and no lockfile is committed, so the build a clean install
- * resolves is not fixed and neither is whatever diagnostic text that build emits. Its
- * `console.error` output is therefore never an oracle here. `beforeEach` instead spies on the
- * `Chart` export of the module registry - the same property the compiled subject reads at call
- * time - and substitutes an inert instance, which turns the chart assertions into assertions about
- * the subject's own behaviour: whether it constructs a chart at all, on which element, and with
- * which configuration. Under that substitution the subject writes nothing to `console.error`, and
- * this suite asserts exactly that.
+ * `chart.js` is a floating `^4.3.0` range with no lockfile, so neither the resolved build nor its
+ * diagnostic text is fixed and its `console.error` output is never an oracle here. `beforeEach`
+ * spies on the `Chart` export of the module registry - the same property the compiled subject reads
+ * at call time - and substitutes an inert instance, so the chart assertions are about the subject:
+ * whether it constructs a chart at all, on which element, and with which configuration. Under that
+ * substitution the subject writes nothing to `console.error`.
  *
- * One case puts the real library back, by delegating through {@link ChartBeforeSpying}, and records
- * the ceiling with oracles that do not depend on the library's version: the constructor is entered
- * once, jsdom reports that it cannot supply a rendering context - which it does whatever `chart.js`
- * then makes of it, and `jest-environment-jsdom` is pinned exactly - nothing propagates, and the
- * component is still mounted with its canvas.
- *
- * This file installs no canvas or resize-observer shim and registers no Chart.js component; the
- * `Chart` spy is the only substitution, and it is created and restored per test.
+ * One case puts the real library back through {@link ChartBeforeSpying}. This file installs no canvas
+ * or resize-observer shim and registers no Chart.js component - which is the premise of that case's
+ * outcome - and the `Chart` spy is the only substitution, created and restored per test.
  *
  * ## The canvas carries no accessible name - a documented ceiling
  *
@@ -64,19 +58,19 @@
  * offered nothing at all - the whole of the analytics content is unavailable to a screen reader, and
  * the `'Trend Charts'` heading is the only thing announced.
  *
- * That is the current behaviour and this suite pins it rather than papering over it. The last case
- * below asserts the absence of every naming mechanism, so adding one becomes a deliberate,
- * test-visible change. Supplying a name or a text alternative means editing
- * `frontend/src/components/Analytics`, which is production code this programme is not authorized to
- * change - the two authorized touches are both in `backend/`. It is recorded as a ceiling in
- * `frontend/TESTING.md`, `docs/testing/TRACEABILITY-MATRIX.md` §G and the suggested-next-tasks lists.
+ * The last case below asserts the absence of every naming mechanism, so adding one becomes a
+ * deliberate, test-visible change. The ceiling itself is recorded in `frontend/TESTING.md`,
+ * `docs/testing/TRACEABILITY-MATRIX.md` §G and the suggested-next-tasks lists.
  *
  * @see frontend/src/components/Analytics - the module under test.
+ * @see e2e/tests/analytics.spec.ts - the same subject in a real browser; its test 4 asserts the
+ *   fourth row of the table above, which jsdom cannot reach.
  * @see frontend/src/test-utils/stubs/analyticsService.ts - the mapped stub and its contract.
  * @see frontend/src/test-utils/render.tsx - `renderWithProviders`, the shared mount harness.
  * @see frontend/TESTING.md - the dual-transformer arrangement and the jsdom canvas pitfall.
- * @see docs/testing/DECISION-LOG.md - the single source of truth for why this suite is shaped as
- *   it is, including which shims and mocks are not installed and why.
+ * @see docs/testing/DECISION-LOG.md - the single source of truth for why this suite is shaped as it
+ *   is, including which shims and mocks are not installed and why; rows D231 and D345 for the split
+ *   between this layer and the browser layer.
  */
 
 import { act } from '@testing-library/react';
@@ -96,8 +90,8 @@ const getTrendDataMock = jest.mocked(getTrendData);
 /*
  * The `chart.js` module object as it sits in this file's registry. The subject compiles to a
  * property read of this same object at the moment it constructs a chart, so a spy installed here is
- * the boundary the subject crosses. `require` rather than a namespace import: the interop helper an
- * `import * as` compiles to would hand back a copy, and a spy on a copy is a spy on nothing.
+ * the boundary the subject crosses. Reached with `require`, which returns the live registry entry;
+ * the interop helper an `import * as` compiles to returns a copy, and a spy on a copy is inert.
  */
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const chartModule = require('chart.js') as { Chart: unknown };
@@ -283,7 +277,6 @@ describe('TrendCharts (src/components/Analytics)', () => {
 
     await flushFetchEffect();
 
-    // The resolution was non-falsy, so the second effect's guard opened and `renderCharts` ran.
     expect(chartConstructor).toHaveBeenCalledTimes(1);
 
     const [element, configuration] = chartConstructor.mock.calls[0];
@@ -297,7 +290,6 @@ describe('TrendCharts (src/components/Analytics)', () => {
     expect(configuration.data.labels).toBe(TREND_SERIES.labels);
     expect(configuration.data.datasets[0].data).toBe(TREND_SERIES.values);
 
-    // Two arguments and no third: the subject passes no plugin list and no callback.
     expect(chartConstructor.mock.calls[0]).toHaveLength(2);
 
     // The subject itself reports nothing about charts. With the boundary controlled this is exact
@@ -323,17 +315,18 @@ describe('TrendCharts (src/components/Analytics)', () => {
   });
 
   it('stays mounted because chart.js returns early when jsdom cannot supply a canvas context, not because anything caught a failure', async () => {
-    // The one case that runs the installed `chart.js`. Its own diagnostic text and the number of
-    // records it writes are deliberately not asserted: `chart.js` is a floating `^4.3.0` range with
-    // no lockfile, so neither is reproducible across a clean install. What is asserted is the
-    // subject's behaviour and jsdom's pinned notice.
+    // The one case that runs the installed `chart.js`. The assertions are the subject's behaviour
+    // and jsdom's pinned notice; `chart.js` is a floating `^4.3.0` range with no lockfile, so its own
+    // diagnostic text and record count are not reproducible across a clean install and are unasserted.
     //
     // Note what this does NOT show. `renderCharts` is wrapped by no `try`/`catch`, so the subject
     // catches nothing here - `chart.js` fails to acquire a 2D context and returns of its own accord
-    // before it reaches the unregistered `'line'` controller. In a real browser the context would be
-    // acquired, the missing registration would raise, and with nothing wrapping the effect the error
-    // would propagate and unmount the subject. That path is the ceiling in the module docstring and
-    // is asserted nowhere.
+    // before it reaches the unregistered `'line'` controller. In a real browser the context IS
+    // acquired, the missing registration raises, and with nothing wrapping the effect the error
+    // propagates and unmounts the subject. That is the fourth row of the module docstring's table,
+    // and it is asserted one layer up: `e2e/tests/analytics.spec.ts` test 4 drives it in Chrome.
+    // The two readings are complementary, not competing - what differs is the canvas, not the
+    // component.
     chartConstructor.mockImplementation(
       (...args: unknown[]) => new (ChartBeforeSpying as never)(...args),
     );
@@ -342,7 +335,6 @@ describe('TrendCharts (src/components/Analytics)', () => {
 
     await flushFetchEffect();
 
-    // The constructor was entered - the ceiling is inside the library, not before it.
     expect(chartConstructor).toHaveBeenCalledTimes(1);
 
     // jsdom implements no 2D context and says so as soon as the library asks for one. That request
@@ -428,7 +420,7 @@ describe('TrendCharts (src/components/Analytics)', () => {
       expect(canvas).not.toHaveAttribute(attribute);
     }
 
-    // No fallback content either, which is the other way a canvas carries an alternative.
+    // No fallback content either, which is the other way a canvas carries a text equivalent.
     expect(canvas).toBeEmptyDOMElement();
 
     // A canvas has no implicit role, and nothing above supplied one, so no role query reaches it.

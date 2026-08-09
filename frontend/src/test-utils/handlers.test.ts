@@ -2,7 +2,7 @@
  * The suite that holds `./handlers`' layer-2 factories to the responses the assembled backend actually
  * produces, and holds every pattern in the module to an exact path.
  *
- * ## Why this suite exists
+ * ## What this suite pins
  *
  * A handler that answers the wrong status is invisible: the service and component suites assert the outcome
  * their subject was handed, so a factory that reports `500` where the application reports `404` makes every

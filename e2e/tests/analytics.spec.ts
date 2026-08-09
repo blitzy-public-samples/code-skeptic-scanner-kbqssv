@@ -2,9 +2,9 @@
  * End-to-end coverage of the harness client route `/analytics`.
  *
  * Subject: `TrendCharts`, the default export of `frontend/src/components/Analytics`, which
- * `e2e/harness/main.tsx` mounts at `/analytics` (L75) with its module-scope
- * `ANALYTICS_DATE_RANGE` (L41-L44) as the `dateRange` prop. That module is an extension-less
- * file; `e2e/vite.harness.config.ts` resolves and transforms it.
+ * `e2e/harness/main.tsx` mounts at `/analytics` with its module-scope `ANALYTICS_DATE_RANGE`
+ * as the `dateRange` prop. That module is an extension-less file; `e2e/vite.harness.config.ts`
+ * resolves and transforms it.
  *
  * `test` and `expect` come from `./harness-fixtures`, whose two automatic fixtures do the
  * cross-cutting work: `noEgress` aborts every request addressed off the harness origin and fails
@@ -25,33 +25,42 @@
  * | Ok, body is a trend series | `UnrenderableTrendSeriesError` |
  * | Ok, a trend series, `FORWARD_TREND_SERIES_HEADER` set | resolves, carrying the subject into `renderCharts` |
  *
- * What each test asserts, and the lines it reads from:
+ * What each test asserts, in declaration order:
  *
  * | Test | Behaviour asserted |
  * |------|--------------------|
  * | 1 | `components/Analytics` L18-L20 catch a failed trend request and log it, leaving the L66-L69 heading and canvas mounted |
  * | 2 | `components/Analytics` L16 calls `getTrendData(dateRange)` once per mount, and `harness/stubs/analyticsService.ts` builds `/api/trends?start=…&end=…` from that argument |
- * | 3 | `components/Analytics` L40 constructs a `Chart` from the tree-shakeable L2 export that no module registers, which throws out of the L26-L30 effect and takes the route down |
- * | 4 | The L68 canvas is absent from the browser's accessibility tree, so the analytics content reaches assistive technology not at all |
+ * | 3 | The L68 canvas is absent from the browser's accessibility tree, so the analytics content reaches assistive technology not at all |
+ * | 4 | `components/Analytics` L40 constructs a `Chart` from the tree-shakeable L2 export that no module registers, which throws out of the L26-L30 effect and takes the route down |
  *
- * Test 3 is the one place in this suite that opts into the stub's forwarding path, because it is
- * the only layer where the ceiling is observable: a real browser hands `renderCharts` a live 2D
- * context, so Chart.js gets as far as looking a chart part up in an empty registry, where jsdom
- * fails earlier on the context itself.
+ * Tests 1 to 3 leave the stub on its default rejecting path. Test 4 is the one place in this suite
+ * that opts into the forwarding path, and the only place in the repository where the
+ * missing-`Chart.register` ceiling is *observed* rather than described: a real browser hands
+ * `renderCharts` a live 2D context, so Chart.js gets as far as looking a chart part up in an empty
+ * registry. Under jsdom there is no 2D context at all, and `chart.js` reports that and returns
+ * before any registry lookup happens.
  *
  * `frontend/src/components/Analytics.test.tsx` covers the same component under jsdom with
- * `getTrendData` mocked, which is the layer where a resolving trend request is exercised without
- * this consequence.
+ * `getTrendData` mocked. That is where a *resolving* trend request is exercised without this
+ * consequence - the constructor is substituted, so the subject's chart configuration can be
+ * asserted while it stays mounted.
  *
- * ## What the chart tests here do and do not show
+ * ## Which chart path each test reaches
  *
  * The subject's only `try`/`catch` wraps the `getTrendData` call at L16-L21; `renderCharts` and the
- * `new Chart(...)` inside it are wrapped by nothing. This layer reaches **only** the fetch-rejection
- * path, because `harness/stubs/analyticsService.ts` rejects on every route, so `chartData` stays
- * `null` and `renderCharts` is never entered. Test 1's subject is therefore the caught *trend
- * request*, never chart construction. The real-browser outcome - the context acquired, the
- * unregistered `'line'` controller raising, and the error propagating out of an unwrapped effect to
- * unmount the subject - is what test 3 is skipped for, and it is asserted nowhere.
+ * `new Chart(...)` inside it are wrapped by nothing, so "the failure was caught" is never a correct
+ * description of a chart outcome. Two distinct paths are reached here, and keeping them apart is the
+ * whole point of making forwarding opt-in:
+ *
+ * - **Tests 1 to 3 - the transport path.** `harness/stubs/analyticsService.ts` rejects, `chartData`
+ *   stays `null`, and `renderCharts` is never entered. Test 1's subject is the caught *trend
+ *   request*, never chart construction, which is what leaves the heading and canvas standing for
+ *   tests 2 and 3 to read.
+ * - **Test 4 - the construction path.** With the stub's forwarding header set, the context is
+ *   acquired, the unregistered `'line'` controller raises, and the error propagates out of an
+ *   unwrapped passive effect and unmounts the subject. Test 4 asserts each of those three, so the
+ *   ceiling is measured in a real browser rather than left as a description.
  *
  * ## The canvas carries no accessible name - a documented ceiling
  *
@@ -59,12 +68,13 @@
  * `aria-labelledby`, no `title`, no fallback child content and no table or textual summary beside it.
  * A canvas has no implicit ARIA role, so the element is simply not in the accessibility tree and the
  * whole of the analytics content is unavailable to a screen reader - the heading is all that is
- * announced. Test 4 asserts that in a real browser rather than inferring it. Supplying a name or a
- * text alternative means editing `frontend/src/components/Analytics`, which is production code this
- * programme is not authorized to change, so it is recorded as a ceiling and pinned here.
+ * announced. Test 3 asserts that in a real browser rather than inferring it, so supplying a name or a
+ * text alternative becomes a deliberate, test-visible change.
  *
  * @see e2e/README.md - adding a spec to this directory.
- * @see docs/testing/DECISION-LOG.md - the interception, ceiling and layer-boundary rows for this file.
+ * @see frontend/src/components/Analytics.test.tsx - the jsdom layer for the same component.
+ * @see docs/testing/DECISION-LOG.md - the interception, ceiling and layer-boundary rows for this
+ *   file, including rows D231, D345 and D346.
  */
 
 import path from 'node:path';
@@ -83,9 +93,9 @@ import { expect, HARNESS_ORIGIN, resourceFailure, test } from './harness-fixture
 const CHARTS_ROUTE = '/analytics';
 
 /**
- * Wrapper `components/Analytics` L66 renders. It carries no class, and `harness/main.tsx` L64-L78
- * renders one route element inside the document's single `<main>` landmark, so this selector
- * matches that wrapper and nothing else.
+ * Wrapper `components/Analytics` L66 renders. It carries no class, and `harness/main.tsx` renders one
+ * route element inside the document's single `<main>` landmark, so this selector matches that wrapper
+ * and nothing else.
  */
 const CHARTS_CONTAINER = 'main > div';
 
@@ -104,10 +114,9 @@ const CHARTS_CONTAINER_CHILD_COUNT = 2;
 /**
  * Glob covering the trend request `harness/stubs/analyticsService.ts` L156 builds.
  *
- * Anchored to {@link HARNESS_ORIGIN}. A host-agnostic `'**\/api/trends*'` would also claim a
- * request addressed to a foreign host that shares the path, and fulfilling it would hide that
- * destination drift from the `noEgress` fixture's ledger. Anchored, such a request falls through
- * to that fixture, which aborts and records it. `./isolation.spec.ts` asserts exactly that.
+ * Anchored to {@link HARNESS_ORIGIN}, so the pattern claims only requests addressed to the harness
+ * origin. A request to a foreign host that shares this path matches nothing, falls through to the
+ * `noEgress` fixture, and is aborted and recorded. `./isolation.spec.ts` asserts exactly that.
  */
 const TREND_REQUEST_GLOB = `${HARNESS_ORIGIN}/api/trends*`;
 
@@ -126,10 +135,10 @@ const RANGE_END_KEY = 'end';
 /** Both, in the order L156 writes them, being every parameter the request carries. */
 const TREND_QUERY_KEYS = [RANGE_START_KEY, RANGE_END_KEY];
 
-/** `startDate` of the `ANALYTICS_DATE_RANGE` prop, from `harness/main.tsx` L42. */
+/** `startDate` of the `ANALYTICS_DATE_RANGE` prop the harness passes to the subject. */
 const RANGE_START = '2024-01-01';
 
-/** `endDate` of that prop, from `harness/main.tsx` L43. */
+/** `endDate` of that prop. */
 const RANGE_END = '2024-01-31';
 
 /** Status that drives the stub's status-error rejection. */
@@ -202,13 +211,13 @@ function collectRoles(node: AccessibilityNode | null): string[] {
 }
 
 /**
- * Whether `harness/stubs/analyticsService.ts` forwards a well-formed `TrendSeries` to the subject.
- * It rejects on every path, so the subject's `chartData` state stays `null` and the effect at
- * `components/Analytics` L26-L30 never calls `renderCharts`.
- * Response headers that opt the stub into forwarding a well-formed series to the subject.
+ * Response headers that opt `harness/stubs/analyticsService.ts` into forwarding a well-formed
+ * `TrendSeries` to the subject instead of rejecting.
  *
- * Only test 3 sets them, and only because the unmount that follows is what it asserts. The two
- * names come from the stub itself, so the contract is written in exactly one place.
+ * Without them the stub rejects on every path, so the subject's `chartData` state stays `null` and
+ * the effect at `components/Analytics` L26-L30 never calls `renderCharts` - which is what tests 1
+ * to 3 rely on. Only test 4 sets them, and only because the unmount that follows is what it
+ * asserts. Both names come from the stub itself, so the contract is written in exactly one place.
  */
 const FORWARD_TREND_SERIES_HEADERS = {
   [FORWARD_TREND_SERIES_HEADER]: FORWARD_TREND_SERIES_VALUE,
@@ -422,7 +431,7 @@ test.describe('harness route /analytics - TrendCharts (frontend/src/components/A
     browserDiagnostics.allow(UNREGISTERED_CHART_PART, REPORTING_COMPONENT);
 
     // The forwarding header is what carries the subject past the L27 guard into `renderCharts`.
-    // Without it the stub rejects a well-formed series, which is what tests 1 and 2 rely on.
+    // Without it the stub rejects a well-formed series, which is what tests 1 to 3 rely on.
     await page.route(TREND_REQUEST_GLOB, async (route) => {
       interceptedUrls.push(route.request().url());
       await route.fulfill({
@@ -447,13 +456,20 @@ test.describe('harness route /analytics - TrendCharts (frontend/src/components/A
       // the L26-L30 effect that calls it is passive - unlike the fetch at L16, which L18-L20 catch.
       expect(browserDiagnostics.pageErrorText()).toMatch(UNREGISTERED_CHART_PART);
 
-      // React names the component the throw came out of.
-      expect(browserDiagnostics.errorText()).toMatch(REPORTING_COMPONENT);
+      // React names the component the throw came out of, in a `console.error` it emits
+      // after the uncaught error has already propagated, so this is polled rather than
+      // read once.
+      await expect
+        .poll(() => browserDiagnostics.errorText(), {
+          message: 'expected React to name the component the throw came out of',
+          timeout: SETTLE_TIMEOUT_MS,
+        })
+        .toMatch(REPORTING_COMPONENT);
 
       /*
        * And it took the route with it: the heading and canvas L66-L69 rendered a moment earlier are
-       * both gone, because nothing in the harness catches an error from a passive effect. This is
-       * the cost that keeps forwarding opt-in, asserted here rather than described in a skip reason.
+       * both gone, because nothing in the harness catches an error from a passive effect. Asserted
+       * here rather than described in a skip reason.
        */
       await expect(page.locator(CHARTS_CONTAINER)).toHaveCount(0);
       await expect(page.locator(CHART_CANVAS)).toHaveCount(0);

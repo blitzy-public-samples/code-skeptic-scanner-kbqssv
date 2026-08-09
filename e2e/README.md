@@ -62,8 +62,8 @@ that matter most for this folder.
 | Path | Role |
 | --- | --- |
 | [`package.json`](./package.json) | Manifest and the eight scripts — the two run forms, the list and report forms, the headed and debug forms, the harness server, and the two browser gates. Three exact-pinned dev dependencies, nothing else |
-| [`scripts/require-browser.js`](./scripts/require-browser.js) | The browser gate behind `browsers:require`: resolves, validates, and fails when there is none. Downloads nothing |
-| [`scripts/verify-browser.js`](./scripts/verify-browser.js) | The download-free reporter behind `browsers:verify`: prints the absolute path a run will launch, or names both routes it checked and the exact path each was checked at. Always exits 0 when a browser is present |
+| [`scripts/require-browser.js`](./scripts/require-browser.js) | The **resolving** browser gate behind `browsers:require`: searches four routes, validates, canonicalises, hashes, publishes the path and its SHA-256, refuses a build below `--min-major`, and fails when there is none. Downloads nothing |
+| [`scripts/verify-browser.js`](./scripts/verify-browser.js) | The **confirming** browser gate behind `browsers:verify`: prints the absolute path a run will launch, or names both routes it checked and the exact path each was checked at. Exits non-zero when neither route holds a launchable file, and — when `browsers:require` has published a digest — when the file no longer matches it. Downloads nothing |
 | [`playwright.config.ts`](./playwright.config.ts) | Runner: spec discovery, reporters, artifact paths, egress denial, and the `webServer` that starts the harness |
 | [`vite.harness.config.ts`](./vite.harness.config.ts) | Harness dev server: module resolution, the virtual-module plugin, the filesystem guard, the fail-closed API surface. Its "Harness origin" section is also the one place the host and port are resolved, and it exports `BASE_PORT`, `HARNESS_HOST`, `HARNESS_PORT` and `HARNESS_ORIGIN` so the runner, the fixtures and the server cannot disagree |
 | [`harness/index.html`](./harness/index.html) | The HTML entry the repository does not otherwise have |
@@ -141,10 +141,11 @@ the second line still starts there — copy them as one block:
 (cd e2e && npm install)
 ```
 
-`npm install --prefix frontend` is not an alternative: `npm install` reads the manifest of the directory
-it is invoked from, and this repository has no root `package.json`, so it fails with
-`ENOENT ... open .../package.json`. `npm --prefix <dir> run <script>` *does* resolve the manifest at
-`<dir>`, which is why the command table in section 3 uses that form.
+Neither `npm install --prefix frontend` nor `npm --prefix frontend install` is an alternative: `npm
+install` reads the manifest of the directory it is invoked from and `--prefix` does not change that in
+either position, so with no root `package.json` both fail with `ENOENT ... open .../package.json`.
+`npm --prefix <dir> run <script>` *does* resolve the manifest at `<dir>`, which is why the command table
+in section 3 uses that form.
 
 **`frontend` must come first**, and it is a build-input dependency rather than a convention. The
 harness resolves ten runtime packages —
@@ -171,70 +172,14 @@ exact-pin their direct dependencies instead. See `D93` and `D275`.
 **No script in this package downloads a browser, and none should be added.** `@playwright/test` 1.44.1
 is affected by CVE-2025-59288: its browser downloader does not verify the TLS chain of the host it
 fetches from. The remedy taken here is to provision only from a channel that signs what it ships. See
-`D111`, `D129` and `D264` for the alternatives that were rejected and the residual risk that was
-accepted.
+`D111`, `D129` and `D264` — the last superseded by `D300`, `D301` and `D319` — for the alternatives that were rejected and
+the residual risk that was accepted.
 
-So the browser is a **prerequisite, obtained from your platform's own trusted channel**. Pick the row
-for the machine you are on. Every command below installs a signed artifact through a package manager or
-a vendor installer, and none of them is Playwright's downloader:
+So the browser is a **prerequisite, obtained from your platform's own trusted channel**. Two steps:
+get one, then prove the suite can launch it. Pick the row for the machine you are on — every command
+here installs a signed artifact through a package manager or a vendor installer, and none of them is
+Playwright's downloader:
 
-1. **An executable you name explicitly.** Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` to the full path of a
-   Chromium or Chrome binary provisioned from a verified artifact, and `playwright.config.ts` passes it
-   through as `launchOptions.executablePath`:
-
-   ```
-   # POSIX shells (bash, zsh)
-   export PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/google-chrome
-   ```
-
-   ```
-   # PowerShell
-   $env:PLAYWRIGHT_CHROMIUM_EXECUTABLE = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
-   ```
-
-   ```
-   REM Windows cmd.exe
-   set PLAYWRIGHT_CHROMIUM_EXECUTABLE=C:\Program Files\Google\Chrome\Application\chrome.exe
-   ```
-
-   The same three forms apply to the optional `CLONE_INDEX` override in the next section. On Windows the
-   path contains a space, so quote it in PowerShell and leave it unquoted after `set` in `cmd.exe`, where
-   quotes would become part of the value.
-
-2. **A Chromium build in Playwright's own cache.** With the variable unset, the runner loads the build
-   for this pin — `chromium version 125.0.6422.26` under `<cache>/chromium-1117`. Place one there from a
-   verified artifact; nothing in this package will fetch it for you.
-
-Whichever route you take, **prove it before running the suite**:
-
-```
-cd e2e
-npm run browsers:verify
-```
-
-That runs [`scripts/verify-browser.js`](./scripts/verify-browser.js), which fetches nothing and answers
-one question from the filesystem: is a Chromium executable this run can actually launch already present?
-It checks `PLAYWRIGHT_CHROMIUM_EXECUTABLE` first and, only if that is unset, the exact path
-`chromium.executablePath()` reports for the pinned version. **Exit 0 means a browser is there, and it
-prints the absolute path the run will launch. Exit 1 means neither route is satisfied**, and the message
-names both routes and the exact path each was looked for at. A path that exists but is a directory, or a
-file that is not executable, fails too.
-
-It replaces `playwright install --dry-run chromium`, which this package used to run under the same
-script name. That command prints the install location it *would* use and exits **0 whether or not
-anything is there** — measured in a container whose cache held no Chromium, it exited 0 while
-`fs.existsSync(chromium.executablePath())` was `false`. A check that cannot fail is not a check, and it
-is worse than none, because a pipeline that ran it looked green while every test was about to fail at
-launch.
-
-If you skip the gate and neither route is in place, every test fails identically with
-`browserType.launch: Executable doesn't exist at <path>`.
-
-**CI takes route 2, and checks it before running anything.** The `e2e` job sets
-`PLAYWRIGHT_CHROMIUM_EXECUTABLE` to a browser the runner image already carries, logs the runner version
-and the browser version, runs `browsers:verify` (which fetches nothing), and exits with an explicit
-`::error::` naming this contract when no executable is found there. It never downloads a browser, so a
-missing one is a visible environment failure rather than a silent, unverified fetch.
 | Platform | Provision with | Lands at |
 | --- | --- | --- |
 | Debian / Ubuntu | `sudo apt-get install -y google-chrome-stable` with Google's signing key configured, or `sudo apt-get install -y chromium` | `/usr/bin/google-chrome`, `/usr/bin/chromium` |
@@ -244,41 +189,113 @@ missing one is a visible environment failure rather than a silent, unverified fe
 | GitHub-hosted CI | **nothing to install.** The `ubuntu-latest` runner image already ships `google-chrome-stable`, built into the image from Google's signed repository | `/usr/bin/google-chrome` |
 | Any of the above | a Chromium build already sitting in Playwright's own cache, however it got there | `<cache>/chromium-*/…` |
 
-Then check it, and let the check fail if it is not there:
+Then let the gate decide whether a run can proceed, and let it fail if nothing is there:
 
 ```
 cd e2e
 npm run browsers:require
 ```
 
-`browsers:require` runs [`scripts/require-browser.js`](./scripts/require-browser.js), which resolves a
-browser in this order and stops at the first hit:
+**`browsers:require` is the gate.** It runs
+[`scripts/require-browser.js`](./scripts/require-browser.js), which resolves a browser in this order and
+stops at the first hit:
 
 1. **`PLAYWRIGHT_CHROMIUM_EXECUTABLE`**, which `playwright.config.ts` passes through as
    `launchOptions.executablePath`. An explicit value is authoritative in *both* directions: it is used
-   when it works, and it is an error when it does not, never silently replaced by something else.
-2. **A vendor install** at one of the paths in the table above for this platform.
-3. **A build in Playwright's own cache** — the one the runner loads when no executable path is given.
+   when it works, and it is an **error** when it does not, never silently replaced by something else. A
+   blank or undefined variable falls through to the next route.
+2. **`CHROME_BIN`**, the conventional variable a CI image or a developer sets to name a browser, treated
+   exactly like route 1 — authoritative both ways.
+3. **A vendor install** at one of the paths in the table above for this platform.
+4. **The build in Playwright's own cache**, at the exact path `chromium.executablePath()` reports for
+   this pin — here `chromium-1117`, browser version `125.0.6422.26`. That call is the only correct source
+   for this route: Playwright loads the build matching its own pinned revision and nothing else, and it
+   is the only thing that knows where `PLAYWRIGHT_BROWSERS_PATH` points — including the value `0`, which
+   relocates the cache inside the `playwright-core` package. Place a build there from a verified
+   artifact; nothing in this package will fetch it for you.
 
-It downloads nothing, prints the route it took and the path it resolved, and **exits non-zero when
-there is no usable browser**, listing the provisioning commands for the platform it is running on. On
-routes 1 and 2 it also writes `PLAYWRIGHT_CHROMIUM_EXECUTABLE=<path>` to `$GITHUB_ENV` when that
-variable is set, which is how one CI step resolves the browser and every later step inherits it.
+It downloads nothing, and **exits non-zero when there is no usable browser** — or when one is found but
+cannot be read — listing the provisioning commands for the platform it is running on. On success it
+prints the route it took, the path it resolved, the **canonical** path with symlinks resolved, the
+executable's SHA-256, and a note for anything about it that this user could overwrite.
 
-Set the variable by hand when you want a specific binary:
+On every route it writes **both** `PLAYWRIGHT_CHROMIUM_EXECUTABLE=<canonical path>` and
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE_SHA256=<digest>` to `$GITHUB_ENV` when that variable is set, which is how
+one CI step resolves the browser and every later step launches exactly the file that step read. The digest
+is the point of the canonicalisation: validating a *path* and then launching it later establishes nothing,
+because a path is a mutable pointer — `/usr/bin/google-chrome` is a symlink on most distributions, and a
+binary this user can replace can be swapped in between. `playwright.config.ts` recomputes the digest and
+refuses a mismatch before the launch, so both ends of that window are tied together.
+Both are published in GitHub’s delimited multi-line form with a random delimiter, so a resolved
+path can never be read as workflow syntax, and a path carrying a line break is refused rather than
+published. The digest is printed whether or not it can be published, so a local run with no
+`GITHUB_ENV` can bind its own launch by setting the variable by hand.
+
+Set either variable by hand when you want a specific binary. Both can be set in the usual
+three ways:
 
 ```
-PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chrome
+# POSIX shells (bash, zsh)
+export PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/google-chrome
 ```
 
-`browsers:verify` is the other, weaker check, and the difference matters. It runs
-`playwright install --dry-run chromium`, prints the exact build and directory the runner expects — for
-this pin, `chromium version 125.0.6422.26` under `<cache>/chromium-1117` — fetches nothing, and
-**always exits 0, present or absent**. Use it to find out what the cache route wants; use
-`browsers:require` to find out whether you can run.
+```
+# PowerShell
+$env:PLAYWRIGHT_CHROMIUM_EXECUTABLE = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+```
 
-If no browser is in place and you skip the check, every test fails identically at launch with
-`browserType.launch: Executable doesn't exist at <path>`, naming the cache directory route 3 expected.
+```
+REM Windows cmd.exe
+set PLAYWRIGHT_CHROMIUM_EXECUTABLE=C:\Program Files\Google\Chrome\Application\chrome.exe
+```
+
+The same three forms apply to the optional `CLONE_INDEX` override in the next section. On Windows the
+path contains a space, so quote it in PowerShell and leave it unquoted after `set` in `cmd.exe`, where
+quotes would become part of the value.
+
+`browsers:require` also reads the resolved build's own `--version`, so the run records *which*
+browser it got and not only where it came from. `--min-major <n>` additionally refuses a resolved
+build whose major version is below `n`:
+
+```
+npm run browsers:require -- --min-major 120
+```
+
+**Exit 0** means a usable browser was resolved. **Exit 1** means none was, or an explicitly named one is
+unusable, or the resolved build is below the required major version; the message names the routes it
+tried, the exact path each was looked for at, and the provisioning commands for the platform it is
+running on.
+
+**`browsers:verify` is the narrower reporter over the same provision**, not a weaker version of the gate.
+It runs [`scripts/verify-browser.js`](./scripts/verify-browser.js), which checks two filesystem locations
+— an explicit `PLAYWRIGHT_CHROMIUM_EXECUTABLE` and, only if that is unset, the cache path
+`chromium.executablePath()` reports — and **also exits non-zero when neither is launchable**. It simply
+does not search the vendor install locations and publishes nothing, and when a digest *was*
+published it confirms the executable against that too, which gives it a second way to fail.
+**Both are fail-closed, and neither fetches anything.** Use `browsers:require` to decide
+whether a run can proceed; use `browsers:verify` to see what a run *without* an explicit executable would
+load. A path that exists but is a directory, or a file that is not executable, fails either one.
+
+Neither script runs `playwright install --dry-run chromium`, which is what this package used under the
+`browsers:verify` name before. That command prints the install location it *would* use and exits **0
+whether or not anything is there** — measured in a container whose cache held no Chromium, it exited 0
+while `fs.existsSync(chromium.executablePath())` was `false`. A check that cannot fail is not a check,
+and it is worse than none, because a pipeline that ran it looked green while every test was about to fail
+at launch.
+
+If no browser is in place and you skip the gate, every test fails identically at launch with
+`browserType.launch: Executable doesn't exist at <path>`, naming the cache directory route 4 expected.
+
+**CI resolves the browser rather than hardcoding it.** The `e2e` job pins no path: it sets only
+`E2E_MIN_CHROMIUM_MAJOR: '120'`, runs `browsers:require -- --min-major "$E2E_MIN_CHROMIUM_MAJOR"` so the
+resolver searches the four routes in order and refuses an unusably old build, tees that reading to
+`reports/browser.txt`, then prints the pinned runner's own version and runs `browsers:verify` against the
+executable the gate published. Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` as a repository or environment
+variable to pin a specific artifact; leave it unset and the resolver finds the runner image's own
+`google-chrome-stable` — at route 2 if the image exports `CHROME_BIN`, otherwise at route 3, where
+`/usr/bin/google-chrome` heads the Linux candidate list. Either way the resolved path and version are
+recorded. No step downloads a browser, so a missing one is a visible environment failure rather than a
+silent, unverified fetch.
 
 ### Nothing else is required
 
@@ -286,7 +303,17 @@ If no browser is in place and you skip the check, every test fails identically a
   section and the next.
 - **No backend.** Nothing starts `uvicorn`, and no spec talks to a real API. Every request the UI makes
   is answered by `page.route` interception in the spec that made it.
-- **No credentials, and no network.** Egress is denied at two layers, described in section 4.
+- **No real credential is read, and no request leaves the harness origin.** Both are worth stating
+  precisely rather than as an absolute, because the precise version is what has actually been tested.
+  What is enforced: a Chromium launched with egress disabled at the browser layer, a context-wide
+  `page.route` that aborts and ledgers any request to a host other than `127.0.0.1:<port>`, a harness
+  server that answers an unintercepted API path `503` instead of proxying it, and a middleware that
+  refuses its own dev-server control paths. What is *not* claimed: the harness talks to itself over a
+  real loopback socket, so this is a boundary rather than an absence of networking; and the four
+  credential-shaped values the configuration spec types are synthetic literals asserted synthetic by a
+  gate, not an assurance that no credential-shaped string exists anywhere in the run. The residual and
+  the reasoning are in section 4 and in
+  [`../docs/testing/SECURITY-GAPS.md`](../docs/testing/SECURITY-GAPS.md).
 - **No separate server to start.** `playwright.config.ts` starts the harness through its `webServer`
   block and stops it when the run ends. Section 3 covers running it standalone, which is only for
   manual inspection.
@@ -324,6 +351,7 @@ back to the registry when the local executable is missing.
 
 **What "executed as written" covers, and what it does not.** The non-interactive forms have been run
 verbatim on this checkout and their outcome is recorded in section 8: `npm test`, `npm run test:list`,
+`npm run browsers:require` (including with `--min-major` and against a deliberately bogus executable),
 `npm run browsers:verify`, `./node_modules/.bin/playwright --version`, and single-spec and
 single-title `playwright test` invocations. The three **interactive** forms — `test:headed`,
 `test:debug` and `report` — have not been exercised here and cannot be, since each waits on a human
@@ -334,7 +362,7 @@ not because a run of them is being reported.
 
 | Run from | Command | Does |
 | --- | --- | --- |
-| `e2e` | `npm test` | The whole suite. Starts the harness, runs 19 tests, stops the harness |
+| `e2e` | `npm test` | The whole suite. Starts the harness, runs 31 tests, stops the harness |
 | repository root | `npm --prefix e2e test` | The same run, without changing directory |
 | `frontend` | `npm run test:e2e` | The same run, chained through `npm --prefix ../e2e run test` |
 | `e2e` | `npm run test:headed` | The same run with a visible browser window. Interactive |
@@ -350,7 +378,7 @@ see `D113` and `D257`.
 
 | Run from | Command | Does |
 | --- | --- | --- |
-| `e2e` | `npm run test:list` | Lists the 19 tests and exits. Launches no browser |
+| `e2e` | `npm run test:list` | Lists the 31 tests and exits. Launches no browser |
 
 This is the layer's readiness check, and CI runs it as its own step **before** the browser-provisioning
 gate, precisely because it needs no browser: a host with no browser still leaves a retained readiness
@@ -370,10 +398,14 @@ listing. Use one of the `e2e`-local forms when you need to pass anything.
 
 | Run from | Command | Does |
 | --- | --- | --- |
-| `e2e` | `npx playwright test --list` | Lists the 19 tests and exits. The collection check for this layer; needs no browser |
-| `e2e` | `npx playwright test tests/dashboard.spec.ts` | One spec |
-| `e2e` | `npx playwright test -g "renders an empty tweet-list container"` | One test by title |
-| `e2e` | `npx playwright test --headed -g "<title>"` | One test, visible |
+| `e2e` | `npm run test:list` | Lists the 31 tests and exits. The collection check for this layer; needs no browser. Use it rather than a bare `playwright test --list`, which writes the configured reporters and replaces your last result stream with an all-skipped stub |
+| `e2e` | `npm test -- tests/dashboard.spec.ts` | One spec |
+| `e2e` | `npm test -- -g "renders an empty tweet-list container"` | One test by title |
+| `e2e` | `npm run test:headed -- -g "<title>"` | One test, visible |
+| repository root | `npm --prefix e2e test -- -g "<title>"` | The same, without changing directory. The `--` is required: without it npm consumes the flag and the whole suite runs |
+
+Every form goes through a `package.json` script, so the runner is always
+`e2e/node_modules/.bin/playwright`; anything after `--` is passed straight to it.
 
 ### The harness on its own
 
@@ -440,8 +472,8 @@ subjects are extension-less **files**, not directories:
 | `/analytics` | `TrendCharts` | `frontend/src/components/Analytics` | default | [`tests/analytics.spec.ts`](./tests/analytics.spec.ts) |
 | `/configuration` | `TwitterAPISettings` | `frontend/src/components/Configuration` | default | [`tests/configuration.spec.ts`](./tests/configuration.spec.ts) |
 
-Three to five tests per route spec, plus four in `isolation.spec.ts` — nineteen in total, of which one
-is a reasoned skip, so a green run reads **18 passed, 1 skipped**. Which test pins which behaviour is
+Three to six tests per route spec, plus fifteen in `isolation.spec.ts` — thirty-one in total, **none of
+them a skip**, so a green run reads **31 passed, 0 skipped**. Which test pins which behaviour is
 recorded in
 [`../docs/testing/TRACEABILITY-MATRIX.md`](../docs/testing/TRACEABILITY-MATRIX.md), not here.
 
@@ -462,42 +494,57 @@ This is a property of the components, and the specs assert it rather than workin
   ceiling.
 - **`/analytics`** renders its heading and its `<canvas>` on every response that does not opt in.
   `harness/stubs/analyticsService.ts` rejects by default, which holds the component on its
-  caught-failure branch and keeps it from constructing a chart. Assert the heading and the canvas,
-  never a painted chart.
+  caught-failure branch and keeps it from constructing a chart. Three of the four tests in
+  `analytics.spec.ts` rely on that: assert the heading and the canvas, never a painted chart.
 
-  One test opts in, by fulfilling the trend route with the stub's `x-harness-forward-trend-series`
+  The fourth opts in, by fulfilling the trend route with the stub's `x-harness-forward-trend-series`
   header, and asserts the opposite: the component reaches `new Chart(...)`, Chart.js reports a chart
   part no module registered, the error escapes the passive effect uncaught, and the route comes down.
   That is why forwarding is opt-in rather than the default — it is destructive, and only the test that
-  asserts the destruction wants it. This is also the only layer where the ceiling is observable: a real
-  browser hands the component a live 2D context, where jsdom fails earlier on the context itself.
+  asserts the destruction wants it. It is an active test, not a skip: this is the **only** layer where
+  the missing-`Chart.register` ceiling can be observed at all, because a real browser hands the
+  component a live 2D context, where jsdom fails earlier on the context itself. The jsdom side is
+  covered by `frontend/src/components/Analytics.test.tsx`, which substitutes the constructor instead.
 
 ### The interception contract
 
-Each spec installs its own `page.route` handlers **before** navigating. Tweet fetches need **two**
-patterns:
+Each spec installs its own `page.route` handlers **before** navigating, and **every pattern is anchored
+to the harness origin**. Import `HARNESS_ORIGIN` from [`tests/harness-fixtures.ts`](./tests/harness-fixtures.ts)
+and build each pattern from it:
 
 ```
-'**/tweets*'
-'**/undefined/tweets*'
+`${HARNESS_ORIGIN}/tweets*`
+`${HARNESS_ORIGIN}/undefined/tweets*`
 ```
 
-Both of them match the request that is actually issued, and registering both is deliberate rather than
-defensive. The axios base URL in `frontend/src/services/api.ts` evaluates to the literal string
-`"undefined"`, so requests go to `/undefined/tweets?page=undefined&limit=undefined`: `'**/tweets*'`
-matches it because `**` spans the `/undefined` segment, and `'**/undefined/tweets*'` matches it by
-naming that segment explicitly. The narrow pattern is what documents the defect at the point of
-interception — a spec that registered only the broad one would keep passing if the base URL were ever
-fixed, and would say nothing about which URL it had asserted. The harness preserves the defect on
-purpose — see section 6.
+**Anchoring is a safety requirement, not a style.** Playwright resolves a `page.route` a spec adds
+*before* the context-wide rule the `noEgress` fixture installs, so the spec's pattern wins. A
+host-agnostic `'**/tweets*'` matches that path on **any** origin, which means a request the guard exists
+to abort — say the same path on `https://example.com` — would instead be *fulfilled* by the spec's own
+handler with the spec's own fixture. The test then passes while asserting nothing about where the
+request went, and the guard never records it. `tests/isolation.spec.ts` drives exactly this contrast for
+all four intercepted request shapes, so the property is asserted rather than assumed.
+
+Tweet fetches need **two** patterns, and registering both is deliberate rather than defensive. The axios
+base URL in `frontend/src/services/api.ts` evaluates to the literal string `"undefined"`, so requests go
+to `/undefined/tweets?page=undefined&limit=undefined`: `` `${HARNESS_ORIGIN}/tweets*` `` matches a
+configured base URL and `` `${HARNESS_ORIGIN}/undefined/tweets*` `` matches the unset one by naming that
+segment explicitly. The narrow pattern is what documents the defect at the point of interception — a
+spec that registered only the other one would keep passing if the base URL were ever fixed, and would
+say nothing about which URL it had asserted. The harness preserves the defect on purpose — see
+section 6.
 
 The other two endpoints belong to the harness stubs:
 
 | Request | Pattern | Fulfilled with |
 | --- | --- | --- |
-| `GET /undefined/tweets` | `**/undefined/tweets*` | `[]` for render assertions; `fixtures/tweets.json` for the ceiling test |
-| `GET /api/trends` | `**/api/trends*` | [`fixtures/trends.json`](./fixtures/trends.json), or a 500 for the failure path, or that fixture plus `x-harness-forward-trend-series: 1` for the chart ceiling |
-| `POST /api/config/twitter` | `**/api/config/twitter` | `{}` with 200 or a rejecting status |
+| `GET /undefined/tweets` | `` `${HARNESS_ORIGIN}/undefined/tweets*` `` | `[]` for render assertions; `fixtures/tweets.json` for the missing-`TweetCard` ceiling test |
+| `GET /api/trends` | `` `${HARNESS_ORIGIN}/api/trends*` `` | [`fixtures/trends.json`](./fixtures/trends.json), or a 500 for the failure path, or that fixture plus `x-harness-forward-trend-series: 1` for the chart-construction test |
+| `POST /api/config/twitter` | `` `${HARNESS_ORIGIN}/api/config/twitter` `` | `{}` with 200 or a rejecting status |
+
+The one host-agnostic pattern in this layer is the `context.route('**/*')` inside the `noEgress` fixture
+itself, which is the catch-all that aborts foreign origins. That one is meant to match everything; a
+pattern in a spec is not.
 
 ### The API surface fails closed
 
@@ -507,13 +554,17 @@ The harness answers it `503` with a body naming the remedy:
 ```
 {"error":"harness-api-not-intercepted",
  "request":"GET /undefined/tweets?page=1&limit=10",
- "remedy":"page.route('**/undefined/tweets*', route => route.fulfill({ json: [] }))"}
+ "remedy":"page.route(`${HARNESS_ORIGIN}/undefined/tweets*`, route => route.fulfill({ json: [] }))"}
 ```
 
-and logs the same line to the dev-server output under a `[harness-api-not-intercepted]` prefix. On top
-of that, the `noEgress` fixture in [`playwright.config.ts`](./playwright.config.ts) keeps a ledger and
-**fails any spec that forgot an intercept**, so a missing handler is a named failure rather than an
-empty render. A forgotten intercept therefore cannot be mistaken for a passing test.
+The remedy it prints is anchored, for the reason above: a remedy copied out of an error message is the
+most likely pattern to end up in a new spec, so `vite.harness.config.ts` spells every one of them with
+`${HARNESS_ORIGIN}`.
+
+It also logs the same line to the dev-server output under a `[harness-api-not-intercepted]` prefix. On
+top of that, the `noEgress` fixture in [`tests/harness-fixtures.ts`](./tests/harness-fixtures.ts) keeps a
+ledger and **fails any spec that forgot an intercept**, so a missing handler is a named failure rather
+than an empty render. A forgotten intercept therefore cannot be mistaken for a passing test.
 
 ### The browser's own diagnostics are a verdict, not an attachment
 
@@ -572,7 +623,7 @@ not touched. This layer adds no coverage series of its own and touches neither s
 | --- | --- | --- |
 | HTML report | `e2e/playwright-report/index.html` | Every run. Opened with `npm run report` |
 | JUnit XML result stream | `e2e/reports/e2e-junit.xml` | Every run. Each `<testcase>` carries its spec file and test title |
-| Traces, screenshots, video | `e2e/test-results/` | On failure only — `retain-on-failure`, `only-on-failure`, `retain-on-failure` |
+| Traces, screenshots, video | `e2e/test-results/` | On failure only — `trace: { mode: 'retain-on-failure', sources: false }`, `only-on-failure`, `retain-on-failure` |
 | Harness dev-server log | the run's own output | `webServer` pipes stdout and stderr, which is what surfaces the `[harness-api-not-intercepted]` lines |
 
 All three paths are matched by the repository [`.gitignore`](../.gitignore), so no run dirties the tree.
@@ -676,19 +727,41 @@ needs a runtime package that is not yet aliased, add that package to the fronten
 
 ### A spec
 
-Create `tests/<name>.spec.ts`. Import `test` and `expect` from
-[`../playwright.config`](./playwright.config.ts) rather than from `@playwright/test`
-directly — that is what installs the egress guard and the un-intercepted-request ledger. Install every
-`page.route` handler **before** `page.goto`, and reuse a payload from [`fixtures/`](./fixtures/) rather
-than inlining one.
+Create `tests/<name>.spec.ts`. Import `test`, `expect` and `HARNESS_ORIGIN` from
+[`./harness-fixtures`](./tests/harness-fixtures.ts) — **not** from `@playwright/test` and not from
+`../playwright.config`, neither of which declares a fixture. That one module is what installs the egress
+guard, the un-intercepted-request ledger and the browser-diagnostics verdict:
+
+```
+import { expect, HARNESS_ORIGIN, test } from './harness-fixtures';
+```
+
+Then install every `page.route` handler **before** `page.goto`, anchor each pattern to
+`${HARNESS_ORIGIN}` (section 4 explains why that is load-bearing), and reuse a payload from
+[`fixtures/`](./fixtures/) rather than inlining one.
 
 ### A fixture
 
-Add JSON to [`fixtures/`](./fixtures/). Keep a tweet payload's shape aligned with the ten fields
-declared by both `frontend/src/schema/tweetSchema.ts` and `backend/app/schema/tweet.py`:
-`tweet_id`, `content`, `user_id`, `timestamp`, `likes_count`, `retweets_count`, `doubt_rating`,
-`ai_tools`, `media_urls`, `quoted_tweet_id`. A fixture that drifts from those schemas weakens every
-assertion that reads it.
+Add JSON to [`fixtures/`](./fixtures/). A tweet payload here is the **ten-key wire shape** — what an API
+would put on the network — and carries every one of the ten keys both `frontend/src/schema/tweetSchema.ts`
+and `backend/app/schema/tweet.py` name: `tweet_id`, `content`, `user_id`, `timestamp`, `likes_count`,
+`retweets_count`, `doubt_rating`, `ai_tools`, `media_urls`, `quoted_tweet_id`. A fixture that drifts from
+those key names weakens every assertion that reads it.
+
+Two differences from the schemas are deliberate, and a fixture author needs both:
+
+- **`timestamp` is an ISO 8601 string, which the frontend schema rejects.**
+  `frontend/src/schema/tweetSchema.ts` types it `z.date()`, and no JSON value can satisfy that — so this
+  payload is valid over the wire and invalid under `tweetSchema.parse`. That is the production defect, not
+  a fixture error; `frontend/src/schema/tweetSchema.test.ts` asserts the rejection. The backend's pydantic
+  model does accept the string, because it coerces.
+- **`quoted_tweet_id` must be present, with `null` for absent.** The frontend field is nullable but not
+  optional, so omitting the key fails `parse` while `null` passes. The backend model allows the key to be
+  omitted entirely. Include it and set it to `null`.
+
+Neither difference is normalised away anywhere: the wire shape is what the components actually receive,
+and the in-memory shape a Redux test uses is built separately by
+`frontend/src/test-utils/factories.ts`.
 
 ### A stub
 
@@ -728,12 +801,12 @@ because a green run says nothing about whether a red one is diagnosable.
 
 | | |
 | --- | --- |
-| Result | **19 passed, 0 skipped, 0 failed, 0 flaky** — exit 0, 17.1 s wall (`time="17.097555"` in the JUnit record) |
-| Per spec | `analytics` 3 tests / 1 skipped / 1.369 s · `configuration` 3 / 0 / 1.844 s · `dashboard` 3 / 0 / 2.944 s · `tweets` 3 / 0 / 3.481 s |
+| Result | **31 passed, 0 skipped, 0 failed, 0 flaky** — exit 0, 17.4 s wall (`time="17.405289"` in the JUnit record) |
+| Per spec | `analytics` 4 tests / 0 skipped · `configuration` 6 / 0 · `dashboard` 3 / 0 · `isolation` 15 / 0 · `tweets` 3 / 0 |
 | Runner | `@playwright/test` 1.44.1, one `chromium` project, 1 worker |
 | Browser | **Google Chrome 151.0.7922.76**, provisioned out of band and named with `PLAYWRIGHT_CHROMIUM_EXECUTABLE`; the Playwright cache held no Chromium |
-| Runtime | Node v22.23.1 / npm 10.9.8; harness `VITE v4.5.14` ready in 671 ms on `127.0.0.1:4187` (`CLONE_INDEX=014`) |
-| Artifacts | `reports/e2e-junit.xml` (`tests="19" failures="0" skipped="0" errors="0"`), `playwright-report/index.html` (456,554 bytes), `test-results/.last-run.json` = `{"status":"passed","failedTests":[]}` |
+| Runtime | Node v22.23.1 / npm 10.9.8; harness `VITE v4.5.14` on `127.0.0.1:4197` (`CLONE_INDEX=024`) |
+| Artifacts | `reports/e2e-junit.xml` (`tests="31" failures="0" skipped="0" errors="0"`), `playwright-report/index.html` (465,930 bytes), `test-results/.last-run.json` = `{"status":"passed","failedTests":[]}` |
 **That step has since been performed, and this is its outcome.** The full suite ran in a real browser.
 Everything needed to re-derive the figures is in the table, because a result nobody can reproduce is an
 assertion rather than evidence:
@@ -741,20 +814,21 @@ assertion rather than evidence:
 | | |
 | --- | --- |
 | Command | `npm test`, run from `e2e/` with `CI=true`, which selects `workers: 1` and `retries: 2` — the same configuration the workflow runs under |
-| Result | **19 passed, 0 skipped, 0 failed** — exit 0 |
-| Runner | `@playwright/test` **1.44.1**, one `chromium` project. Confirmed by `./node_modules/.bin/playwright --version` reporting `Version 1.44.1` |
-| Browser | Provisioned out of band and named with `PLAYWRIGHT_CHROMIUM_EXECUTABLE`. Nothing in the run downloaded anything; `npm run browsers:verify` exits 0 while fetching nothing |
-| Runtime | Node v22.23.1 / npm 10.9.8, Windows |
-| Commit | Run against `8a255fb`. Re-run it on any later commit before quoting these numbers — a recorded result describes one tree, not the branch |
-| Artifacts | `reports/e2e-junit.xml`, root `tests="19" failures="0" skipped="0" errors="0"`; `playwright-report/index.html`; `reports/list-tests.txt` reporting `Total: 19 tests in 5 files` |
-| Retention | All three are uploaded by the `e2e` job — as `e2e-test-evidence` and `playwright-report`, 30-day retention, `if-no-files-found: error`. A **local** run leaves them in the working tree only, where `.gitignore` keeps them out of version control, so they are not in this repository |
+| Result | **31 passed, 0 skipped, 0 failed, 0 flaky** — exit 0 |
+| Per spec | `analytics` 4 tests / 0 skipped · `configuration` 6 / 0 · `dashboard` 3 / 0 · `isolation` 15 / 0 · `tweets` 3 / 0. Thirty-one in total and **nothing skipped** |
+| Runner | `@playwright/test` **1.44.1**, one `chromium` project, 1 worker. Confirmed by `./node_modules/.bin/playwright --version` reporting `Version 1.44.1` |
+| Browser | **Google Chrome 151.0.7922.76**, provisioned out of band, with `PLAYWRIGHT_CHROMIUM_EXECUTABLE_SHA256` bound to it, resolved by `browsers:require` and recorded as `Browser resolved from PLAYWRIGHT_CHROMIUM_EXECUTABLE: C:\Program Files\Google\Chrome\Application\chrome.exe`. Nothing in the run downloaded anything; the Playwright cache held no Chromium |
+| Runtime | Node v22.23.1 / npm 10.9.8, Windows; harness `VITE v4.5.14` on `127.0.0.1:<4173 + CLONE_INDEX>` |
+| Commit | Recorded by the tooling rather than written here — `python ../docs/testing/dashboard-extract.py` prints the branch and commit of the tree it read in its §1.0 block, so re-run it beside the suite and quote that |
+| Artifacts | `reports/e2e-junit.xml` (root `tests="31" failures="0" skipped="0" errors="0"`), `playwright-report/index.html` (about 456 KB, its exact size moving with the run), `test-results/.last-run.json` = `{"status":"passed","failedTests":[]}`, `reports/list-tests.txt` reporting `Total: 19 tests in 5 files`, and `reports/browser.txt` carrying the resolved executable, its version and the runner version |
+| Retention | All of them are uploaded by the `e2e` job — as `e2e-test-evidence` at 30 days and `playwright-report` at **7**, both `if-no-files-found: error`. A **local** run leaves them in the working tree only, where `.gitignore` keeps them out of version control, so they are not in this repository |
 
 **Where the failure evidence comes from.** `trace`, `screenshot` and `video` are all configured
 on-failure only, so a green run retains none of them and `e2e/test-results/` is legitimately empty. They
-were observed working during a separate run in which one test timed out under host contention:
-`test-results/configuration-…-chromium/` then held `trace.zip`, `test-failed-1.png` and `video.webm`.
-CI uploads that directory as `e2e-failure-artifacts` with `if-no-files-found: warn` for exactly this
-reason — `error` would fail a passing run.
+have been observed twice: once incidentally, in a run where one test timed out under host contention, and
+once deliberately — see "What a green run leaves out" below, which is also where the retention consequences
+are set out. CI uploads that directory as `e2e-failure-artifacts` with `if-no-files-found: warn` for
+exactly this reason — `error` would fail a passing run.
 
 **One reproducibility note.** `npm test` without `CI=true` lets Playwright derive the worker count from
 the host. On a heavily contended machine that is enough to push a test past its 30-second budget: on
@@ -762,12 +836,22 @@ this host, sharing it with nineteen sibling checkouts, `configuration.spec.ts �
 credentials …` timed out once that way and passed on every serial run. If you see a timeout rather than
 an assertion failure, re-run with `CI=true` or `--workers=1` before treating it as a defect.
 
-**One thing this run did not establish.** It had no failure, so the `trace: 'retain-on-failure'`,
-`screenshot: 'only-on-failure'` and `video: 'retain-on-failure'` settings in `playwright.config.ts` were
-never triggered and `test-results/` holds only `.last-run.json`. Failure-path artifact retention is
-configured and reasoned, not observed — the same statement appears in
-[`../docs/testing/DASHBOARD-TEMPLATE.md`](../docs/testing/DASHBOARD-TEMPLATE.md) section 7.3, and it is worth
-knowing before you rely on a trace being there.
+**What a green run leaves out, and how that gap was closed.** A passing run triggers none of the
+failure-conditional settings, so `test-results/` holds only `.last-run.json` and the paragraph above is the
+only reason to believe a trace would be there. That was closed deliberately rather than argued: a throwaway
+spec was made to fail on purpose, Playwright wrote `trace.zip`, `test-failed-1.png` and `video.webm` beside
+it, and the zip was opened and its entries listed. The same exercise established the effect of
+`sources: false` two ways — with sources enabled the archive carries an extra `src@<sha>.txt` entry holding
+the whole spec file, and with it disabled that entry is absent. The probe spec was then deleted.
+
+That matters beyond diagnosis. A trace, a filmstrip, a screenshot and a video all record whatever the
+browser showed, `components/Configuration` renders two of its four credential fields as `type="text"`, and
+Playwright 1.44 offers no masking for automatic failure evidence — so those values are retained verbatim
+whenever that spec fails, and no configuration removes them. What is done instead: every attachment is
+redacted to key names, value presence, length and a digest; the trace no longer embeds this suite's source;
+CI keeps the two evidence artifacts for 7 days rather than 30; and the first test in
+`tests/configuration.spec.ts` fails if any literal it types stops being recognisably synthetic, which is the
+only point at which a real credential could enter that evidence.
 
 Every test executes; nothing in this layer is skipped. The chart-construction ceiling used to be the one
 exception, on the grounds that the harness stub rejected on every path — it now has an opt-in forwarding
@@ -801,7 +885,7 @@ exercised, and the browser is a prerequisite rather than something a script here
 Everything in this section is **out of scope and deliberately not fixed.** Where a defect is asserted by
 a test, repairing it will turn a passing test red on purpose —
 [`../docs/testing/TRACEABILITY-MATRIX.md`](../docs/testing/TRACEABILITY-MATRIX.md) records which test
-pins which defect, so check it before attempting any of these.
+pins which defect, so check it before attempting any of these. The security exposures among them — and the ones this layer cannot see, in the application and in the deployment files — are written up individually in [`../docs/testing/SECURITY-GAPS.md`](../docs/testing/SECURITY-GAPS.md), with the clause that put each out of reach and what has to be done.
 
 **Would let the real application be served, and retire most of this harness**
 
@@ -876,15 +960,18 @@ purpose — check `../docs/testing/TRACEABILITY-MATRIX.md` §G rows G9-G12 first
     exact throughout, but `frontend/package.json` is exact for only the 11 devDependencies the test
     programme owns — its other 17 declarations are caret ranges frozen to the pre-existing baseline, so a
     frontend install can still drift within them (`D172`).
-21. **Closed.** The `e2e` job in `.github/workflows/ci.yml` no longer installs a browser and no longer
-    invokes the runner from the repository root: it runs `npm install`, `npm run browsers:verify` and
-    `npm test` under `working-directory: e2e`, and locates a pre-provisioned browser with
-    `test -x "${CHROME_BIN:-/usr/bin/google-chrome}"` before exporting it as
-    `PLAYWRIGHT_CHROMIUM_EXECUTABLE`. What remains open is narrower: **that job has never run on a hosted
-    runner**, so its dependence on the runner image providing Chrome at that path is reasoned rather than
-    observed, and the rest is upstream: `@playwright/test` >= 1.55.1 carries the fix for CVE-2025-59288
-    and requires `node>=18`, so the downloader stops being a hazard only once the declared Node ceiling
-    lifts. See `D212`, `D264` and `D267`.
+21. **Closed.** The `e2e` job in `.github/workflows/ci.yml` no longer installs a browser, no longer
+    invokes the runner from the repository root, and **no longer hardcodes a browser path**: it runs
+    `npm install`, then `npm run browsers:require -- --min-major "$E2E_MIN_CHROMIUM_MAJOR"`, then
+    `browsers:verify`, then `npm test`, all under `working-directory: e2e`. The resolver searches the four
+    routes in order and publishes what it found through `$GITHUB_ENV` — the canonical path together with
+    `PLAYWRIGHT_CHROMIUM_EXECUTABLE_SHA256`, which the launch re-checks — so the path launched is the path
+    logged, and a build below the version floor fails the job with its version in the message. What
+    remains open is narrower: **that job has never run on a hosted runner**, so its reliance on the runner
+    image carrying a Chrome at one of the vendor paths is reasoned rather than observed, and the rest is
+    upstream: `@playwright/test` >= 1.55.1 carries the fix for CVE-2025-59288 and requires `node>=18`, so
+    the downloader stops being a hazard only once the declared Node ceiling lifts. See `D212`, `D267`, and
+    `D264` as superseded by `D300`, `D301` and `D319`.
 22. `.github/workflows/cd.yml` contains a post-deployment health-check step whose body is entirely
     comments, so it passes vacuously and gates nothing, and `docker-compose.yml` health-checks a
     `/health` route the application never declares.
@@ -914,13 +1001,16 @@ its own HTTP. The rows this folder leans on most:
 | `D41` | Why a NUL-prefixed virtual module id, and why the two simpler ids do not work |
 | `D42` | Why missing named exports are appended as `undefined` rather than implemented |
 | `D93`, `D159`, `D275` | Why no lockfile is committed, why `npm install` rather than `npm ci`, and why the install is no longer suppressed at source |
-| `D111`, `D129`, `D236` | Why no script downloads a browser, and why `browsers:verify` is a gate that fails rather than a report that always passes |
+| `D111`, `D129`, `D236` | Why no script downloads a browser, and why `browsers:verify` fails rather than reporting and always passing |
+| `D319` | Why the validated browser is bound to the launched one by digest, and why route 3 cannot be |
+| `D321` | Why every same-origin request the harness serves is recorded as a census |
 | `D237` | Why CI runs the suite from `e2e/` through `npm test` instead of from the repository root |
 | `D112` | Why `reuseExistingServer` is `false` unconditionally |
 | `D114`, `D128` | Why egress is denied at two layers, and why only one origin is bypassed |
 | `D123` | Why the harness is started through the pinned local binary with an explicit port |
 | `D130`, `D276` | Why the host and port are resolved in exactly one module, and why that module is now the harness config |
-| `D264` | Why `browsers:require` exists alongside `browsers:verify`, and how CI provisions its browser |
+| `D264`, superseded by `D300`, `D301` and `D319` | Why `browsers:require` is the gate and `browsers:verify` the narrower reporter that also fails closed, why the cache route asks Playwright for its own executable path rather than scanning, why `CHROME_BIN` is honoured, and why CI sets a version floor instead of a hardcoded path |
+| `D327` | Why the Chart.js registration failure is asserted in this layer rather than recorded as an unverified ceiling, and why the census is nineteen tests with no skip |
 | `D277`, `D286` | Why the extended `test`/`expect` a spec imports live in one fixture module rather than in the runner config |
 | `D278` | Why the CI job resolves a preinstalled browser instead of installing one |
 

@@ -1,25 +1,13 @@
 # ---------------------------------------------------------------------------
 # Code Skeptic Scanner - repository ignore rules
 #
-# The repository previously had NO .gitignore at all, so every test artifact
-# (__pycache__, .pytest_cache, coverage reports, node_modules) would have been
-# committed.  The entries below cover the artifacts produced by the backend
-# pytest suite, the frontend Jest suite, the Playwright e2e suite, and the
-# local development virtual environments.
+# Scope: test artifacts, the dependency trees the suites install, the local
+# development virtual environments, and the evidence a verification run
+# captures. Nothing here ignores a source file.
 #
-# Scope: test artifacts, the dependency trees the suites install, and the
-# evidence a verification run captures.  Nothing else.  In particular there is
-# deliberately no rule for build output (`dist/`, `build/`) and none for editor
-# or operating-system noise (`.DS_Store`, `Thumbs.db`, `*.swp`): no suite here
-# produces either, so such a rule would ignore files this work never generates,
-# and a contributor's editor and platform are not this file's business.  Add
-# them in a change that has a reason to.
-#
-# Generated artifacts only.  Nothing here ignores a source file, and that
-# includes dependency lockfiles: a `package-lock.json` is the recorded
-# resolution of a manifest, not an artifact of a test run, and ignoring one
-# would make an install unreproducible and hide a supply-chain change from
-# review.  No lockfile is committed today, so none is ignored either.
+# `backend/tests/test_coverage_gate.py` and
+# `frontend/src/test-utils/dependency-closure.test.ts` hold this file to that
+# scope. Reasoning: docs/testing/DECISION-LOG.md.
 # ---------------------------------------------------------------------------
 
 # --- Python bytecode / caches ---
@@ -37,24 +25,17 @@ backend/reports/
 frontend/coverage/
 frontend/reports/
 
+# Dashboard readings produced by docs/testing/dashboard-extract.py
+docs/testing/reports/
+
 # Dependency trees
 node_modules/
 e2e/node_modules/
 
 # --- npm lockfiles: deliberately NOT ignored ---
-# There is no `package-lock.json` rule here, and there must not be one.  A
-# lockfile is the only artifact that records an integrity-hashed dependency
-# graph, and `npm ci` refuses to run without one, so ignoring it would make a
-# frozen install impossible for both `frontend` and `e2e`.  Neither package
-# commits one today, and what stands in for one is narrower than a lockfile:
-# all 3 of e2e's declarations and the 11 test dependencies this suite added to
-# frontend/package.json are exact pins, while frontend's 17 pre-existing
-# declarations remain caret ranges that were left untouched.  So the frontend
-# graph is only partly frozen.  frontend/src/test-utils/dependency-closure.test.ts
-# enforces exactly that split - exact pins where they exist, an exact *installed*
-# version for the ranged baseline - alongside the absence of this rule.  Nothing
-# here stands in the way of committing a lockfile.
-# See docs/testing/DECISION-LOG.md.
+# No `package-lock.json` rule here, and there must not be one: `npm ci` refuses
+# to run without a lockfile. frontend/src/test-utils/dependency-closure.test.ts
+# asserts that no active rule in this file names one.
 
 # --- Playwright / e2e artifacts ---
 e2e/test-results/
@@ -65,12 +46,7 @@ e2e/reports/
 blitzy/screenshots/
 blitzy/screen_recordings/
 
-# ---------------------------------------------------------------------------
-# Local development environments.
-# `.venv-backend` is the CPython 3.9 virtual environment used to run the
-# backend suite (see backend/requirements-dev.txt).  It lives inside the
-# repository, so it must never be committed.
-# ---------------------------------------------------------------------------
+# --- Local development environments (.venv-backend is the CPython 3.9 backend venv) ---
 .venv-backend/
 venv/
 env/

@@ -48,7 +48,7 @@ export const BASE_URL_ENV_VAR = 'REACT_APP_API_BASE_URL';
  *    without editing this function;
  * 3. {@link BASE_URL_ENV_VAR}.
  *
- * Deliberately absent: the allowed-origin list, which is a frozen constant with no mutator; and anything
+ * Absent from this list: the allowed-origin list, which is a frozen constant with no mutator; and anything
  * a suite installs for itself - `jest.spyOn`, `jest.mock`, fake timers - which each suite restores.
  *
  * Calling it twice in a row is indistinguishable from calling it once, so a test may clean up mid-body and

@@ -4,14 +4,11 @@
  * Two properties of the page's own imports are what make it mountable, and both are load-bearing for the
  * cases below:
  *
- * 1. Line 4 imports `useAppSelector` from `@/store`, and no line calls it. Because the binding is never used
- *    as a value, the emit this suite runs against drops the `@/store` require outright: the compiled page
- *    requires `react/jsx-runtime`, `react`, `@/components/TweetManagement` and `@/services/twitterService`
- *    and nothing else, so `src/store/index.ts` is never evaluated here and neither is the invalid-reducer
- *    store its line 15 builds. Were the require retained, the binding would still be inert: that module
- *    exports `setupStore` and `store` at runtime and nothing else, its two remaining exports being
- *    TypeScript types. `pages/Dashboard.tsx`, `pages/Analytics.tsx` and `pages/Configuration.tsx` each call
- *    the store hook they import, which both keeps their require and throws on the `undefined` it resolves.
+ * 1. Line 4 imports `useAppSelector` from `@/store`, and no line calls it. An unused binding is dropped from
+ *    the emit, so `src/store/index.ts` is never evaluated here and neither is the invalid-reducer store its
+ *    line 15 builds. `pages/Dashboard.tsx`, `pages/Analytics.tsx` and `pages/Configuration.tsx` each *call*
+ *    the store hook they import, which is why they throw on the `undefined` it resolves to and this page does
+ *    not.
  * 2. Line 2 named-imports `TweetList`, `TweetCard` and `ResponseGenerator` from
  *    `@/components/TweetManagement`, whose sole export is `TweetList` at its line 17. `TweetCard` and
  *    `ResponseGenerator` are therefore `undefined`. React receives neither: `selectedTweet` starts `null`
@@ -44,15 +41,12 @@ const PAGE_HEADING_LEVEL = 1;
 const FETCH_ERROR_MARKER = 'Error fetching tweets:';
 
 /**
- * What the `TypeError` the child records as that call's second argument must say.
+ * What the `TypeError` the child records as that call's second argument must say: the missing export is
+ * named, and calling it failed.
  *
- * Two semantic fragments rather than the whole message. The full text - which reads
- * `(0 , twitterService_1.getTweets) is not a function` under the current toolchain - is built from
- * things that are not this page's contract: `twitterService_1` is the local alias ts-jest's CommonJS
- * emit happens to give the `@/services/twitterService` namespace, `(0 , …)` with its single leading
- * space is how V8 currently renders an indirect callee, and both would change with a module target, a
- * transformer or a V8 version without anything about the product changing. What *is* the contract is
- * that the missing export is named and that calling it failed, so that is what these match.
+ * Two semantic fragments rather than the whole message, because the rest of the text is toolchain
+ * detail - the emitted namespace alias and V8's rendering of an indirect callee - which a module
+ * target, transformer or V8 change would reshape without the product changing.
  */
 const MISSING_GET_TWEETS_FRAGMENTS = [/getTweets/, /is not a function/] as const;
 
@@ -97,7 +91,6 @@ describe('pages/TweetManagement', () => {
     expect(heading.tagName).toBe('H1');
     expect(heading.textContent).toBe(PAGE_HEADING);
 
-    /* Lines 34-36: the heading and the content wrapper are both children of the outer container. */
     const root = container.querySelector('div.tweet-management');
 
     expect(root).not.toBeNull();
@@ -124,7 +117,6 @@ describe('pages/TweetManagement', () => {
     expect(list).toBeEmptyDOMElement();
     expect(list?.textContent).toBe('');
 
-    /* Line 37: the child is rendered inside the content wrapper, not beside it. */
     expect(container.querySelector('div.tweet-management__content')).toContainElement(list);
   });
 
@@ -142,7 +134,6 @@ describe('pages/TweetManagement', () => {
 
     expect(failures).toHaveLength(EXPECTED_MOUNT_FETCHES);
 
-    /* Two arguments, a marker and an error - the shape a spy records for `console.error(a, b)`. */
     const [failure] = failures;
 
     expect(failure).toHaveLength(2);
@@ -152,7 +143,6 @@ describe('pages/TweetManagement', () => {
     expect(marker).toBe(FETCH_ERROR_MARKER);
     expect(recorded).toBeInstanceOf(TypeError);
 
-    /* The missing export is named, and calling it is what failed. */
     const message = (recorded as TypeError).message;
 
     MISSING_GET_TWEETS_FRAGMENTS.forEach((fragment) => expect(message).toMatch(fragment));

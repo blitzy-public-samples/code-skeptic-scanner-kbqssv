@@ -115,7 +115,7 @@ NON_EMPTY_ERROR_PAYLOADS = (
 EMPTY_ERROR_PAYLOADS = ([], None)
 
 #: Failure types injected at the module's four unguarded links.  ``Exception``
-#: is included deliberately: it is the type the bare clause in
+#: is included: it is the type the bare clause in
 #: ``app/db/firestore.py`` names, so a clause of that shape added here would
 #: stop the exception these cases expect to arrive.  The narrower types are
 #: subclasses of it, and none of them is caught either.

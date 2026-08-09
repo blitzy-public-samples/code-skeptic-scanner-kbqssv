@@ -2,7 +2,7 @@
  * End-to-end coverage of the harness client route `/configuration`.
  *
  * Subject: `TwitterAPISettings`, the default export of `frontend/src/components/Configuration`,
- * which `e2e/harness/main.tsx` L76 mounts at `/configuration` with no props. That module is an
+ * which `e2e/harness/main.tsx` mounts at `/configuration` with no props. That module is an
  * extension-less file; `e2e/vite.harness.config.ts` resolves and transforms it, and redirects the
  * `@/services/configService` specifier it imports at L3 to `e2e/harness/stubs/configService.ts`.
  *
@@ -14,49 +14,63 @@
  * interception before navigating, declares the failures it expects, and holds no state shared with
  * another test.
  *
- * Only the third test declares one. The first two assert a route that reports nothing to the
- * console, and the fixture is what holds them to it.
+ * Only the third test declares a console failure. The first two assert a route that reports nothing,
+ * and the fixture is what holds them to it.
  *
  * This is the only route in the harness driven by user input rather than by a mount effect, so the
  * flow under test is: fill four fields, submit, and read the outcome the subject reports.
  *
- * What each test asserts, and the production lines it reads from:
+ * ## Credential handling in this file
  *
- * | Test | Behaviour asserted |
- * |------|--------------------|
- * | 1 | `components/Configuration` L28-L70 render one `<h2>`, four labelled required credential inputs of which two are `type="password"`, and one submit control |
- * | 2 | `components/Configuration` L14-L20 hand the four collected values to `updateTwitterAPIConfig` as a single four-key object, which `harness/stubs/configService.ts` L34-L40 posts as JSON, and then report success through `alert` |
- * | 3 | `components/Configuration` L21-L23 catch a rejection from that call, log it and report it through `alert`, leaving the route mounted rather than letting it propagate |
- * | 4 | Two of the four credential fields render their value in clear text, and none declares an autofill policy |
- * | 5 | The submit control expresses no pending state while the credential write is open, and a second activation issues a second write and a second dialog |
+ * Every credential value here is a synthetic literal, and {@link assertSyntheticFixture} refuses the
+ * run if one is not. That guard is what makes the rest safe: the assertion diagnostics compare
+ * bodies in full, and every attachment passes its bodies through {@link redactBody}, which reports
+ * key names, presence, length and a per-run keyed fingerprint and never a value.
  *
- * The same component under Jest, with `updateTwitterAPIConfig` itself stubbed rather than its
- * transport intercepted, is covered by `frontend/src/components/Configuration.test.tsx`.
- *
- * ## Two ceilings this file pins rather than fixes
- *
- * Both would need an edit to `frontend/src/components/Configuration`, which is production code this
- * programme is not authorized to change, so each is characterised here as current behaviour.
+ * ## Two ceilings this file pins as current behaviour
  *
  * 1. **Two credential fields are unmasked.** L31-L38 render `API Key` and L51-L58 render
  *    `Access Token` as `type="text"`, so both values are visible on screen and in a screen share.
  *    Only the two `Secret`-suffixed fields are `type="password"`. No field declares `autocomplete`,
  *    so the browser's default handling applies to all four. Masking follows the field's *name*, not
  *    whether the value is a credential - and an API key and an access token authenticate exactly as
- *    their secrets do. Test 4 asserts this in a real browser, where the visible value is observable.
+ *    their secrets do. This is asserted in a real browser, where the visible value is observable.
  * 2. **The submit has no pending state.** L11-L25 `handleSubmit` awaits the write but holds no state
  *    for it: the L70 button is never `disabled`, never carries `aria-busy`, and no status element is
- *    rendered. Test 5 activates the still-live control a second time mid-flight and records what
- *    follows - a second credential write to the same endpoint and a second dialog.
+ *    rendered. The last test activates the still-live control a second time mid-flight and records
+ *    what follows - a second credential write to the same endpoint and a second dialog.
+ *
+ * The same component under Jest, with `updateTwitterAPIConfig` itself stubbed rather than its
+ * transport intercepted, is covered by `frontend/src/components/Configuration.test.tsx`.
+ *
  * Every value this file types is an obvious test literal and no live secret is read anywhere in
- * this repository. Even so, the intercepted body reaches the report **redacted** to key names,
- * value presence, length and a short digest, while the assertions compare it in full: CI retains
- * these reports, and a format that carries whole credential-shaped bodies is one real fixture away
- * from carrying a real one.
+ * this repository. Even so, this file is the one place in the suite that drives credential-shaped
+ * values through a real browser, so what its evidence carries is treated deliberately, in three
+ * layers rather than one:
+ *
+ * - **Attachments are redacted.** Every intercepted body reaches the report reduced to key names,
+ *   value presence, length and a per-run keyed fingerprint - all three attach sites, including the
+ *   concurrent double-write in the last test. The assertions still compare the body in full, in
+ *   memory, so a mismatch still prints the expected value in the failure diff, which is where that
+ *   belongs.
+ * - **The trace no longer embeds this source.** `e2e/playwright.config.ts` sets
+ *   `use.trace.sources: false`, so the artifact stops carrying a verbatim copy of the four literals
+ *   below as source text. Verified by producing a real failure trace with the option both ways.
+ * - **What remains is bounded at the source, because it cannot be configured away.** The DOM
+ *   snapshot, trace filmstrip, failure screenshot and video record whatever the browser showed, and
+ *   two of the four fields render as `type="text"`; Playwright 1.44 offers no masking for automatic
+ *   failure evidence. So the values are retained verbatim on failure, and the guarantee is instead
+ *   that there is nothing worth retaining - enforced before every test by
+ *   {@link assertSyntheticFixture} and asserted independently by the first test in this file, which
+ *   fails if any value stops being recognisably synthetic. See {@link SYNTHETIC_VALUE_PREFIX}.
+ *
+ * The motive throughout: CI retains these artifacts, and a format that carries whole
+ * credential-shaped bodies is one real fixture away from carrying a real one.
  *
  * @see e2e/README.md - adding a spec to this directory.
  * @see docs/testing/DECISION-LOG.md - the dialog-handling, branch-selection and payload-assertion
- *   rows for this file, and row D260 for the attachment redaction.
+ *   rows for this file, row D260 for the attachment redaction, row D318 for the trace and
+ *   synthetic-value layers, and row D348 for the keyed fingerprint and the fixture guard.
  */
 
 import { expect, HARNESS_ORIGIN, resourceFailure, test } from './harness-fixtures';
@@ -65,7 +79,7 @@ import { expect, HARNESS_ORIGIN, resourceFailure, test } from './harness-fixture
 /* Oracles                                                                    */
 /* -------------------------------------------------------------------------- */
 
-/** Client route `e2e/harness/main.tsx` L76 mounts the subject at. Resolved against `use.baseURL`. */
+/** Client route `e2e/harness/main.tsx` mounts the subject at. Resolved against `use.baseURL`. */
 const SETTINGS_ROUTE = '/configuration';
 
 /** Element `components/Configuration` L28 renders as the subject's root. */
@@ -87,12 +101,10 @@ const SAVE_BUTTON_TYPE = 'submit';
  * Glob covering the credential request `harness/stubs/configService.ts` L34 issues. The same value
  * `e2e/vite.harness.config.ts` names as this endpoint's remedy in `HARNESS_API_SURFACE`.
  *
- * Anchored to {@link HARNESS_ORIGIN}, and it matters most here: this is the request that carries
- * credentials. A host-agnostic `'**\/api/config/twitter'` would claim - and this file's handlers
- * would fulfil - a POST addressed to a foreign host, so a test asserting the submitted body would
- * pass while the credentials had been sent somewhere else entirely. Anchored, such a request falls
- * through to the `noEgress` fixture, which aborts and records it. `./isolation.spec.ts` asserts
- * exactly that.
+ * Anchored to {@link HARNESS_ORIGIN}, which matters most here: this is the request that carries
+ * credentials. The pattern claims only a POST addressed to the harness origin, so a POST to a
+ * foreign host that shares this path matches nothing, falls through to the `noEgress` fixture, and
+ * is aborted and recorded. `./isolation.spec.ts` asserts exactly that.
  */
 const CONFIG_ENDPOINT_GLOB = `${HARNESS_ORIGIN}/api/config/twitter`;
 
@@ -131,6 +143,7 @@ const ALERT_DIALOG = 'alert';
  * value and carrying no other key.
  *
  * Every value is an obvious test literal: no credential of any real service appears in this file.
+ * That is asserted rather than trusted - see {@link SYNTHETIC_VALUE_PREFIX}.
  */
 const EXPECTED_PAYLOAD = {
   apiKey: 'test-api-key',
@@ -138,6 +151,24 @@ const EXPECTED_PAYLOAD = {
   accessToken: 'test-access-token',
   accessTokenSecret: 'test-access-token-secret',
 } as const;
+
+/**
+ * Prefix every value in {@link EXPECTED_PAYLOAD} must carry.
+ *
+ * This is the control that bounds what failure evidence can contain. The attachments in this file
+ * are redacted, but a Playwright trace, screenshot and video record whatever the browser showed,
+ * `components/Configuration` renders two of these four fields as `type="text"`, and Playwright 1.44
+ * offers no masking for automatic failure evidence - so the values typed here are retained in full
+ * whenever a test fails, and no configuration can prevent it.
+ *
+ * What can be guaranteed is that there is nothing worth retaining. The gate below fails the moment a
+ * value stops being recognisably synthetic, which is the only point at which a real credential could
+ * enter that evidence: someone repointing this spec at a live fixture.
+ *
+ * @see e2e/playwright.config.ts - `use.trace`, for what the artifacts do and do not carry.
+ * @see docs/testing/DECISION-LOG.md - row D318.
+ */
+const SYNTHETIC_VALUE_PREFIX = 'test-';
 
 /**
  * The four credential fields, in the order `components/Configuration` L31-L68 declare them.
@@ -221,24 +252,61 @@ interface RecordedDialog {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Characters of the digest an attachment carries in place of a value.
+ * Characters of the keyed fingerprint an attachment carries in place of a value.
  *
- * Short on purpose: this is not a security control - the inputs are the fixed literals
- * of {@link EXPECTED_PAYLOAD} and are trivially recoverable from them - it exists only
- * so two runs of the same test can be compared without printing the values.
+ * Long enough that two different values in one run do not collide in practice, short
+ * enough to read in a report. Not a security control: the inputs are the fixed literals
+ * of {@link EXPECTED_PAYLOAD} and are trivially recoverable from them. It exists so two
+ * writes in one run can be compared without printing the values.
  */
 const DIGEST_LENGTH = 12;
+
+/**
+ * Per-run key mixed into {@link fingerprint}'s initial state.
+ *
+ * Regenerated on every import, so a fingerprint is comparable **within one run** and
+ * carries no information about its input outside it. Without a key, a short credential is
+ * recoverable from its digest by enumeration, which is what would make a "redacted"
+ * attachment a disclosure.
+ */
+const FINGERPRINT_KEY = Math.floor(Math.random() * 0x100000000) >>> 0;
 
 /** What a redacted field reports when the request carried no value for it. */
 const ABSENT_VALUE = null;
 
 /**
- * FNV-1a, 32-bit, hex. Chosen because it is four lines of arithmetic with no import:
- * `node:crypto` would work in the runner process but adds a dependency to a spec whose
- * only need is a stable short label.
+ * Prefix every credential fixture in this file must carry.
+ *
+ * {@link assertSyntheticFixture} refuses the run when a value does not, which is what
+ * keeps a real credential out of the assertion diffs and the attachments below: those are
+ * safe only because every value that reaches them is a declared test literal.
  */
-function digest(value: string): string {
-  let hash = 0x811c9dc5;
+const SYNTHETIC_FIXTURE_PREFIX = 'test-';
+
+/**
+ * Refuses the run unless every credential fixture is a synthetic literal.
+ *
+ * Called before the first request is intercepted, so a real value substituted into
+ * {@link EXPECTED_PAYLOAD} fails the test at its start rather than reaching a report.
+ *
+ * @param payload - The credential fixture set, keyed as the request body is.
+ * @throws Error naming the offending key, and never its value.
+ */
+function assertSyntheticFixture(payload: Readonly<Record<string, string>>): void {
+  for (const [key, value] of Object.entries(payload)) {
+    if (!value.startsWith(SYNTHETIC_FIXTURE_PREFIX)) {
+      throw new Error(
+        `credential fixture "${key}" is not a synthetic literal: every value in this spec must ` +
+          `begin with "${SYNTHETIC_FIXTURE_PREFIX}", because the attachments and assertion ` +
+          'diagnostics below are safe only for synthetic values.',
+      );
+    }
+  }
+}
+
+/** Keyed 32-bit fingerprint, hex. Comparable within one run only; see {@link FINGERPRINT_KEY}. */
+function fingerprint(value: string): string {
+  let hash = (0x811c9dc5 ^ FINGERPRINT_KEY) >>> 0;
   for (let index = 0; index < value.length; index += 1) {
     hash ^= value.charCodeAt(index);
     hash = Math.imul(hash, 0x01000193) >>> 0;
@@ -247,20 +315,18 @@ function digest(value: string): string {
 }
 
 /**
- * A credential-shaped body, reduced to what a report can carry safely.
+ * A credential-shaped body reduced to what a report may carry: every key name, whether a
+ * value was present, its length, and a per-run keyed fingerprint that identifies *which*
+ * field differs between two cases in one run. The value itself never appears.
  *
- * Keeps every key name, whether a value was present, its length, and a stable digest -
- * enough to see *which* field differs between two runs - and drops the value itself.
- * The values in this file are obvious test literals and no live secret is read anywhere
- * in this repository, so nothing here is exposed today. The reduction exists because CI
- * retains these reports for 30 days and a format that carries whole credential-shaped
- * bodies is one real fixture away from carrying a real one.
+ * Every attachment in this file passes its bodies through here. The reduction is not a
+ * substitute for {@link assertSyntheticFixture}: CI retains these reports for 30 days, so
+ * the guard is what keeps a real value from reaching them at all, and this is what keeps
+ * the report readable without one.
  *
- * The assertions are untouched: {@link EXPECTED_PAYLOAD} is still compared against the
- * intercepted body with full deep equality, in memory, and a mismatch still prints the
- * expected value in the failure diff - which is where that information belongs.
- *
- * @see docs/testing/DECISION-LOG.md - row D260.
+ * @param body - An intercepted request body, of any shape.
+ * @returns The reduced form; a non-object body is reported by type only.
+ * @see docs/testing/DECISION-LOG.md - rows D260 and D348.
  */
 function redactBody(body: unknown): unknown {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
@@ -273,7 +339,7 @@ function redactBody(body: unknown): unknown {
       reduced[key] = { present: value !== undefined && value !== null, type: typeof value };
       continue;
     }
-    reduced[key] = { present: value.length > 0, length: value.length, fnv1a: digest(value) };
+    reduced[key] = { present: value.length > 0, length: value.length, keyed: fingerprint(value) };
   }
   return reduced;
 }
@@ -289,6 +355,31 @@ function redactSubmission(submission: RecordedSubmission): Record<string, unknow
 }
 
 test.describe('harness route /configuration - TwitterAPISettings (frontend/src/components/Configuration)', () => {
+  /* Fails the run before any request, report or attachment exists if a fixture is not synthetic. */
+  test.beforeEach(() => {
+    assertSyntheticFixture(EXPECTED_PAYLOAD);
+  });
+
+  test('types only synthetic credentials, so no failure artifact can retain a real one', () => {
+    // A fixture-honesty gate, not a test of the subject: it asserts the property that makes this
+    // file's retained trace, screenshot and video harmless, and fails if that property is ever lost.
+    // Runs in no browser and touches no route, so it costs nothing and reports independently of the
+    // `beforeEach` above, which enforces the same property before every other test.
+    const values = Object.entries(EXPECTED_PAYLOAD);
+
+    // Every field is covered - a payload that lost a key would otherwise vacuously satisfy the loop.
+    expect(values).toHaveLength(CREDENTIAL_FIELDS.length);
+
+    for (const [key, value] of values) {
+      expect(
+        value.startsWith(SYNTHETIC_VALUE_PREFIX),
+        `EXPECTED_PAYLOAD.${key} must begin with "${SYNTHETIC_VALUE_PREFIX}": a Playwright trace, ` +
+          'screenshot and video retain this value verbatim on failure and cannot be masked, so it ' +
+          'has to be one no real service would accept',
+      ).toBe(true);
+    }
+  });
+
   test('renders the Twitter API settings form with its four credential fields', async ({ page }) => {
     // Nothing declared to `browserDiagnostics`, which makes "this route renders cleanly" part of
     // the verdict: any console error or uncaught error fails the test at teardown.
@@ -312,13 +403,11 @@ test.describe('harness route /configuration - TwitterAPISettings (frontend/src/c
 
       await expect(input).toBeVisible();
 
-      // The element the label's `htmlFor` bound to, and the kind of field it is.
       await expect(input).toHaveAttribute('id', field.inputId);
       await expect(input).toHaveAttribute('type', field.inputType);
       await expect(input).toHaveAttribute('required', BOOLEAN_ATTRIBUTE_VALUE);
     }
 
-    // Those four are the form's only fields.
     await expect(form.locator('input')).toHaveCount(CREDENTIAL_FIELDS.length);
 
     const saveButton = form.getByRole('button', { name: SAVE_BUTTON, exact: true });
@@ -384,7 +473,6 @@ test.describe('harness route /configuration - TwitterAPISettings (frontend/src/c
       expect(requested.origin).toBe(HARNESS_ORIGIN);
       expect(requested.pathname).toBe(CONFIG_ENDPOINT_PATHNAME);
 
-      // Deep equality over the whole body: these four keys, these four values, nothing else.
       expect(submitted.body).toEqual(EXPECTED_PAYLOAD);
 
       await expect
@@ -483,7 +571,6 @@ test.describe('harness route /configuration - TwitterAPISettings (frontend/src/c
         }),
       ).toBeVisible();
 
-      // The submit was attempted once, and the body it carried is the same on this path.
       expect(submissions).toHaveLength(1);
       expect(submissions[0].body).toEqual(EXPECTED_PAYLOAD);
 
@@ -715,8 +802,14 @@ test.describe('harness route /configuration - TwitterAPISettings (frontend/src/c
         await release().catch(() => undefined);
       }
 
-      await test.info().attach('credential-requests', {
-        body: JSON.stringify(submissions, null, 2),
+      // Values redacted, keys and shape kept - see redactBody. Two writes, reduced the same way
+      // the single-write cases above reduce one: this test intercepts the same endpoint and holds
+      // *two* whole credential bodies open at once, so it is the last place that should carry them
+      // verbatim into a retained report. The deep-equality assertion on both bodies is the exact
+      // check; this attachment is the audit trail, and it is the duplication that is worth
+      // retaining, not the values.
+      await test.info().attach('credential-requests-redacted', {
+        body: JSON.stringify(submissions.map(redactSubmission), null, 2),
         contentType: 'application/json',
       });
       await test.info().attach('dialogs', {

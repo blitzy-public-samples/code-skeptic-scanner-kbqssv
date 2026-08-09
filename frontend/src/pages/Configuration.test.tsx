@@ -2,7 +2,7 @@
  * Suite over `frontend/src/pages/Configuration.tsx`, the configuration page. The group below is an ordinary
  * `describe`, so this module is collected and every specifier in it resolves on each run; every individual
  * test is marked `it.skip` and carries {@link BLOCKER} in its own title, which names the symbol that stops
- * the page rendering. No blanket `describe.skip` is used.
+ * the page rendering.
  *
  * `Configuration.tsx` L12 calls `useAppDispatch()`, imported at L4 from `@/store`. `frontend/src/store/index.ts`
  * exports `setupStore` (L5) and `store` (L15) at runtime and nothing else: its L17-18 exports are TypeScript
@@ -49,14 +49,9 @@ const getConfigMock = jest.mocked(getConfig);
 const SUITE_TITLE = 'pages/Configuration (src/pages/Configuration.tsx)';
 
 /**
- * Blocker carried by every skipped test identity below.
- *
- * Jest's skip takes no reason argument, so the title is where one goes. It is appended to each
- * individual test rather than declared once on the group: a blanket `describe.skip` leaves each
- * `<testcase>` in `frontend/reports/jest-junit.xml` marked skipped with no reason of its own.
- * `frontend/jest.config.js` gives `jest-junit` a `titleTemplate` that prefixes each name with its
- * ancestor titles, so {@link SUITE_TITLE}, the nested group's title and this string all reach every
- * `<testcase>` this file contributes.
+ * Blocker suffixed onto every skipped test title below, so each `<testcase>` in
+ * `frontend/reports/jest-junit.xml` carries the reason on the identity a result reader sees - Jest's
+ * skip takes no reason argument, so the title is where one goes.
  *
  * It names the symbol that raises first: L12 runs before L13 reaches `useAppSelector` and before the
  * undefined child element types at L52, L56 and L60 are rendered.

@@ -114,7 +114,7 @@ SINGLETON_FIELD_DEFAULTS = (
 )
 
 #: Every field whose value this suite reads from ``config_module.settings``.
-#: ``NOTION_API_KEY`` is deliberately absent: its declared value is ``None``,
+#: ``NOTION_API_KEY`` is absent: its declared value is ``None``,
 #: so the prologue removes the name instead of pinning it and
 #: :func:`test_notion_api_key_declared_default_is_none` and
 #: :func:`test_settings_omits_notion_api_key` carry that field.

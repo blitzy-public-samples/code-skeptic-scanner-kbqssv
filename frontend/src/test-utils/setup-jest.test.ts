@@ -24,8 +24,8 @@
  * | request log (`./handlers`)               | any intercepted request            | `resetSharedTestState()`     |
  * | `process.env.REACT_APP_API_BASE_URL`     | an assignment inside a test        | `resetSharedTestState()`     |
  *
- * The allowed-origin list is deliberately absent from that table: it is a frozen constant with no mutator,
- * and the first test below is what proves it - a request to a non-loopback origin matches no handler at all.
+ * The allowed-origin list is absent from that table: it is a frozen constant with no mutator, and the first
+ * test below is what proves it - a request to a non-loopback origin matches no handler at all.
  *
  * Nothing here mocks a module except in the wiring test's isolated registry, so every request below is
  * answered by the real handler array over the real msw interceptor.
@@ -72,12 +72,11 @@ const IMPORT_TIME_PROBE_URL = 'http://localhost/import-time-probe';
 const IMPORT_TIME_PROBE_BODY = { intercepted: 'at module evaluation' };
 
 /*
- * The probe's handler, registered while this module is being evaluated. It is deliberately **not** one of
- * the module handlers: those record into `./handlers`' request log, and an entry created at module scope
- * would still be there for whichever test ran first - which is the order dependence this suite exists
- * without. Answering from a suite-local handler on a path no contract names keeps every shared collection
- * empty. `resetSharedTestState()` discards this handler at the first cleanup, by which time the probe has
- * long settled.
+ * The probe's handler, registered while this module is being evaluated. It is **not** one of the module
+ * handlers: those record into `./handlers`' request log, and an entry created at module scope stays there
+ * for whichever test runs first. Answering from a suite-local handler on a path no contract names keeps
+ * every shared collection empty. `resetSharedTestState()` discards this handler at the first cleanup, by
+ * which time the probe has long settled.
  */
 server.use(
   rest.get(IMPORT_TIME_PROBE_URL, (_req, res, ctx) =>
@@ -199,13 +198,51 @@ describe('shared setup: the isolation ledger', () => {
 
 describe('shared setup: the msw runtime handler array', () => {
   it('serves the override the test installs, and the cleanup restores the default handlers', async () => {
-    server.use(rest.get('*/tweets', (_req, res, ctx) => res(ctx.status(200), ctx.json([]))));
+    /*
+     * Anchored to the exact origin and path the subject requests, not `'*\/tweets'`.
+     * A host-agnostic override claims the path on *any* origin, so a request that had drifted to a
+     * foreign host would be fulfilled by this handler and the test would still pass - which is the
+     * one failure the ledger in `./handlers` exists to catch. Every default handler in that module is
+     * spelled absolutely for the same reason, and the case below proves this one behaves the same way.
+     */
+    server.use(rest.get(`${UNSET_BASE}/tweets`, (_req, res, ctx) => res(ctx.status(200), ctx.json([]))));
 
     await expect(fetchTweets(1, 1)).resolves.toEqual([]);
 
     resetSharedTestState();
 
     await expect(fetchTweets(1, 1)).resolves.toEqual(makeDefaultTweetsJson());
+  });
+
+  it('does not let an override claim the same path on a foreign origin', async () => {
+    const consoleWarn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const claimed: string[] = [];
+
+    try {
+      server.use(
+        rest.get(`${UNSET_BASE}/tweets`, (req, res, ctx) => {
+          claimed.push(req.url.href);
+          return res(ctx.status(200), ctx.json([]));
+        }),
+      );
+
+      // Same path, different origin. The override must not answer it.
+      await expect(get(REMOTE_TWEETS_URL)).rejects.toBeDefined();
+
+      expect(claimed).toEqual([]);
+
+      const ledgered = recordedIsolationViolations();
+
+      expect(ledgered).toHaveLength(1);
+      expect(ledgered[0].kind).toBe('unhandled-request');
+      expect(ledgered[0].url).toBe(REMOTE_TWEETS_URL);
+    } finally {
+      acknowledgeIsolationViolations();
+      resetSharedTestState();
+      consoleError.mockRestore();
+      consoleWarn.mockRestore();
+    }
   });
 });
 

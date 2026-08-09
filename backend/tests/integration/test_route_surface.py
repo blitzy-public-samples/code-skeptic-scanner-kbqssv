@@ -464,10 +464,9 @@ def test_application_installs_no_host_validating_middleware(integration_app):
     ``TrustedHostMiddleware`` -- the class starlette documents as the protection
     against ``Host``-header attacks -- stands between the request and the router.
 
-    Asserted by set equality rather than by absence alone, so adding any
-    middleware fails this test and forces the census above to be re-measured.
-    Installing the validator is a production change outside the two authorized
-    touches, so this asserts the gap; it does not close it.
+    Asserted by set equality, so adding any middleware fails this test and
+    forces the census above to be re-measured.  This asserts the gap; it does
+    not close it.
     """
     installed = frozenset(
         entry.cls.__name__ for entry in integration_app.user_middleware

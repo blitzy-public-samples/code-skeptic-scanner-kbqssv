@@ -116,23 +116,39 @@ The "Python 3.8 or higher" line in the Prerequisites section above is a lower bo
 
 Three independent legs, each non-interactive and each runnable on a clean machine. Every command below is written to run **from the repository root**, so you can paste the block as-is without tracking which directory you are left in.
 
-Order matters between legs 2 and 3: the e2e harness pins React and five other bare specifiers into `frontend/node_modules`, so install `frontend` first.
+Order matters between legs 2 and 3: the e2e harness aliases ten bare specifiers into `frontend/node_modules` — and forces five of them, React among them, to resolve to exactly one copy — so install `frontend` first.
 
 ```bash
+# POSIX shells
 # 1. Backend - virtual environment plus the pinned test stack
 python3.9 -m venv .venv-backend && . .venv-backend/bin/activate && pip install --upgrade pip && pip install -r backend/requirements-dev.txt
 
 # 2. Frontend - a prerequisite of leg 3, not just of the Jest suite
-npm --prefix frontend install
+(cd frontend && npm install)
 
 # 3. End-to-end - install `frontend` FIRST (the harness resolves ten packages out of
 #    frontend/node_modules); this installs the runner only and does NOT download a browser
-npm --prefix e2e install
+(cd e2e && npm install)
 ```
 
-- The parentheses are load-bearing: each `cd` happens in a subshell, so the next command still starts at the repository root. `npm install --prefix frontend` is **not** an alternative — `npm install` reads the manifest of the *current* directory, and this repository has no root `package.json`, so it fails with `ENOENT ... open .../package.json`. (`npm --prefix <dir> run <script>` does work, and is used below.)
+```powershell
+# PowerShell - only leg 1 differs; a venv on Windows has Scripts\, not bin/
+py -3.9 -m venv .venv-backend
+.\.venv-backend\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r backend/requirements-dev.txt
+Push-Location frontend; npm install; Pop-Location
+Push-Location e2e; npm install; Pop-Location
+```
+
+Every `pytest` command below assumes that environment is **active**. If you would rather not activate it,
+call the interpreter directly — `..\.venv-backend\Scripts\python.exe -m pytest` from `backend\`, or
+`../.venv-backend/bin/python -m pytest` on a POSIX shell — which is equivalent and is what a
+non-interactive script should do.
+
+- **The parentheses are load-bearing.** Each `cd` happens in a subshell, so the next command still starts at the repository root and the block pastes as one unit. They are also not optional: `npm install` reads the manifest of the *current* directory and **`--prefix` does not change that**, in either position. This repository has no root `package.json`, so both `npm --prefix frontend install` and `npm install --prefix frontend` fail with `ENOENT ... open .../package.json`. Entering the directory is the only form that works, in either shell - `Push-Location`/`Pop-Location` plays the subshell's part in PowerShell, which has no `( ... )` grouping of its own. (`npm --prefix <dir> run <script>` is different — it *does* read the target's manifest, and it is what the run table below uses.)
 - Use `npm install`, **not** `npm ci`. No lockfile is committed in this repository, and `npm ci` refuses to run without one.
-- **Pinning differs by stack, so do not assume either behaviour from the other.** `backend/requirements-dev.txt` is exact-pinned throughout: all 25 active lines are `==`, and `backend/tests/test_dependency_closure.py` fails if any one of them is not. `frontend/package.json` is a partition: the **11** devDependencies this testing work introduced are exact-pinned, and the **17** pre-existing declarations — 7 runtime dependencies and 10 development ones — are deliberately left at the caret ranges the baseline shipped, because the change boundary for that file is devDependencies and test scripts only. `frontend/src/test-utils/dependency-closure.test.ts` enforces both halves: exact pins on the first set, byte-identical specifiers on the second. `e2e/package.json` is exact-pinned throughout. Several versions are deliberately held below their latest release. See [`docs/testing/DECISION-LOG.md`](docs/testing/DECISION-LOG.md) for why those versions and the lockfile posture were chosen.
+- **Pinning differs by stack, so do not assume either behaviour from the other.** `backend/requirements-dev.txt` is exact-pinned throughout: all **25** active lines are `==` — 7 test-stack distributions and 18 of the runtime stack the tests exercise — and `backend/tests/test_dependency_closure.py` fails if any one of them is not. `frontend/package.json` is a partition: the **11** devDependencies this testing work introduced are exact-pinned, and the **17** pre-existing declarations — 7 runtime dependencies and 10 development ones — are deliberately left at the caret ranges the baseline shipped, because the change boundary for that file is devDependencies and test scripts only. `frontend/src/test-utils/dependency-closure.test.ts` enforces both halves: exact pins on the first set, byte-identical specifiers on the second. `e2e/package.json` is exact-pinned throughout. Several versions are deliberately held below their latest release. See [`docs/testing/DECISION-LOG.md`](docs/testing/DECISION-LOG.md) for why those versions and the lockfile posture were chosen.
 
 ### Provisioning a browser for the end-to-end suite
 
@@ -155,49 +171,54 @@ export PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/google-chrome
 $env:PLAYWRIGHT_CHROMIUM_EXECUTABLE = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
 ```
 
-Then confirm what the runner would use, without fetching anything:
+Then let the gate decide whether a run can proceed. It fetches nothing:
 
 ```bash
-cd e2e && npm run browsers:verify
+cd e2e && npm run browsers:require
 ```
 
-That runs `playwright install --dry-run chromium`, which prints the build and directory it would use and exits
-non-zero if nothing is available. If you are running several clones of this repository in parallel, set
-`CLONE_INDEX` so each harness gets its own port (`4173 + CLONE_INDEX`).
+**`browsers:require` is the gate; `browsers:verify` is a narrower reporter over the same provision.**
+Neither downloads anything, and both exit non-zero when no launchable browser is found — the difference is
+what they look at:
 
-#### The browser is a prerequisite, not something the install fetches
+| Script | Looks at | Publishes | Use it to |
+| --- | --- | --- | --- |
+| `browsers:require` | `PLAYWRIGHT_CHROMIUM_EXECUTABLE`, then `CHROME_BIN`, then the platform's vendor install locations, then the exact path `chromium.executablePath()` reports for this pin — first hit wins | prints the route, the absolute path and the resolved build's own version, and writes `PLAYWRIGHT_CHROMIUM_EXECUTABLE=<path>` to `$GITHUB_ENV` when that variable is set | decide whether a run can proceed. Accepts `--min-major <n>` to refuse a build older than `n` |
+| `browsers:verify` | an explicit `PLAYWRIGHT_CHROMIUM_EXECUTABLE` and, only if unset, the same cache path | nothing | see what a run *without* an explicit executable would load |
 
-`npm run browsers:verify` **reports** what the runner will load and downloads nothing — it is
-`playwright install --dry-run chromium`. The pinned `@playwright/test` 1.44.1 has a browser downloader
-that does not verify the TLS chain of the host it fetches from (CVE-2025-59288), so this repository
-provisions browsers out of band instead and no script, and no CI step, invokes that downloader. Satisfy
-the prerequisite either way:
+Neither runs `playwright install --dry-run chromium`, which is what `browsers:verify` used to be: that
+command prints the location it *would* use and exits **0 whether or not anything is there**, so a pipeline
+running it looked green while every test was about to fail at launch.
 
-| Route | What to do |
-| --- | --- |
-| A Chromium already in Playwright's cache | `cd e2e && npm run browsers:verify` prints the build and the exact directory it will be loaded from. Nothing further is needed |
-| A system browser you name explicitly | Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` to the full path of a Chrome or Chromium binary; `e2e/playwright.config.ts` passes it through as `launchOptions.executablePath` |
+Either way the executable you name is what the run launches: `e2e/playwright.config.ts` passes
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE` through as `launchOptions.executablePath`.
 
-Without one of the two, every end-to-end test fails identically at launch with
+The gate does more than find a file: on success `npm run browsers:require` prints the **canonical** path and its SHA-256 and publishes both, and `npm run browsers:verify` fails when the executable no longer matches a published digest — so the browser a later step launches is provably the one that was validated.
+
+Without a browser, every end-to-end test fails identically at launch with
 `browserType.launch: Executable doesn't exist at <path>` — a clear message rather than a silent,
-unverified fetch. The `e2e` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) takes the
-second route, checks it before running anything, and logs the resolved browser path and version.
-[`e2e/README.md`](e2e/README.md) covers both routes in full, and
-[`docs/testing/DECISION-LOG.md`](docs/testing/DECISION-LOG.md) rows `D111` and `D257` record why.
+unverified fetch. The `e2e` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) hardcodes no
+path: it sets a minimum major version, runs the gate with it, and runs the reporter against whatever the
+gate published. [`e2e/README.md`](e2e/README.md) covers every route in full, and
+[`docs/testing/DECISION-LOG.md`](docs/testing/DECISION-LOG.md) rows `D111`, `D257`, and `D264` as
+superseded by `D300`, `D301` and `D319`, record why.
+
+If you are running several clones of this repository in parallel, set `CLONE_INDEX` so each harness gets
+its own port (`4173 + CLONE_INDEX`).
 
 ### Run
 
 Run every backend command from `backend/`, so that `backend/pytest.ini` is the configuration file pytest loads. A **bare** `pytest` from the repository root fails in a way that is easy to misread, and worth stating precisely because the failure does not look like a configuration problem:
 
-- Collection **succeeds** — all 774 tests are collected, and imports resolve, because pytest inserts each test file's rootdir on `sys.path` regardless.
-- But `rootdir` becomes the repository root and **no `configfile` is loaded**, so `asyncio_mode = auto` is off. pytest reports `asyncio: mode=strict`, and every `async def` test errors for want of a decorator: **21 failed, 630 passed, 3 skipped**.
+- Collection **succeeds** — all 1015 tests are collected, and imports resolve, because pytest inserts each test file's rootdir on `sys.path` regardless.
+- But `rootdir` becomes the repository root and **no `configfile` is loaded**, so `asyncio_mode = auto` is off. pytest reports `asyncio: mode=strict`, and every `async def` test errors for want of a decorator: **21 failed, 991 passed, 3 skipped**.
 
 So a root run produces a plausible-looking collection followed by 21 failures that say nothing about the code under test. Passing an explicit path — `pytest backend/tests` — *does* find the ini, because pytest walks up from the argument; the reliable habit is simply to `cd backend` first, which is what every command below assumes and what CI does through `working-directory: backend`.
 
 | Goal | Command |
 | --- | --- |
 | Backend, all layers | `cd backend && pytest` |
-| Backend coverage with the gate | `cd backend && pytest --cov=app/core --cov=app/services --cov=app/tasks --cov=app/db --cov-fail-under=90` |
+| Backend coverage, the gate, **and every report** | the two-command block below |
 | Backend unit layer only | `cd backend && pytest tests/unit -m unit` |
 | Backend integration layer only | `cd backend && pytest tests/integration -m integration` |
 | Frontend, all suites | `cd frontend && npm test` |
@@ -207,14 +228,35 @@ So a root run produces a plausible-looking collection followed by 21 failures th
 | End-to-end | `cd e2e && npm test` |
 | End-to-end, list without running | `cd e2e && npm run test:list` |
 | End-to-end report | `cd e2e && npm run report` |
-| End-to-end browser check, fetches nothing | `cd e2e && npm run browsers:verify` |
+| End-to-end browser gate, fetches nothing | `cd e2e && npm run browsers:require` |
+| End-to-end browser report, fetches nothing | `cd e2e && npm run browsers:verify` |
+
+**The canonical backend command.** One block produces every backend artifact *and* applies both halves
+of the gate, and it is byte-for-byte what CI runs. Use it whenever a figure will be quoted or a
+dashboard filled — the `--cov` scoping *is* the denominator the 90% bar is calibrated against, so a
+`coverage.xml` written by a wider run cannot be told apart from a gated one afterwards:
+
+```bash
+cd backend
+pytest --cov=app/core --cov=app/services --cov=app/tasks --cov=app/db \
+       --cov-report=term-missing --cov-report=xml --cov-report=json \
+       --cov-precision=2 --cov-fail-under=90 --junitxml=reports/junit.xml
+python tests/coverage_gate.py --coverage-json coverage.json --fail-under 90 \
+       --require-scope app/core --require-scope app/services \
+       --require-scope app/tasks --require-scope app/db | tee reports/coverage-gate.txt
+```
+
+A whole-tree measurement — `pytest --cov=app …` — is still worth running to find where the unreachable
+branches are, and [`backend/tests/README.md`](backend/tests/README.md) §8 has it. It is not a producer
+for the dashboard: the second command above **refuses** a report whose measured files fall outside the
+four gated packages.
 
 Every end-to-end command runs from `e2e/` through that package's own scripts, so the runner is the pinned
 `e2e/node_modules/.bin/playwright` and the configuration is the one beside it. Do not invoke `npx playwright`
 from the repository root: there is no root manifest and no root `node_modules`, so `npx` would fetch an
 unpinned runner from the registry.
 
-The three suites report **771 passed / 3 reasoned skips** on the backend, **346 passed / 24 reasoned skips across 24 suites** on the frontend, and **19 passed / no skip** end to end. The collection-integrity gate expects **zero errors**. It is the meaningful readiness check here, because this suite's historical failure mode was import errors rather than failed assertions: a clean collection proves every test module is importable before any assertion is evaluated.
+The three suites report **1012 passed / 3 reasoned skips** on the backend, **347 passed / 24 reasoned skips across 24 suites** on the frontend, and **31 passed / no skip across 5 spec files** end to end. The collection-integrity gate expects **zero errors**. It is the meaningful readiness check here, because this suite's historical failure mode was import errors rather than failed assertions: a clean collection proves every test module is importable before any assertion is evaluated.
 
 Use `npm test` for the end-to-end suite rather than `npx playwright test`. Both resolve the pinned local
 runner from inside `e2e/`, but `npx` is online-capable by design, and a script that names the binary fails
@@ -222,53 +264,116 @@ closed instead. The same command is what CI runs.
 
 ### Readiness checks
 
-Three commands prove the suites can be *collected* before any assertion is evaluated. This matters here
-more than it usually would: the failure mode this repository inherited was import errors — three legacy
-test modules that never reached an assertion — so a clean collection is the check that would have caught
-the original state, in a way a passing-test count would not.
+Four commands prove the suites can be *collected and loaded* before any assertion is evaluated. This matters
+here more than it usually would: the failure mode this repository inherited was import errors — three
+legacy test modules that never reached an assertion — so a clean collection is the check that would have
+caught the original state, in a way a passing-test count would not.
+
+**Discovery and readiness are different checks on the frontend, and both are listed.** Discovery names the
+files a run would pick up; readiness proves each one loads. Measured against a module carrying an
+unresolvable import: `test:list` exited 0 and `test:load` exited 1.
 
 | Layer | Command | Expects |
 | --- | --- | --- |
 | Backend | `cd backend && pytest --collect-only -q` | **zero errors** |
-| Frontend | `cd frontend && npm run test:list` | every collectable test file listed, exit 0 |
+| Frontend, discovery | `cd frontend && npm run test:list` | every collectable test file listed, exit 0; imports nothing |
+| Frontend, readiness | `cd frontend && npm run test:load` | every listed module loaded and transformed, 0 failed, 0 test bodies run, exit 0 |
 | End-to-end | `cd e2e && npm run test:list` | every test listed, exit 0; launches no browser |
 
-**All three are automated CI steps, not just local commands.** `.github/workflows/ci.yml` runs each as its
+**The readiness check loads the suites; the discovery check merely lists them, and that is why both are
+run.** `npm run test:list` (`jest --listTests`) walks the filesystem against `testMatch` and imports
+nothing, so a suite with a broken import or a failing transformer is listed exactly like a healthy one —
+measured: with one unresolvable import added it still listed all 24 files and exited **0**. `npm run
+test:load` is
+`jest --ci --watchAll=false --runInBand --reporters=default -t "__readiness_probe_that_matches_no_test__"`;
+Jest can only know a test's name after transforming the file, evaluating it at module scope and running its
+`describe` callbacks, so it loads every suite and every module in their import graphs, registers every test
+identity, runs zero test bodies, and on that same perturbation exits **1** naming the suite. `--reporters=default`
+is there because the probe is a real Jest run: without it the configured `jest-junit` reporter would write an
+all-skipped stream over `frontend/reports/jest-junit.xml`, and a later reader could not tell that from a run in
+which everything was skipped.
+
+**All four are automated CI steps, not just local commands.** `.github/workflows/ci.yml` runs each as its
 own step ahead of the corresponding suite and captures its summary to `backend/reports/collect-only.txt`,
-`frontend/reports/list-tests.txt` and `e2e/reports/list-tests.txt`, all three retained as CI artifacts.
+`frontend/reports/list-tests.txt`, `frontend/reports/load-tests.txt` and `e2e/reports/list-tests.txt`, all
+four retained as CI artifacts.
 The dashboard's extractor reads those files, so a readiness result is auditable after the run rather than
 scrolled past in a log. Rationale in
 [`docs/testing/DECISION-LOG.md`](docs/testing/DECISION-LOG.md) row `D255`.
 
-Two of the three overwrite the run report they sit beside, which is why the step order matters:
+**Locally, the commands above print to the terminal and leave nothing behind.** The extractor needs the
+files, so redirect them — these are the same commands CI runs, with the same redirection, and they
+**create** the four artifacts `dashboard-extract.py --require-all` requires:
+
+```bash
+# POSIX shells
+mkdir -p backend/reports frontend/reports e2e/reports
+(cd backend  && pytest --collect-only -q        | tee reports/collect-only.txt)
+(cd frontend && npm run --silent test:list      | tee reports/list-tests.txt)
+(cd frontend && npm run --silent test:load 2>&1 | tee reports/load-tests.txt)
+(cd e2e      && npm run --silent test:list      | tee reports/list-tests.txt)
+```
+
+```powershell
+# PowerShell
+New-Item -ItemType Directory -Force backend\reports, frontend\reports, e2e\reports | Out-Null
+cd backend;  cmd /c "pytest --collect-only -q 2>&1"   | Tee-Object reports\collect-only.txt; cd ..
+cd frontend; cmd /c "npm run --silent test:list 2>&1" | Tee-Object reports\list-tests.txt;   cd ..
+cd frontend; cmd /c "npm run --silent test:load 2>&1" | Tee-Object reports\load-tests.txt;   cd ..
+cd e2e;      cmd /c "npm run --silent test:list 2>&1" | Tee-Object reports\list-tests.txt;   cd ..
+```
+
+`cmd /c "… 2>&1"` rather than a bare `2>&1` on PowerShell: PowerShell turns a native command's stderr
+into `ErrorRecord` objects that `Tee-Object` reformats, and Jest writes its whole summary to stderr.
+Letting `cmd` merge the streams keeps the retained file identical to what the terminal showed, and
+`$LASTEXITCODE` still carries the status. `Tee-Object` on PowerShell 5.1 writes **UTF-16LE** and takes
+no `-Encoding`; the extractor decodes by byte-order mark, so that is harmless here, but it is why a
+tool that assumed UTF-8 would report these artifacts as missing. The full local sequence,
+including the suites and the extractor, is at the top of
+[`docs/testing/DASHBOARD-TEMPLATE.md`](docs/testing/DASHBOARD-TEMPLATE.md).
+
+Two of the four would overwrite the run report they sit beside, which is why the step order matters:
 `pytest --collect-only` and `playwright test --list` both write their configured reporters, so either can
 leave a zero-case stub exactly where a result stream belongs. CI runs readiness *before* each suite, two
 verification steps reject a zero-case stream outright, and the extractor refuses one rather than rendering
-it as zeros (`D254`, `D258`). `jest --listTests` does not have the defect. Locally, if you run a readiness
-command last, re-run the suite before trusting the artifacts.
+it as zeros (`D254`, `D258`); `e2e`'s `test:list` script additionally pins `--reporter=line`. The frontend
+probe is a real Jest run and would have had the same defect, so `test:load` pins `--reporters=default`
+instead — verified by hashing `frontend/reports/jest-junit.xml` either side of a probe. Locally, if you run
+a backend or end-to-end readiness command last, re-run the suite before trusting the artifacts.
 
 ### Coverage gates
 
 | Scope | Gate | Enforced by |
 | --- | --- | --- |
-| `backend/app/core`, `backend/app/services`, `backend/app/tasks`, `backend/app/db` — **one** gate over their aggregate | ≥90% line coverage | `pytest --cov-fail-under=90`, compared at two-decimal precision via `backend/.coveragerc` |
-| `frontend/src/store`, `frontend/src/schema`, `frontend/src/services` — **three** independent gates, one per path | ≥80% statements, branches, functions and lines | Jest `coverageThreshold` in `frontend/jest.config.js` |
+| `backend/app/core`, `backend/app/services`, `backend/app/tasks`, `backend/app/db` — **one** gate over their aggregate | ≥90% line coverage, compared **exactly** | `pytest --cov-fail-under=90` for the in-run message, then `backend/tests/coverage_gate.py` for the binding comparison |
+| `frontend/src/store`, `frontend/src/schema`, `frontend/src/services` — **three** independent groups, so **twelve** independent comparisons | ≥80% statements, branches, functions and lines | Jest `coverageThreshold` in `frontend/jest.config.js` |
+| Every frontend suite loads | **zero** suites that fail to load | `npm run test:load`, run as its own CI step ahead of `test:ci` |
 
 The gates live in the runners, not only in Codecov, so a shortfall fails the command that produced it. The ≥90% figure traces to `documentation/Software Project Proposal.md`, acceptance group 10 ("Testing Artifacts", lines 505–508). The backend gate is scoped to those four packages rather than the whole `app` tree because some branches are provably unreachable; see [`docs/testing/DECISION-LOG.md`](docs/testing/DECISION-LOG.md) for that reasoning, and [`docs/testing/DASHBOARD-TEMPLATE.md`](docs/testing/DASHBOARD-TEMPLATE.md) for measured figures.
 
-**`--cov-fail-under` needed configuration to mean what it says.** coverage.py compares
-`round(total, precision)` against the threshold, and `precision` defaults to **0** — so a threshold of 90
-accepted anything from 89.5% upward while pytest-cov's message, which uses the unrounded value, printed
-`FAIL`. Measured before the fix: `pytest --cov=app --cov-fail-under=90` printed
-`FAIL … Total coverage: 89.93%` and **exited 0**. `backend/.coveragerc` sets `precision = 2`, and the same
-command now exits **1**. Boundary-checked on the gated scope too: at a measured 91.79%,
-`--cov-fail-under=91.79` exits 0 and `91.80` exits 1. Those two totals - 89.93% whole-tree and 91.79%
-gated - are what the tree measured when the defect was reproduced; the same two commands read **90.97%**
-and **93.33%** today, and the demonstration holds with either pair substituted. Every backend percentage
-is therefore reported to
-two decimals — a figure quoted as a whole number predates this and is stale. Recorded as
-[`docs/testing/DECISION-LOG.md`](docs/testing/DECISION-LOG.md) row `D252`; the mechanism is written up in
-[`backend/tests/README.md`](backend/tests/README.md) §9.
+**`--cov-fail-under` cannot mean >=90% on its own, at any setting.** coverage.py compares
+`round(total, precision)` against the threshold, so there is always a band of sub-threshold totals that
+round up and pass. At the library default of **0** decimals, pytest-cov's message — which uses the
+unrounded value — printed `FAIL` while the run exited 0. Measured on this tree, where the whole `app`
+tree sits at 90.97%: `pytest --cov=app --cov-precision=0 --cov-fail-under=91` prints
+`FAIL Required test coverage of 91% not reached. Total coverage: 90.97%` and **exits 0**, because 90.97
+rounds to 91. `backend/.coveragerc` sets `precision = 2`, and the same command without
+`--cov-precision=0` exits **1** with
+`ERROR: Coverage failure: total of 90.97 is less than fail-under=91.00` — which makes the printed number
+agree with the exit status, and is why every backend percentage here is reported to two decimals. But two
+decimals still admit `[89.995, 90)`, and no finite precision closes that band.
+
+So the binding comparison is a second command, `backend/tests/coverage_gate.py`, run immediately after
+the suite. It reads the integer counts out of `coverage.json` and compares
+`covered * 100 >= 90 * statements` as exact rational arithmetic, and it refuses a report measured over
+the wrong scope. Measured on this tree: `182 of 195 statements covered = 93.3333% exact, threshold 90%
+-> coverage gate PASSED`; at `--fail-under 93.34` it exits **1** printing the comparison it performed;
+on a genuine whole-`app` report (262/288 = 90.9722%) it exits **1** naming all eight out-of-scope
+files; with no report it exits **2**, a distinct status because nothing-measured is not the same
+failure as measured-low. `backend/tests/test_coverage_gate.py` asserts all of it, including three
+totals — 89.995%, 89.9999% and 89.99999% — that the rounded comparison admits and the exact gate
+refuses. Recorded in [`docs/testing/DECISION-LOG.md`](docs/testing/DECISION-LOG.md); the mechanism is
+written up in [`backend/tests/README.md`](backend/tests/README.md) §9.
 
 The backend gate is **one** comparison over a single total, so a package inside it can sit below 90% while
 the gate passes. That is visible rather than hidden: the per-package figures are reported in
@@ -285,7 +390,7 @@ later commit — a figure that outlives the tree it was measured on is a claim, 
 | Commands | `cd backend && pytest --cov=app --cov-fail-under=90` for the 90.97% whole-tree figure; `cd backend && pytest --cov=app/core --cov=app/services --cov=app/tasks --cov=app/db --cov-fail-under=90` for the 93.33% gated figure |
 | Runner | `pytest` 8.4.2, `pytest-cov` 6.1.1, `coverage` 7.10.7, from `backend/requirements-dev.txt` |
 | Runtime | CPython 3.9.13 in `.venv-backend`, Windows |
-| Commit | Measured against `8a255fb`, the commit that introduced `backend/.coveragerc`. Check it out and re-run to reproduce both figures |
+| Commit | Recorded by the tooling rather than typed here: `python docs/testing/dashboard-extract.py` prints the branch and commit of the tree it read in its §1.0 block, so a figure and the tree it came from travel together. A hash written into prose necessarily names an older tree than the run it describes, and an earlier revision of this file proved it by citing a commit that is not a git object in this repository |
 | Artifacts | `backend/coverage.xml` (aggregate), `backend/coverage.json` (per-package and per-module), `backend/reports/junit.xml` |
 | Retention | Local-only as run above. The equivalent CI step retains all three — see [Reporting artifacts](#reporting-artifacts) |
 
@@ -301,7 +406,7 @@ block rather than a bare number: [`docs/testing/DASHBOARD-TEMPLATE.md`](docs/tes
 | --- | --- |
 | `backend/tests/unit/` | 12 modules mirroring the `app/` layout. Not one per production module: `test_schema.py` covers both schema modules, and `app/main.py` and `app/api/routes/` are covered from `integration/` instead. `docs/testing/TRACEABILITY-MATRIX.md` §I names the covering artifact for each of the 14 |
 | `backend/tests/integration/` | The FastAPI HTTP surface, driven through Starlette's `TestClient` |
-| `backend/tests/` | Suite-level guards that belong to no layer: `test_dependency_closure.py` and `test_coverage_gate.py` |
+| `backend/tests/` | Five suite-level guards that belong to no layer, and whose subjects are this repository rather than `app/`: `test_dependency_closure.py` (the pip manifest), `test_coverage_gate.py` (the `precision` the gate compares at), `test_guard_contract.py` (the conftest credential, egress and child-process guards), `test_dashboard_extract.py` (the dashboard producer) and `test_docs_contract.py` (the arithmetic the Rule 1 and Rule 2 documents state) — plus `coverage_gate.py`, the exact gate itself, a module CI runs after the suite rather than a test |
 | `backend/tests/conftest.py` | Shared fixtures, environment seeding, credential neutralizer, egress guard |
 | `backend/tests/factories.py` | Deterministic payload and duck-object builders |
 | `frontend/src/**/*.test.ts(x)` | Colocated beside the module under test |
@@ -328,19 +433,21 @@ Every path below is ignored by the root `.gitignore`, so **no artifact is commit
 them in your working tree and nowhere else. The last column is what a CI run additionally uploads, and it
 is the difference between a figure you can re-derive after the fact and one you have to take on trust.
 
-The two Codecov upload steps in `.github/workflows/ci.yml` were **reused**, and their `backend` and `frontend` flags are unchanged - but both `file:` paths were **repointed** at the artifacts that are actually produced: `./coverage.xml` became `./backend/coverage.xml`, and `./coverage/coverage-final.json` became `./frontend/coverage/coverage-final.json`. That second path is why `'json'` is a required entry in `coverageReporters` rather than an optional extra. The JUnit reporters on all three suites, the additional coverage reporters, and the collection-integrity gate were **added**. Every path listed above is ignored by the root `.gitignore`, so no artifact is committed. A dashboard layout over these feeds is in [`docs/testing/DASHBOARD-TEMPLATE.md`](docs/testing/DASHBOARD-TEMPLATE.md).
 | Artifact | Written by | Retained by CI |
 | --- | --- | --- |
 | `backend/reports/junit.xml` | the backend test command | yes — artifact `build-test-evidence`, 30 days |
 | `backend/reports/collect-only.txt` | the backend readiness step | yes — `build-test-evidence` |
+| `backend/reports/coverage-gate.txt` | the exact coverage gate, `tests/coverage_gate.py`, piped through `tee` | yes — `build-test-evidence` |
 | `backend/coverage.xml` | `--cov-report=xml` | yes — `build-test-evidence`, and the `backend`-flagged Codecov upload |
 | `backend/coverage.json` | `--cov-report=json` | yes — `build-test-evidence` |
 | `backend/coverage.lcov` | `--cov-report=lcov` | **no** — local only; the CI command does not request this reporter |
-| `frontend/reports/jest-junit.xml` | the `jest-junit` reporter | yes — `build-test-evidence` |
-| `frontend/reports/list-tests.txt` | the frontend readiness step | yes — `build-test-evidence` |
+| `frontend/reports/jest-junit.xml` | the `jest-junit` reporter, on a real suite run only — the load probe passes `--reporters=default` so it cannot overwrite this file | yes — `build-test-evidence` |
+| `frontend/reports/list-tests.txt` | the frontend discovery step, `npm run test:list` | yes — `build-test-evidence` |
+| `frontend/reports/load-tests.txt` | the frontend readiness step, `npm run test:load` | yes — `build-test-evidence` |
 | `frontend/coverage/` — `lcov.info`, `lcov-report/`, `coverage-final.json`, `coverage-summary.json`, `cobertura-coverage.xml` | the five configured coverage reporters | yes — `build-test-evidence`, and `coverage-final.json` is the `frontend`-flagged Codecov upload |
 | `e2e/reports/e2e-junit.xml` | Playwright's `junit` reporter | yes — artifact `e2e-test-evidence` |
 | `e2e/reports/list-tests.txt` | the E2E readiness step | yes — `e2e-test-evidence` |
+| `e2e/reports/browser.txt` | the browser gate, `browsers:require`, plus the runner version and the reporter | yes — `e2e-test-evidence` |
 | `e2e/playwright-report/` | Playwright's `html` reporter | yes — artifact `playwright-report` |
 | `e2e/test-results/` | trace, screenshot and video, **on failure only** | yes — artifact `e2e-failure-artifacts`, `if-no-files-found: warn` because a passing run legitimately writes nothing there |
 
@@ -348,10 +455,16 @@ Two workflow steps read the JUnit streams before those uploads and fail with an 
 report is missing, empty, or declares zero test cases — so a collection-time stub can never be published
 as a run.
 
-The two Codecov upload steps, and their `backend` and `frontend` flags, were **reused** unchanged; they
-gained a repointed path, `fail_ci_if_error: true`, and a condition tying them to a producer step that
-succeeded. The JUnit reporters on all three suites, the additional coverage reporters, the readiness steps
-and the artifact retention were **added**.
+The two Codecov upload steps in `.github/workflows/ci.yml` were **reused**, and their `backend` and
+`frontend` flags are unchanged — but both `file:` paths were **repointed** at the artifacts that are
+actually produced: `./coverage.xml` became `./backend/coverage.xml`, and `./coverage/coverage-final.json`
+became `./frontend/coverage/coverage-final.json`. That second path is why `'json'` is a required entry in
+`coverageReporters` rather than an optional extra. Both also gained `fail_ci_if_error: true` and a
+condition tying them to a producer step that succeeded. The JUnit reporters on all three suites, the
+additional coverage reporters, the three readiness steps, the exact coverage gate and the artifact
+retention were **added**. Every path in the table is ignored by the root `.gitignore`, so no artifact is
+committed. A dashboard layout over these feeds is in
+[`docs/testing/DASHBOARD-TEMPLATE.md`](docs/testing/DASHBOARD-TEMPLATE.md).
 
 **What CI does and does not tell you.** The `flake8 .`, `mypy .` and `npm run lint` steps are broken for
 reasons that predate this test suite and were deliberately left alone, so the workflow's overall
@@ -406,6 +519,7 @@ Improvements discovered while building the test suite. **None of them was attemp
 - **Not attempted** — repair the `flake8 .`, `mypy .` and `npm run lint` steps in `.github/workflows/ci.yml`; no linter is declared and the sources do not typecheck. Until they pass, the `build` job's overall conclusion stays red even though both test steps succeed.
 - **Not attempted** — raise the declared Node ceiling so `@playwright/test` >= 1.55.1 becomes available. That release carries the fix for CVE-2025-59288, which is the only reason the `e2e` job must be handed a browser provisioned out of band instead of installing one.
 - **Not attempted** — align the `/health` health checks in `infrastructure/docker/docker-compose.yml` and `.github/workflows/cd.yml` with a route that actually exists.
+- **Not attempted, and the highest-value group here** — the security exposures a whole-project assessment found and this delivery could not close, because they live in production code, in pinned dependency versions, and in the infrastructure and deployment files that the plan places off-limits. There are twenty-one of them, and the three that matter most are that all three implemented HTTP operations have no authentication or authorization of any kind, that `backend/app/services/analytics_service.py` builds both BigQuery queries by f-string interpolation of caller-supplied date strings, and that `infrastructure/terraform/main.tf` provisions network and storage without the access restrictions and in-transit encryption those resources support. Each one is written up individually — stated as a fact about the code, with the clause that put it out of reach, what it is worth to an attacker, and what has to be done — in [`docs/testing/SECURITY-GAPS.md`](docs/testing/SECURITY-GAPS.md). Read that before scheduling anything else on this list.
 - **Not attempted** — remove the `postgres:13` service and the `DATABASE_URL` variable, neither of which the Firestore and BigQuery application uses.
 
 The complete register, together with the reasoning behind every item, is in [`docs/testing/DECISION-LOG.md`](docs/testing/DECISION-LOG.md).

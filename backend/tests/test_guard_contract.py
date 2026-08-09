@@ -23,10 +23,15 @@ A loopback port is authorized only while this process holds it
 
 A child process is refused in every phase, not only inside a test
     A subprocess owns its own sockets, so no other guard in ``conftest.py`` can
-    see what it does. Refusal is therefore decided by *what is being run*, from
-    :func:`tests.conftest.pytest_configure` -- which is before collection --
-    through the last teardown, rather than by whether a test happens to be
-    executing.
+    see what it does. Refusal runs from :func:`tests.conftest.pytest_configure`
+    -- which is before collection -- through the last teardown, rather than
+    depending on whether a test happens to be executing. A shell entry point is
+    refused for every command; :class:`subprocess.Popen` is refused unless
+    :func:`tests.conftest.is_allowed_child_process` admits the invocation on its
+    **structure**: an argument vector whose executable resolves to a trusted
+    command interpreter, whose remaining members are exactly
+    :data:`tests.conftest.ALLOWED_CHILD_PROCESS_ARGUMENTS`, and which asks for no
+    shell.
 
 How the phase probes work
 -------------------------
@@ -51,29 +56,53 @@ Scope
 This module imports no ``app`` module. It opens loopback sockets it binds and
 closes itself, which is exactly the traffic the guard is designed to permit.
 
-@see docs/testing/DECISION-LOG.md - rows D105, D121, D223, D224 and D225.
+@see docs/testing/DECISION-LOG.md - rows D105, D121, D223, D224, D225, D329 and
+    D330.
 """
 
+import builtins
+import importlib
+import logging
+import multiprocessing
 import os
 import socket
 import subprocess
+import sys
+import threading
+import types
+import typing
 from types import SimpleNamespace
 
 import pytest
 
+import tests.conftest as suite_conftest
 from tests.conftest import (
-    ALLOWED_CHILD_PROCESS_COMMANDS,
+    ALLOWED_CHILD_PROCESS_ARGUMENTS,
+    CHILD_PROCESS_FACTORIES,
+    NATIVE_PROCESS_FACTORIES,
     REQUIRED_SETTINGS_ENV,
     SENSITIVE_SETTINGS_FIELDS,
+    SESSION_TEST_ID,
+    SURVIVOR_JOIN_TIMEOUT_SECONDS,
     TESTABILITY_SETTINGS_VALUES,
+    UNATTRIBUTED_SUBJECT,
+    UNCONDITIONAL_PROCESS_FACTORIES,
     UnmockedNetworkAccessError,
     _assert_settings_are_synthetic,
     _is_port_owned_by_this_process,
     _settings_normalisation_failures,
+    child_process_argv,
     child_process_command,
+    correlation_id_for,
+    current_test_id,
     describe_expected_value,
     describe_unexpected_value,
     is_allowed_child_process,
+    is_trusted_command_interpreter,
+    native_process_command,
+    process_call_detail,
+    reject_surviving_threads,
+    trusted_command_interpreters,
 )
 
 pytestmark = pytest.mark.unit
@@ -98,11 +127,99 @@ UNRUNNABLE_COMMAND = "blitzy-guard-contract-probe-no-such-executable"
 #: Fragment every :class:`tests.conftest.UnmockedNetworkAccessError` carries.
 REFUSAL_FRAGMENT = "attempted an unmocked network call"
 
-#: The two guarded entry points, each probed in each phase. Both are covered
-#: because they are installed by different builders -- a construction guard on
-#: ``subprocess.Popen.__init__`` and a call guard on ``os.system`` -- so a
-#: regression in one would be invisible in a probe that only exercised the other.
-PROBE_ENTRY_POINTS = ("subprocess.Popen", "os.system")
+#: The guarded entry points probed in each phase, mapped to a call that attempts
+#: one process through each. Every builder in ``conftest.py`` is represented,
+#: because a regression in one would be invisible in a probe that only exercised
+#: another: a construction guard on ``subprocess.Popen.__init__``, a call guard
+#: judged by the allow-list on ``os.system`` and the ``spawn`` family, a native
+#: guard reading two arguments on ``_winapi.CreateProcess``, and an unconditional
+#: refusal on ``os.fork`` and ``multiprocessing``.
+#:
+#: A name this interpreter does not provide is dropped by
+#: :func:`_available_entry_points`, so the POSIX-only and Windows-only entries
+#: coexist here exactly as they do in ``conftest.py``.
+PROBE_CALLS = {
+    "subprocess.Popen": {
+        "call": lambda: subprocess.Popen([UNRUNNABLE_COMMAND]),
+        "target": "subprocess.Popen",
+        "names_command": True,
+    },
+    "os.system": {
+        "call": lambda: os.system(UNRUNNABLE_COMMAND),
+        "target": "os.system",
+        "names_command": True,
+    },
+    "os.popen": {
+        "call": lambda: os.popen(UNRUNNABLE_COMMAND),
+        "target": "os.popen",
+        "names_command": True,
+    },
+    "os.startfile": {
+        "call": lambda: os.startfile(UNRUNNABLE_COMMAND),
+        "target": "os.startfile",
+        "names_command": True,
+    },
+    "os.spawnv": {
+        "call": lambda: os.spawnv(
+            os.P_NOWAIT, UNRUNNABLE_COMMAND, [UNRUNNABLE_COMMAND]
+        ),
+        "target": "os.spawnv",
+        "names_command": True,
+    },
+    "os.spawnl": {
+        "call": lambda: os.spawnl(
+            os.P_NOWAIT, UNRUNNABLE_COMMAND, UNRUNNABLE_COMMAND
+        ),
+        "target": "os.spawnl",
+        "names_command": True,
+    },
+    "os.posix_spawn": {
+        "call": lambda: os.posix_spawn(
+            UNRUNNABLE_COMMAND, [UNRUNNABLE_COMMAND], {}
+        ),
+        "target": "os.posix_spawn",
+        "names_command": True,
+    },
+    "os.execv": {
+        "call": lambda: os.execv(UNRUNNABLE_COMMAND, [UNRUNNABLE_COMMAND]),
+        "target": "os.execv",
+        "names_command": True,
+    },
+    "os.fork": {
+        "call": lambda: os.fork(),
+        "target": "os.fork",
+        # ``fork`` takes no arguments, so there is no command to report.
+        "names_command": False,
+    },
+    "_winapi.CreateProcess": {
+        "call": lambda: importlib.import_module("_winapi").CreateProcess(
+            None, UNRUNNABLE_COMMAND, None, None, 0, 0, None, None, None
+        ),
+        "target": "_winapi.CreateProcess",
+        "names_command": True,
+    },
+    "multiprocessing.Process.start": {
+        "call": lambda: multiprocessing.Process(target=len, args=("",)).start(),
+        "target": "multiprocessing.process.BaseProcess.start",
+        "names_command": False,
+    },
+}
+
+#: A trusted command interpreter on this platform, or ``None`` when the platform
+#: names none. The positive cases below are skipped in the latter case rather
+#: than asserted against a path that does not exist.
+TRUSTED_INTERPRETER = next(iter(sorted(trusted_command_interpreters())), None)
+
+#: Reason recorded when a case needs a real interpreter and there is none.
+NO_INTERPRETER_REASON = (
+    "this platform names no command interpreter, so there is no trusted "
+    "executable for the allowed invocation"
+)
+
+#: The one invocation the guard admits, as ``Popen`` receives it.
+def allowed_argv():
+    """Return the argument vector :func:`is_allowed_child_process` admits."""
+    return [TRUSTED_INTERPRETER, *ALLOWED_CHILD_PROCESS_ARGUMENTS]
 
 #: Subject the guard reports for a refusal raised outside any test.
 COLLECTION_SUBJECT = "collection"
@@ -114,20 +231,53 @@ PERMITTED = "PERMITTED"
 #: guard produces, since the command cannot be found.
 UNEXPECTED_PREFIX = "UNEXPECTED"
 
+#: Name every thread the survivor cases start, so an assertion can single them
+#: out from whatever else the interpreter happens to be running.
+SURVIVOR_THREAD_NAME = "blitzy-guard-contract-survivor"
+
+#: Seconds a survivor probe waits.  Deliberately short: two of the three cases
+#: are asserting that a thread which will *not* finish is reported, so this bounds
+#: how long the suite spends proving it.
+SURVIVOR_PROBE_TIMEOUT = 0.25
+
+
+def _entry_point_is_available(entry_point):
+    """Whether this interpreter provides the callable ``entry_point`` names.
+
+    ``os.fork`` exists only on POSIX and ``os.startfile`` and
+    ``_winapi.CreateProcess`` only on Windows, so the probe set is filtered the
+    same way ``conftest.py``'s installer filters its targets - by asking the
+    interpreter rather than by testing ``sys.platform``.
+    """
+    if entry_point in ("subprocess.Popen", "multiprocessing.Process.start"):
+        return True
+    module_name, _, attribute = entry_point.rpartition(".")
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError:
+        return False
+    return hasattr(module, attribute)
+
+
+def _available_entry_points():
+    """Return the probe names this interpreter can actually attempt."""
+    return tuple(
+        entry_point
+        for entry_point in PROBE_CALLS
+        if _entry_point_is_available(entry_point)
+    )
+
 
 def _attempt(entry_point):
     """Attempt one refused child process and report how the attempt ended.
 
-    :param entry_point: One of :data:`PROBE_ENTRY_POINTS`.
+    :param entry_point: A key of :data:`PROBE_CALLS`.
     :returns: The refusal message, :data:`PERMITTED` if the spawn was allowed
         through, or an :data:`UNEXPECTED_PREFIX` description of any other
         outcome.
     """
     try:
-        if entry_point == "subprocess.Popen":
-            subprocess.Popen([UNRUNNABLE_COMMAND])
-        else:
-            os.system(UNRUNNABLE_COMMAND)
+        PROBE_CALLS[entry_point]["call"]()
     except UnmockedNetworkAccessError as refusal:
         return str(refusal)
     except BaseException as unexpected:  # pragma: no cover - guard is installed
@@ -140,19 +290,22 @@ def _attempt(entry_point):
 
 
 def _probe_child_processes():
-    """Attempt both guarded entry points and report each outcome by name."""
-    return {entry_point: _attempt(entry_point) for entry_point in PROBE_ENTRY_POINTS}
+    """Attempt every available guarded entry point and report each outcome."""
+    return {
+        entry_point: _attempt(entry_point)
+        for entry_point in _available_entry_points()
+    }
 
 
 def _assert_was_refused(outcomes, phase):
     """Assert every outcome in ``outcomes`` is a refusal naming its entry point."""
-    assert sorted(outcomes) == sorted(PROBE_ENTRY_POINTS)
+    assert sorted(outcomes) == sorted(_available_entry_points())
     for entry_point, outcome in sorted(outcomes.items()):
+        probe = PROBE_CALLS[entry_point]
         assert outcome != PERMITTED, (
             "{entry_point} was permitted during {phase}; the guard must refuse "
-            "every command outside "
-            "tests.conftest.ALLOWED_CHILD_PROCESS_COMMANDS in every "
-            "phase".format(entry_point=entry_point, phase=phase)
+            "every invocation tests.conftest.is_allowed_child_process does not "
+            "admit, in every phase".format(entry_point=entry_point, phase=phase)
         )
         assert not outcome.startswith(UNEXPECTED_PREFIX), (
             "the {phase} probe of {entry_point} did not reach the guard at all, "
@@ -161,8 +314,9 @@ def _assert_was_refused(outcomes, phase):
             )
         )
         assert REFUSAL_FRAGMENT in outcome
-        assert entry_point in outcome
-        assert UNRUNNABLE_COMMAND in outcome
+        assert probe["target"] in outcome
+        if probe["names_command"]:
+            assert UNRUNNABLE_COMMAND in outcome
 
 
 #: Outcome of a child-process attempt at each guarded entry point, made while
@@ -479,46 +633,276 @@ def test_a_refusal_inside_a_test_names_the_test(request):
     assert str(excinfo.value).startswith(request.node.nodeid)
 
 
-@pytest.mark.parametrize(
-    "command",
-    [
-        "cmd /c ver",
-        "cmd.exe /c ver",
-        "CMD.EXE /C VER",
-        r"C:\Windows\system32\cmd.exe /c ver",
-        r'"C:\Windows\system32\cmd.exe" /c ver',
-        "cmd.exe /c ver ",
-    ],
-)
-def test_the_allowlist_admits_the_platform_version_probe(command):
-    """The one command the standard library itself needs on Windows."""
-    assert is_allowed_child_process(command) is True
+@pytest.mark.skipif(TRUSTED_INTERPRETER is None, reason=NO_INTERPRETER_REASON)
+@pytest.mark.parametrize("delivery", ["positional", "args-keyword", "cmd-keyword"])
+def test_the_guard_admits_the_platform_version_probe(delivery):
+    """The one invocation the standard library itself needs on Windows."""
+    argv = allowed_argv()
+    if delivery == "positional":
+        args, kwargs = (argv,), {}
+    elif delivery == "args-keyword":
+        args, kwargs = (), {"args": argv}
+    else:
+        args, kwargs = (), {"cmd": argv}
+
+    assert is_allowed_child_process(args, kwargs) is True
+
+
+@pytest.mark.skipif(TRUSTED_INTERPRETER is None, reason=NO_INTERPRETER_REASON)
+def test_the_guard_admits_a_tuple_and_a_bytes_argument_vector():
+    """Sequence kind and member encoding are not part of the judgement."""
+    argv = allowed_argv()
+    assert is_allowed_child_process((tuple(argv),), {}) is True
+    encoded = tuple(part.encode("utf-8") for part in argv)
+    assert is_allowed_child_process((encoded,), {}) is True
+
+
+@pytest.mark.skipif(TRUSTED_INTERPRETER is None, reason=NO_INTERPRETER_REASON)
+def test_the_guard_admits_an_unresolved_path_to_the_same_interpreter():
+    """`realpath` decides, so a path with `.` and `..` segments still resolves."""
+    directory, name = os.path.split(TRUSTED_INTERPRETER)
+    indirect = os.path.join(directory, ".", "..", os.path.basename(directory), name)
+    assert is_allowed_child_process(([indirect, *ALLOWED_CHILD_PROCESS_ARGUMENTS],), {}) is True
+
+
+#: Command lines that the superseded regular-expression allow-list matched, or
+#: would have matched, and that a shell would execute as more than one command.
+#: Each is now refused twice over: it is a string rather than an argument vector,
+#: and its executable is not a trusted interpreter.
+#:
+#: See ``docs/testing/DECISION-LOG.md`` row D329.
+SHELL_METACHARACTER_COMMAND_LINES = [
+    r"C:\safe&curl https://example.test/cmd.exe /c ver",
+    r"C:\safe|powershell -c iwr https://example.test/cmd.exe /c ver",
+    r"C:\safe;curl https://example.test/cmd.exe /c ver",
+    r"C:\safe&&curl https://example.test/cmd.exe /c ver",
+    r"C:\safe||curl https://example.test/cmd.exe /c ver",
+    "C:\\safe\ncurl https://example.test\\cmd.exe /c ver",
+    r"C:\safe%0Acurl https://example.test/cmd.exe /c ver",
+    r"C:\safe$(curl https://example.test)/cmd.exe /c ver",
+    r"C:\safe`curl https://example.test`/cmd.exe /c ver",
+    r"C:\safe>out.txt/cmd.exe /c ver",
+    "cmd /c ver",
+    "cmd.exe /c ver",
+    "CMD.EXE /C VER",
+    r"C:\Windows\system32\cmd.exe /c ver",
+    r'"C:\Windows\system32\cmd.exe" /c ver',
+    "cmd.exe /c ver ",
+]
+
+
+@pytest.mark.parametrize("command_line", SHELL_METACHARACTER_COMMAND_LINES)
+def test_the_guard_refuses_every_string_command_line(command_line):
+    """A string is a shell command line, so no string is ever admitted."""
+    assert is_allowed_child_process((command_line,), {}) is False
+    assert is_allowed_child_process((), {"args": command_line}) is False
 
 
 @pytest.mark.parametrize(
-    "command",
+    "separator",
+    ["&", "|", ";", "&&", "||", "\n", "\r", "%0A", "$(", "`", ">", "<", "^"],
+)
+def test_a_metacharacter_in_the_executable_is_refused_as_an_argument_vector(separator):
+    """The path is resolved and compared, so a separator cannot hide inside it."""
+    executable = "C:\\safe{0}curl\\cmd.exe".format(separator)
+    argv = [executable, *ALLOWED_CHILD_PROCESS_ARGUMENTS]
+    assert is_allowed_child_process((argv,), {}) is False
+
+
+@pytest.mark.skipif(TRUSTED_INTERPRETER is None, reason=NO_INTERPRETER_REASON)
+def test_a_metacharacter_in_an_argument_is_refused():
+    """The arguments are compared exactly, so nothing can be appended to them."""
+    for injected in ("ver&curl https://example.test", "ver | curl", "ver\ncurl"):
+        argv = [TRUSTED_INTERPRETER, "/c", injected]
+        assert is_allowed_child_process((argv,), {}) is False
+
+
+def test_a_non_system_executable_named_cmd_exe_is_refused(tmp_path):
+    """Trust is the resolved path, not the basename."""
+    impostor = tmp_path / "cmd.exe"
+    impostor.write_bytes(b"MZ")
+    argv = [str(impostor), *ALLOWED_CHILD_PROCESS_ARGUMENTS]
+
+    assert is_trusted_command_interpreter(str(impostor)) is False
+    assert is_allowed_child_process((argv,), {}) is False
+
+
+@pytest.mark.skipif(TRUSTED_INTERPRETER is None, reason=NO_INTERPRETER_REASON)
+def test_a_shell_request_is_refused_even_with_the_allowed_argument_vector():
+    """`shell=True` hands the vector to a shell, so it is never admitted."""
+    argv = allowed_argv()
+    assert is_allowed_child_process((argv,), {"shell": True}) is False
+    assert is_allowed_child_process((argv,), {"shell": 1}) is False
+
+
+@pytest.mark.skipif(TRUSTED_INTERPRETER is None, reason=NO_INTERPRETER_REASON)
+def test_an_executable_override_outside_the_trusted_set_is_refused(tmp_path):
+    """`executable=` replaces argv[0] at exec time, so it is judged too."""
+    impostor = tmp_path / "payload.exe"
+    impostor.write_bytes(b"MZ")
+    argv = allowed_argv()
+
+    assert is_allowed_child_process((argv,), {"executable": str(impostor)}) is False
+    assert (
+        is_allowed_child_process((argv,), {"executable": TRUSTED_INTERPRETER}) is True
+    )
+
+
+@pytest.mark.skipif(TRUSTED_INTERPRETER is None, reason=NO_INTERPRETER_REASON)
+@pytest.mark.parametrize(
+    "arguments",
     [
-        "cmd.exe /c whoami",
-        "cmd.exe /c ver && curl https://example.test",
-        "cmd.exe /c ver | curl https://example.test",
-        "cmd.exe /k ver",
-        "ver",
-        "curl https://example.test",
-        "powershell -Command ver",
-        "",
-        "   ",
-        None,
-        ["cmd.exe", "/c", "ver"],
+        ["/c", "whoami"],
+        ["/k", "ver"],
+        ["/c", "ver", "extra"],
+        ["/c"],
+        [],
+        ["/C", "VER"],
+        ["/c", "ver "],
+        ["/c", " ver"],
     ],
 )
-def test_the_allowlist_refuses_everything_else(command):
-    """Including a widened `cmd /c`, and anything it cannot make sense of."""
-    assert is_allowed_child_process(command) is False
+def test_only_the_exact_argument_vector_is_admitted(arguments):
+    """`ALLOWED_CHILD_PROCESS_ARGUMENTS` is compared exactly, case included."""
+    argv = [TRUSTED_INTERPRETER, *arguments]
+    assert is_allowed_child_process((argv,), {}) is False
 
 
-def test_the_allowlist_is_exactly_one_pattern():
-    """A second entry is a decision, so it must not arrive unnoticed."""
-    assert len(ALLOWED_CHILD_PROCESS_COMMANDS) == 1
+@pytest.mark.parametrize(
+    ("args", "kwargs"),
+    [
+        ((), {}),
+        ((None,), {}),
+        (([],), {}),
+        ((["cmd.exe", "/c", 7],), {}),
+        ((["cmd.exe", "/c", None],), {}),
+        (({"cmd.exe", "/c", "ver"},), {}),
+        ((b"cmd.exe /c ver",), {}),
+        ((bytearray(b"cmd.exe /c ver"),), {}),
+        ((), {"cmd": ["curl", "/c", "ver"]}),
+    ],
+)
+def test_the_guard_refuses_what_it_cannot_make_sense_of(args, kwargs):
+    """Fails closed: no argument shape falls through to a permit."""
+    assert is_allowed_child_process(args, kwargs) is False
+
+
+@pytest.mark.parametrize(
+    ("args", "kwargs", "expected"),
+    [
+        ((["cmd.exe", "/c", "ver"],), {}, ["cmd.exe", "/c", "ver"]),
+        (((b"cmd.exe", b"/c", b"ver"),), {}, ["cmd.exe", "/c", "ver"]),
+        ((), {"args": ["cmd.exe", "/c", "ver"]}, ["cmd.exe", "/c", "ver"]),
+        (("cmd.exe /c ver",), {}, None),
+        ((b"cmd.exe /c ver",), {}, None),
+        ((), {}, None),
+        ((["cmd.exe", 7],), {}, None),
+    ],
+)
+def test_an_argument_vector_is_recognised_only_as_a_sequence(args, kwargs, expected):
+    """`None` is the answer for anything a shell would have to parse."""
+    assert child_process_argv(args, kwargs) == expected
+
+
+def test_every_trusted_interpreter_is_an_existing_file_with_the_expected_name():
+    """The trusted set is resolved against the filesystem, not assembled by name."""
+    for resolved in trusted_command_interpreters():
+        assert os.path.isfile(resolved)
+        assert os.path.normcase(os.path.basename(resolved)) == os.path.normcase("cmd.exe")
+        assert resolved == os.path.normcase(os.path.realpath(resolved))
+
+
+@pytest.mark.parametrize("candidate", ["", "   ", None, 7, b"", ["cmd.exe"]])
+def test_an_unusable_interpreter_candidate_is_not_trusted(candidate):
+    """Fails closed for a value that names no path at all."""
+    assert is_trusted_command_interpreter(candidate) is False
+
+
+def test_the_allowed_argument_vector_is_exactly_the_version_probe():
+    """Widening this tuple is a decision, so it must not arrive unnoticed."""
+    assert ALLOWED_CHILD_PROCESS_ARGUMENTS == ("/c", "ver")
+
+
+def test_the_shell_entry_points_carry_no_allowance():
+    """Every string-command entry point is refused, the allowed command included.
+
+    None of these three can satisfy `is_allowed_child_process`, which admits only an
+    argument vector, so each is refused whatever it is handed. `os.startfile` is
+    Windows-only and is exercised through the probe table rather than called here.
+    """
+    assert CHILD_PROCESS_FACTORIES == (("os", "system"), ("os", "popen"),
+                                       ("os", "startfile"))
+
+    with pytest.raises(UnmockedNetworkAccessError):
+        os.system("cmd.exe /c ver")
+
+    with pytest.raises(UnmockedNetworkAccessError):
+        os.popen("cmd.exe /c ver")
+
+
+@pytest.mark.parametrize("payload", SHELL_METACHARACTER_COMMAND_LINES)
+def test_the_installed_guard_refuses_a_metacharacter_payload(payload):
+    """The end-to-end refusal, at both entry points, of the payload class that
+    defeated the superseded command-line allow-list."""
+    with pytest.raises(UnmockedNetworkAccessError):
+        os.system(payload)
+
+    with pytest.raises(UnmockedNetworkAccessError):
+        subprocess.Popen(payload)
+
+    with pytest.raises(UnmockedNetworkAccessError):
+        subprocess.Popen(payload, shell=True)
+
+
+def test_every_probe_names_a_declared_guard_target():
+    """No probe may assert against something ``conftest.py`` does not guard.
+
+    Otherwise a probe could pass because the *call* failed for its own reasons
+    while the guard covered nothing.
+    """
+    declared = {
+        "{0}.{1}".format(module_name, attribute)
+        for module_name, attribute in (
+            CHILD_PROCESS_FACTORIES
+            + NATIVE_PROCESS_FACTORIES
+            + UNCONDITIONAL_PROCESS_FACTORIES
+        )
+    }
+    declared.add("subprocess.Popen")
+
+    probed = {probe["target"] for probe in PROBE_CALLS.values()}
+
+    assert probed <= declared, sorted(probed - declared)
+
+
+@pytest.mark.parametrize(
+    ("group_name", "group"),
+    [
+        ("CHILD_PROCESS_FACTORIES", CHILD_PROCESS_FACTORIES),
+        ("NATIVE_PROCESS_FACTORIES", NATIVE_PROCESS_FACTORIES),
+        ("UNCONDITIONAL_PROCESS_FACTORIES", UNCONDITIONAL_PROCESS_FACTORIES),
+    ],
+)
+def test_each_guard_group_is_probed(group_name, group):
+    """Every builder in ``conftest.py`` is exercised by at least one probe.
+
+    The three groups are installed by three different builders - allow-list on
+    the first argument, allow-list on two arguments, unconditional refusal - so a
+    regression in one would be invisible to a probe set that only covered
+    another. The constants carry the full surface; this asserts that each
+    mechanism is represented, on whichever platform is running.
+    """
+    available_targets = {
+        PROBE_CALLS[entry_point]["target"] for entry_point in _available_entry_points()
+    }
+    group_targets = {
+        "{0}.{1}".format(module_name, attribute) for module_name, attribute in group
+    }
+
+    assert group_targets & available_targets, (
+        "no available probe covers {group}, so its guard builder is "
+        "unasserted".format(group=group_name)
+    )
 
 
 @pytest.mark.parametrize(
@@ -540,3 +924,296 @@ def test_a_command_is_rendered_the_same_way_however_it_arrives(
 ):
     """One normalised form, so the allow-list and the refusal message agree."""
     assert child_process_command(args, kwargs) == expected
+
+
+@pytest.mark.parametrize(
+    ("args", "kwargs", "expected"),
+    [
+        # The shape `subprocess` uses on Windows: the executable is inside the
+        # command line and the application name is None.
+        ((None, "cmd.exe /c ver"), {}, "cmd.exe /c ver"),
+        ((), {"command_line": "cmd.exe /c ver"}, "cmd.exe /c ver"),
+        ((r"C:\Windows\cmd.exe", None), {}, r"C:\Windows\cmd.exe"),
+        ((None, None), {}, "<no command>"),
+        ((), {}, "<no command>"),
+    ],
+)
+def test_a_native_command_is_read_from_both_of_its_positions(args, kwargs, expected):
+    """``_winapi.CreateProcess`` names its command second, not first.
+
+    Reading only the first argument would render ``<no command>`` for every call
+    ``subprocess`` makes, which the allow-list would then refuse - correct by
+    accident, and unable to admit the one command it exists to admit.
+    """
+    assert native_process_command(args, kwargs) == expected
+
+
+@pytest.mark.parametrize(
+    ("args", "kwargs", "expected"),
+    [
+        ((), {}, "<no arguments>"),
+        ((1, "/bin/false", ["/bin/false"]), {}, "1 /bin/false /bin/false"),
+        ((), {"env": "x"}, "env=x"),
+    ],
+)
+def test_an_unconditional_refusal_reports_its_whole_call(args, kwargs, expected):
+    """``os.spawnv`` puts a mode first, so every argument is reported.
+
+    The allow-list never reads these, so the detail exists to name what was
+    attempted rather than to be matched.
+    """
+    assert process_call_detail(args, kwargs) == expected
+
+
+# --------------------------------------------------------------------------- #
+# F27 -- a thread this run started does not outlive the guards.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_thread_that_finishes_is_not_reported_as_a_survivor():
+    """The joiner waits for a thread that is going to finish, and reports none."""
+    finished = threading.Event()
+    worker = threading.Thread(target=finished.set, name=SURVIVOR_THREAD_NAME)
+    worker.start()
+
+    survivors = reject_surviving_threads(timeout=SURVIVOR_PROBE_TIMEOUT)
+
+    assert finished.is_set()
+    assert [entry for entry in survivors if SURVIVOR_THREAD_NAME in entry] == []
+
+
+def test_a_thread_that_will_not_finish_is_reported_and_named():
+    """A thread still running when the guards come off is the reportable case.
+
+    Released at the end, and the release is asserted, so the probe cannot itself
+    become the survivor it is testing for.
+    """
+    release = threading.Event()
+    worker = threading.Thread(
+        target=release.wait, name=SURVIVOR_THREAD_NAME, daemon=True
+    )
+    worker.start()
+    try:
+        survivors = reject_surviving_threads(timeout=SURVIVOR_PROBE_TIMEOUT)
+
+        named = [entry for entry in survivors if SURVIVOR_THREAD_NAME in entry]
+        assert named, survivors
+        # The report has to be actionable: the kind of thread and its identity.
+        assert "daemon=True" in named[0]
+        assert str(worker.ident) in named[0]
+    finally:
+        release.set()
+        worker.join(SURVIVOR_JOIN_TIMEOUT_SECONDS)
+
+    assert worker.is_alive() is False
+    assert [
+        entry
+        for entry in reject_surviving_threads(timeout=SURVIVOR_PROBE_TIMEOUT)
+        if SURVIVOR_THREAD_NAME in entry
+    ] == []
+
+
+class _NeverFinishes:
+    """A stand-in for a thread that will not finish, over a simulated clock.
+
+    ``join`` consumes the whole timeout it was handed, which is what a thread
+    blocked on an event does, and advances the clock by that much - so the budget
+    arithmetic is observable without the test waiting for anything. Sharing the
+    real clock here would make the assertion depend on wall time under a
+    coverage-traced interpreter on a loaded host, which is the flakiness the
+    suite's own rules forbid.
+    """
+
+    daemon = True
+
+    def __init__(self, clock, waits, ident):
+        self._clock = clock
+        self._waits = waits
+        self.name = SURVIVOR_THREAD_NAME
+        self.ident = ident
+
+    def is_alive(self):
+        return True
+
+    def join(self, timeout=None):
+        self._waits.append(timeout)
+        self._clock.now += timeout
+
+
+class _SimulatedClock:
+    """The two calls :func:`reject_surviving_threads` makes on the clock."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+
+def test_the_joiner_shares_one_budget_across_every_survivor(monkeypatch):
+    """The budget is shared, so one thread that never exits cannot stretch it.
+
+    Three threads that never finish and a budget of one: the first consumes it and
+    the rest are reported without being waited on, which is what keeps session
+    teardown bounded no matter how many threads a run leaked.
+    """
+    clock = _SimulatedClock()
+    waits = []
+    stand_ins = [_NeverFinishes(clock, waits, ident) for ident in (101, 102, 103)]
+
+    monkeypatch.setattr(suite_conftest, "time", clock)
+    monkeypatch.setattr(
+        suite_conftest, "_threads_started_by_this_run", lambda: stand_ins
+    )
+
+    survivors = reject_surviving_threads(timeout=SURVIVOR_PROBE_TIMEOUT)
+
+    # One wait, of exactly the budget, not one wait per thread.
+    assert waits == [SURVIVOR_PROBE_TIMEOUT]
+    assert clock.now == SURVIVOR_PROBE_TIMEOUT
+    # Every one of them is still reported, so nothing is lost by not waiting.
+    assert len(survivors) == len(stand_ins)
+    assert all(SURVIVOR_THREAD_NAME in survivor for survivor in survivors)
+
+
+# --------------------------------------------------------------------------- #
+# F28 -- attribution is context-local, so no record names the wrong test.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_log_record_emitted_by_this_test_is_attributed_to_it(request):
+    """The positive side: the factory stamps the running test's nodeid."""
+    record = logging.getLogRecordFactory()(
+        "blitzy.probe", logging.INFO, __file__, 1, "probe", (), None
+    )
+
+    assert record.test_id == request.node.nodeid
+    assert record.correlation_id == correlation_id_for(request.node.nodeid)
+
+
+def test_a_log_record_from_a_background_thread_is_not_attributed_to_this_test(request):
+    """A thread starts with an empty context, so it reads the session subject.
+
+    Naming this test would be worse than naming none: the record did not come
+    from it, and a reader following the correlation id would land on the wrong
+    subject.
+    """
+    attributed = []
+
+    def emit():
+        record = logging.getLogRecordFactory()(
+            "blitzy.probe", logging.INFO, __file__, 1, "probe", (), None
+        )
+        attributed.append((record.test_id, record.correlation_id))
+
+    worker = threading.Thread(target=emit, name=SURVIVOR_THREAD_NAME)
+    worker.start()
+    worker.join(SURVIVOR_JOIN_TIMEOUT_SECONDS)
+
+    assert attributed == [(SESSION_TEST_ID, SESSION_TEST_ID)]
+    assert current_test_id() == request.node.nodeid
+
+
+def test_a_refusal_from_a_background_thread_is_not_attributed_to_this_test(request):
+    """The same rule for the guard's own message, which CI publishes."""
+    reported = []
+
+    def attempt():
+        try:
+            os.system(UNRUNNABLE_COMMAND)
+        except UnmockedNetworkAccessError as refusal:
+            reported.append(str(refusal))
+
+    worker = threading.Thread(target=attempt, name=SURVIVOR_THREAD_NAME)
+    worker.start()
+    worker.join(SURVIVOR_JOIN_TIMEOUT_SECONDS)
+
+    assert len(reported) == 1
+    assert reported[0].startswith(UNATTRIBUTED_SUBJECT)
+    assert request.node.nodeid not in reported[0]
+
+
+# --------------------------------------------------------------------------- #
+# F29 -- the interpreter this run leaves behind is the one it entered.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_optional_shim_is_restored_to_a_pre_existing_binding(monkeypatch):
+    """A ``builtins.Optional`` this run did not introduce is handed back exactly."""
+    owner = object()
+    monkeypatch.setattr(suite_conftest, "_BUILTINS_PREVIOUS_OPTIONAL", owner)
+    try:
+        suite_conftest._restore_optional_shim()
+
+        assert builtins.Optional is owner
+    finally:
+        builtins.Optional = typing.Optional
+
+
+def test_the_optional_shim_is_deleted_when_this_run_introduced_it():
+    """And a name this run introduced is removed rather than left bound."""
+    assert suite_conftest._BUILTINS_PREVIOUS_OPTIONAL is suite_conftest._ABSENT
+    try:
+        suite_conftest._restore_optional_shim()
+
+        assert hasattr(builtins, "Optional") is False
+    finally:
+        builtins.Optional = typing.Optional
+
+
+def test_a_shimmed_binding_is_recorded_and_replayed():
+    """Every module a shim was written onto goes back to what it held before.
+
+    Driven against a synthetic module so the session's own shims are untouched:
+    the registry is saved and restored around the probe, because replaying it
+    mid-session would evict the stand-ins the suites still need.
+    """
+    module = types.ModuleType("blitzy_shim_probe")
+    module.already_there = "production value"
+    sys.modules[module.__name__] = module
+
+    saved = dict(suite_conftest._SHIMMED_BINDINGS)
+    suite_conftest._SHIMMED_BINDINGS.clear()
+    try:
+        suite_conftest._record_shimmed_binding(module, "already_there")
+        suite_conftest._record_shimmed_binding(module, "introduced")
+        module.already_there = "stand-in"
+        module.introduced = "stand-in"
+
+        # Recorded once: a second write must not overwrite the original value with
+        # the stand-in that replaced it.
+        suite_conftest._record_shimmed_binding(module, "already_there")
+
+        suite_conftest._restore_shimmed_bindings()
+
+        assert module.already_there == "production value"
+        assert hasattr(module, "introduced") is False
+        assert suite_conftest._SHIMMED_BINDINGS == {}
+    finally:
+        suite_conftest._SHIMMED_BINDINGS.clear()
+        suite_conftest._SHIMMED_BINDINGS.update(saved)
+        sys.modules.pop(module.__name__, None)
+
+
+def test_the_live_shims_are_registered_for_replay(app_module):
+    """The wiring: using the real fixture records the real modules.
+
+    ``app.main``'s graph binds three names no production module defines, and every
+    module that received one has to be in the registry - otherwise the sentinel
+    stays on it after the run.
+    """
+    assert app_module.__name__ == "app.main"
+
+    registered = set(suite_conftest._SHIMMED_BINDINGS)
+
+    assert ("app.core.security", "verify_token") in registered
+    assert ("app.services.twitter_service", "TwitterService") in registered
+    assert ("app.services.llm_service", "LLMService") in registered
+    # Every recorded binding is one production defines nowhere, so the replay
+    # deletes rather than restores.
+    for key in (
+        ("app.core.security", "verify_token"),
+        ("app.services.twitter_service", "TwitterService"),
+        ("app.services.llm_service", "LLMService"),
+    ):
+        assert suite_conftest._SHIMMED_BINDINGS[key] is suite_conftest._ABSENT

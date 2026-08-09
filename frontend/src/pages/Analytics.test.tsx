@@ -26,11 +26,8 @@
  *    `dateRange` prop, where L39 passes `data`.
  *
  * The group below is an ordinary `describe`, so this module is collected and every specifier in it
- * resolves on each run. Each test is marked `it.skip` and carries {@link BLOCKER} - which names the
- * first of the three - in its own title, so the reason travels with the identity a result reader
- * sees. `frontend/jest.config.js` gives `jest-junit` a `titleTemplate` that prefixes each test's
- * name with its ancestor titles, so both strings reach every `<testcase>` this file contributes to
- * `frontend/reports/jest-junit.xml`. No blanket `describe.skip` is used.
+ * resolves on each run. Each test is marked `it.skip` and carries {@link BLOCKER} in its own title,
+ * so the reason travels with the identity a result reader sees.
  *
  * ## The module graph still loads
  *
@@ -45,10 +42,6 @@
  * `frontend/src/test-utils/stubs/analyticsService.ts`, whose `getAnalyticsData` takes the three
  * arguments L18 passes and resolves with the three members L39-41 read. The `jest.mock` below
  * replaces that stub with an automock, and `beforeEach` installs this suite's own resolution.
- *
- * This file defines no store hook, adds no `user` slice, seeds no `user` state, mocks neither
- * `@/store` nor `@/components/Analytics`, and installs no canvas or resize-observer shim. It
- * asserts no thrown error in place of the skip.
  *
  * @see frontend/src/pages/Analytics.tsx - the module under test.
  * @see frontend/src/store/index.ts - the two runtime exports named in item 1.
@@ -82,17 +75,12 @@ const getAnalyticsDataMock = jest.mocked(getAnalyticsData);
 const SUITE_TITLE = 'pages/Analytics (src/pages/Analytics.tsx)';
 
 /**
- * Blocker carried by every skipped test identity below.
+ * Blocker suffixed onto every skipped test title below, so each `<testcase>` in
+ * `frontend/reports/jest-junit.xml` carries the reason on the identity a result reader sees - Jest's
+ * skip takes no reason argument, so the title is where one goes.
  *
- * Jest's skip takes no reason argument, so the title is where one goes. It is appended to each
- * individual test rather than declared once on the group: a blanket `describe.skip` leaves each
- * `<testcase>` in `frontend/reports/jest-junit.xml` marked skipped with no reason of its own, and a
- * reader of one result then has nothing to go on. `frontend/jest.config.js` gives `jest-junit` a
- * `titleTemplate` that prefixes each name with its ancestor titles, so both {@link SUITE_TITLE} and
- * this string reach every `<testcase>` this file contributes.
- *
- * It names the first of the three reasons in the module docstring - the one that raises first - and
- * the module whose export set does not contain it.
+ * It names the first of the three reasons in the module docstring, the one that raises first, and the
+ * module whose export set does not contain it.
  */
 const BLOCKER =
   'BLOCKED: src/store/index.ts exports no useAppSelector, so src/pages/Analytics.tsx line 13 ' +
@@ -251,7 +239,6 @@ describe(SUITE_TITLE, () => {
     const page = container.querySelector('div.analytics-page');
     expect(page).not.toBeNull();
 
-    // The heading is inside the page container rather than merely somewhere in the document.
     expect(page).toContainElement(screen.getByRole('heading', { level: 1, name: ANALYTICS_HEADING }));
 
     // L36-38 is a container holding a comment: no element children and no text.
@@ -259,10 +246,8 @@ describe(SUITE_TITLE, () => {
     expect(picker).not.toBeNull();
     expect(picker).toBeEmptyDOMElement();
 
-    // The pre-data branch is gone once `analyticsData` is set.
     expect(screen.queryByText(LOADING_TEXT)).toBeNull();
 
-    // The subject reports nothing on the path where the fetch resolves.
     expect(consoleError).not.toHaveBeenCalled();
   });
 
@@ -273,7 +258,6 @@ describe(SUITE_TITLE, () => {
 
     const call = getAnalyticsDataMock.mock.calls[0];
 
-    // Three arguments and no fourth: L18 passes the two range ends and the id, nothing more.
     expect(call).toHaveLength(3);
 
     // L12 builds both ends of the range with `new Date()`, so each arrives as a `Date` instance.

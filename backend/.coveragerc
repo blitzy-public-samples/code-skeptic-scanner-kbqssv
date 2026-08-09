@@ -1,17 +1,19 @@
 # Coverage configuration for the Code Skeptic Scanner backend suite.
 #
-# Discovered by coverage.py, and so by pytest-cov, because every backend command
-# in this repository is invoked from `backend/`.  It is a `.coveragerc` rather
-# than a `[coverage:*]` block because `pytest.ini` cannot carry one and no
-# setup.cfg, tox.ini or pyproject.toml exists here.
+# Discovered by coverage.py, and so by pytest-cov, when a command is invoked from
+# `backend/`, which is how every backend command in this repository is run.
 #
 # `precision` is the number of digits after the decimal point that
 # `coverage.results.should_fail_under` rounds a total to before comparing it with
-# `--cov-fail-under`: the comparison is `round(total, precision) < fail_under`.
-# At 0 a threshold of 90 accepts any total from 89.5% upward, so a run measuring
-# 89.99% prints `FAIL Required test coverage of 90% not reached` - the message
-# uses the unrounded value - and still exits 0.  At 2 the exit status agrees with
-# the message, and 2 is also the precision every reported percentage is rendered at.
+# `--cov-fail-under`: the comparison is `round(total, precision) < fail_under`. It
+# is also the number of digits every reported percentage is rendered at.
+#
+# Rounding cannot make that comparison literal at any finite precision: two
+# decimals still admit a total in [89.995, 90).  So this file is the *reporting*
+# half of the gate only.  The binding half is `backend/tests/coverage_gate.py`,
+# which compares the integer counts in `coverage.json` exactly and also checks
+# which packages were measured; `.github/workflows/ci.yml` runs it immediately
+# after the gated pytest step.
 #
 # This file declares no `fail_under` and no `[run] source`: the threshold and the
 # measured scope are supplied on the command line, where the workflow and the

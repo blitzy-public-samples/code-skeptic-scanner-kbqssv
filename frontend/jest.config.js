@@ -63,8 +63,8 @@ const toFullTestName = (joinedAncestorTitles, title) =>
 module.exports = {
   /*
    * `ts-jest`'s preset. Its own `transform` entry, `'^.+\\.tsx?$'`, is merged in after the two
-   * declared below and is therefore shadowed by them: Jest matches transform patterns in
-   * declaration order and takes the first hit.
+   * declared below, and Jest matches transform patterns in declaration order, so the two below
+   * take precedence over it.
    */
   preset: 'ts-jest',
 
@@ -75,8 +75,8 @@ module.exports = {
 
   /*
    * Two transformers, matched in declaration order: the extension-less component modules,
-   * then every .ts/.tsx/.js/.jsx file. Both are declared here rather than left to the preset,
-   * because only these two carry the inline compiler options and `diagnostics: false`.
+   * then every .ts/.tsx/.js/.jsx file. Both carry the inline compiler options and
+   * `diagnostics: false`. See docs/testing/DECISION-LOG.md rows D30-D33 and D274.
    */
   transform: {
     'src[\\\\/]components[\\\\/](Dashboard|TweetManagement|Analytics|Configuration)$':
@@ -140,14 +140,25 @@ module.exports = {
    * titles and the leaf title. Two tests that share a leaf title under different `describe` blocks are
    * therefore distinct, and each `<testcase>` matches the ledger entry of the requests it made.
    *
-   * The templates are functions rather than `{...}` strings because a string cannot normalise a separator
-   * and `{title}` expands to the leaf title alone. `ancestorSeparator` is the single space Jest joins those
-   * titles with, and it reaches the emitted name through the `{classname}` variable.
+   * The templates are functions applied to jest-junit's variables; `ancestorSeparator` is the single space
+   * Jest joins ancestor titles with, and it reaches the emitted name through the `{classname}` variable.
+   * See docs/testing/DECISION-LOG.md rows D144 and D145.
    *
    * `reportTestSuiteErrors` emits a suite that failed to load - jest-junit names such a suite by its raw
    * platform path and cannot be templated there. `addFileAttribute` adds the `file` attribute CI annotators
-   * read, also the raw platform path; `includeConsoleOutput` carries the console lines Jest buffers into
-   * `<system-out>`.
+   * read, also the raw platform path.
+   *
+   * `includeConsoleOutput` is deliberately **not** enabled. It copies every console line Jest buffered
+   * into `<system-out>`, and the lines this suite buffers are the ones production code writes: several
+   * modules under `src/` log a raw error object, whose serialised form carries the request, the base URL
+   * and the absolute filesystem paths of the machine that ran the build. The result is uploaded by
+   * `.github/workflows/ci.yml` and retained, so a format that carries whole logged objects is one real
+   * fixture away from carrying a credential. The console remains visible in the run output, where the
+   * component and service suites assert on it directly, and a *failing* test still carries its own
+   * `<failure>` message. Fixing the logging itself belongs to the modules doing it, which this programme
+   * is not authorized to change.
+   *
+   * @see docs/testing/DECISION-LOG.md - row D316.
    */
   reporters: [
     'default',
@@ -162,7 +173,6 @@ module.exports = {
         ancestorSeparator: ' ',
         addFileAttribute: 'true',
         reportTestSuiteErrors: 'true',
-        includeConsoleOutput: 'true',
       },
     ],
   ],
