@@ -182,7 +182,8 @@ describe(IDENTITY_SUITE, () => {
       const ancestors = [IDENTITY_SUITE, NESTED_SUITE];
       const variables = templateVariables(ancestors, NESTED_LEAF, testPath);
 
-      // The emitted name is Jest's own full test name, so it is also a `jest -t` pattern verbatim.
+      // The emitted name is Jest's own full test name. `jest -t` takes a regular expression, so
+      // selecting a test by that name requires escaping its regex metacharacters first.
       expect(OPTIONS.titleTemplate(variables)).toBe(currentTestName);
       expect(emittedIdentity(ancestors, NESTED_LEAF, testPath)).toBe(currentTestId());
       expect(currentTestId()).toBe(

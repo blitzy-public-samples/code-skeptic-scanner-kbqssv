@@ -45,21 +45,28 @@ discovery stub. Readiness therefore runs *before* the suite it reports on, in ex
 
 Order is no longer the *only* protection, and it should not be. Each readiness command below carries its
 own neutraliser — the backend probe repeats `--junitxml` to a separate file, `test:load` pins
-`--reporters=default`, `test:list` pins `--reporter=line` — so running one out of order costs nothing.
-Independently of that, the backend result stream's case count is required to equal the collected count
-this step records; a partial run is named and refused rather than published (`D355`).
+`--reporters=default`, the frontend `test:list` is `jest --listTests`, which resolves no
+import and runs no test body at all, `test:list` pins `--reporter=line`, and `e2e`'s targeted and interactive scripts
+(`test:spec`, `test:headed`, `test:debug`) pin `--reporter=line` too — so running one out of order costs
+nothing. Independently of that, **each** result stream's case count is required to equal what that
+layer's own witness records: the backend against the collected count this step retains (`D355`), the
+frontend against the test identities `test:load` registers, and the end-to-end stream against the case
+count `test:list` discovered (`D403`, `D404`). A partial run is named and refused rather than published,
+in all three layers.
 
 Every command below is one a CI step also runs, and every one **creates the artifact §2 names** —
-including the three readiness text files, which nothing else produces. Both shells are given because
-the redirection differs and a POSIX-only instruction is not a cross-platform instruction.
+including the four text artifacts nothing else produces: the three readiness outputs, one per layer,
+and the frontend discovery census. Both shells are given because the redirection differs and a
+POSIX-only instruction is not a cross-platform instruction.
 
 **POSIX shells**
 
 ```bash
-# 1. Readiness - creates the three .txt artifacts §2 requires
+# 1. Readiness and discovery - creates the four .txt artifacts §2 requires
 mkdir -p backend/reports frontend/reports e2e/reports
 (cd backend  && pytest --collect-only -q --junitxml=reports/collect-only-junit.xml \
                   | tee reports/collect-only.txt)
+(cd frontend && npm run --silent test:list        | tee reports/list-tests.txt)
 (cd frontend && npm run --silent test:load 2>&1   | tee reports/load-tests.txt)
 (cd e2e      && npm run --silent test:list        | tee reports/list-tests.txt)
 
@@ -78,9 +85,10 @@ mkdir -p backend/reports frontend/reports e2e/reports
 **PowerShell**
 
 ```powershell
-# 1. Readiness
+# 1. Readiness and discovery
 New-Item -ItemType Directory -Force backend\reports, frontend\reports, e2e\reports | Out-Null
 cd backend;  cmd /c "pytest --collect-only -q --junitxml=reports/collect-only-junit.xml 2>&1" | Tee-Object reports\collect-only.txt; cd ..
+cd frontend; cmd /c "npm run --silent test:list 2>&1"      | Tee-Object reports\list-tests.txt;   cd ..
 cd frontend; cmd /c "npm run --silent test:load 2>&1"      | Tee-Object reports\load-tests.txt;   cd ..
 cd e2e;      cmd /c "npm run --silent test:list 2>&1"      | Tee-Object reports\list-tests.txt;   cd ..
 
@@ -369,15 +377,29 @@ control. A CI run additionally uploads them, so a result can be audited after th
 | `build-test-evidence` | `backend/reports/`, `backend/coverage.xml`, `backend/coverage.json`, `frontend/reports/`, `frontend/coverage/` | `error` | 30 days |
 | `playwright-report` | `e2e/playwright-report/` | `error` | **7 days** |
 | `e2e-test-evidence` | `e2e/reports/` | `error` | 30 days |
-| `e2e-failure-artifacts` | `e2e/test-results/` | `warn` | **7 days** |
-| `backend-junit` | `backend/reports/junit.xml` | default (`warn`) | repository default |
-| `frontend-junit` | `frontend/reports/jest-junit.xml` | default (`warn`) | repository default |
-| `e2e-junit` | `e2e/reports/e2e-junit.xml` | default (`warn`) | 30 days |
+| `e2e-failure-artifacts` | `e2e/test-results/**/*.png`, `**/*.webm`, `**/trace.zip` | `warn` | **7 days** |
+| `backend-junit` | `backend/reports/junit.xml` | `error` | 30 days |
+| `frontend-junit` | `frontend/reports/jest-junit.xml` | `error` | 30 days |
+| `e2e-junit` | `e2e/reports/e2e-junit.xml` | `warn` | 30 days |
 
 `error` on the unconditional artifacts: if the suite ran, they exist, and their absence is a defect
-worth failing on. `warn` on `e2e-failure-artifacts` alone, because trace, screenshot and video are all
-configured `on-failure` only — a fully passing run legitimately writes nothing there, and `error` would
-turn a green run red.
+worth failing on. That now includes `backend-junit` and `frontend-junit`, which previously stated
+neither value and so inherited both: the step that writes each of them carries
+`if: ${{ !cancelled() }}`, and pytest and jest-junit write their stream even when tests fail, so an
+absent stream means it was removed or the runner never reached the suite (`D386`).
+
+`warn` on exactly two, for two different reasons, and both are now stated in the file rather than
+inherited. `e2e-failure-artifacts`, because trace, screenshot and video are all configured
+`on-failure` only — a fully passing run legitimately writes none of them, and `error` would turn a
+green run red. And `e2e-junit`, because that job's browser gate is **fail-closed**: when no launchable
+browser resolves, `Run end-to-end tests` is skipped and no stream is written at all, which is the gate
+working rather than a missing artifact (`D386`).
+
+**`e2e-failure-artifacts` names the three evidence globs rather than the directory**, and that is what
+makes its `warn` mean anything. `e2e/test-results/` is never empty — Playwright writes
+`.last-run.json` on every run and leaves one empty directory per test — so a whole-directory path
+always matched at least one file and the condition could never fire. Measured both ways: a passing run
+matches none of the three globs, and a controlled failure matches all three (`D387`).
 
 **Retention is 7 days for the two artifacts that carry failure evidence and 30 for the result streams.**
 That split is deliberate rather than incidental. `playwright-report` and `e2e-failure-artifacts` are the
@@ -394,9 +416,22 @@ The last three are single-file uploads of the result streams, guarded by `if: al
 file the directory artifacts already carry; the duplication is the point, because a result stream is the
 one artifact a reader wants without downloading a directory tree. Seven uploads in all,
 and the panel is a census of them: an upload the workflow performs and this table omits is a retained
-artifact nobody knows to look for. Two workflow steps additionally read the JUnit streams
+artifact nobody knows to look for. Three workflow steps additionally read the JUnit streams
 before the uploads and fail with a `::error file=…::` annotation when a report is missing, empty, or
 declares zero test cases, so a collection-time stub can never be published as a run.
+
+**Each of those three also carries a partial-run check, and no two are the same check**, because the
+three runners fail differently. The backend compares the stream's case count against the collected
+count the readiness step recorded (`D355`). The end-to-end job compares it against the discovered count
+in `reports/list-tests.txt`, which works for the same reason: Playwright genuinely drops the tests a
+filter excludes (`D385`). Jest does not — a name filter registers every identity and re-classifies the
+excluded ones as *skipped*, so the case total stays at the full figure and defeats any count
+comparison. Measured: `-t "formatNumber"` declares `tests="371"` while reporting 300 skipped and 71
+passed. The frontend check therefore uses the witness the skips themselves carry — every deliberate
+skip in that suite states its reason in its own title through a `BLOCKED: …` marker, a filter-induced
+skip carries none, so every `<skipped>` is required to be a reasoned one. It needs no expected count
+and stays correct as reasoned skips are added or resolved (`D384`). `dashboard-extract.py` applies the
+same three checks and withdraws a stream that fails one rather than rendering its figures.
 
 The last three rows deliberately overlap the first three: each retains one JUnit file that is already
 inside a bundle above, under `if: always()` and its own artifact name. The duplication is cheap and buys
@@ -583,16 +618,20 @@ this change.
   the acknowledged-broken lint and type-check steps no longer skip the producers that follow them.
 - **Retention and consumption.** Four uploaded artifacts covering all three JUnit streams, both
   coverage trees, the E2E HTML report and the E2E failure evidence, each with an explicit
-  `if-no-files-found` policy and a 30-day retention (§2.4); two workflow steps that read the JUnit
+  `if-no-files-found` policy and an explicit retention window — 30 days for `build-test-evidence` and
+  `e2e-test-evidence`, and 7 for `playwright-report` and `e2e-failure-artifacts`, the two that carry
+  failure diagnostics (§2.4); two workflow steps that read the JUnit
   streams and fail visibly when a report is missing, empty or declares zero test cases; and
   `dashboard-extract.py`, which is what turns those files into the panels in §6.
-- **A case-count comparison between the backend result stream and the collected count**, in
-  `dashboard-extract.py` and in the workflow's verify step, plus a separate `--junitxml` path on the
-  readiness probe. A zero-case stub was already refused; a *partial* run — one file, one `-k` filter —
-  leaves a non-zero count that no presence or non-zero check can distinguish from a full run, and
-  `--junitxml` living in `addopts` makes every invocation a writer of the canonical stream. The
-  readiness artifact's collected count is the independent witness, so a stream that disagrees with it
-  is withdrawn, named on stderr and fatal under `--require-all` (`D355`).
+- **A case-count comparison between each result stream and its own witness**, in
+  `dashboard-extract.py` and in the workflow's two verify steps, plus a separate `--junitxml` path on the
+  readiness probe and a pinned `--reporter=line` on every `e2e` script that can run a subset. A zero-case
+  stub was already refused; a *partial* run — one file, one `-k` filter, one spec — leaves a non-zero
+  count that no presence or non-zero check can distinguish from a full run, and a reporter declared in
+  configuration makes every invocation of every runner a writer of its layer's canonical stream. The
+  witness is per layer: the collected count for the backend (`D355`), the registered test identities for
+  the frontend, and the discovered case count for the end-to-end layer (`D403`, `D404`). A stream that
+  disagrees with its witness is withdrawn, named on stderr and fatal under `--require-all`.
 - **The new `e2e` job**, running the package-local pinned runner against a pre-provisioned browser.
 
 ### 5.3 CHECKED, and found absent
@@ -754,9 +793,15 @@ a `classNameTemplate` that emits the `/`-separated source path. The one layer wh
 rows are necessarily identical is end-to-end, and it is the only row that may be copied between the
 two tables.
 
-**Skip register.** Every skip in this suite names an unimplemented production feature, so a skip is a
-record rather than a silence and must be reproduced with its reason. A skip whose reason does not
-name such a feature is a defect in the test, not a documented limitation.
+**Skip register.** Every skip in a *warm* backend tree names an unimplemented production feature, so a skip
+is a record rather than a silence and must be reproduced with its reason. There are exactly two exceptions,
+and they appear only on a **first run in a fresh clone**: `tests/test_coverage_gate.py` skips with
+`backend/coverage.json is written by the gated coverage command` and `tests/test_docs_contract.py` skips with
+`e2e/reports/e2e-junit.xml is gitignored and absent in a fresh clone`. Both name an artifact that has not
+been produced yet rather than a missing feature, both are deliberate so that each module stays runnable on
+its own, and both disappear once the gated coverage command and the end-to-end suite have each run — which
+is why the backend row reads 1063/5 on a first run and 1065/3 afterwards. Any *other* skip whose reason names
+neither a feature nor one of those two artifacts is a defect in the test, not a documented limitation.
 
 Where the reason lives differs by runner, and the panel has to read the right place. pytest writes it
 as the `message` attribute of `<skipped>`. jest-junit and Playwright write no message at all, so those
@@ -898,8 +943,8 @@ Each item below was produced and inspected. The delivered-suite rows supersede t
 demonstration figures that this section previously carried; the demonstration numbers survive only in
 §1.2, labelled as the floors they were.
 
-Read the two kinds of number in these rows differently. The **counts** — 1068 backend cases with 3 skips,
-371 frontend cases with 24 skips, 31 E2E tests with no skip, and zero failures anywhere — are properties of the
+Read the two kinds of number in these rows differently. The **counts** — 1096 backend cases with 3 skips,
+372 frontend cases with 24 skips, 31 E2E tests with no skip, and zero failures anywhere — are properties of the
 suite, and a re-run reproduces them exactly; the reproduction below is the evidence for that. Every
 **`time` attribute** is a property of the one invocation that wrote the file, so a later run overwrites it
 with its own figure. Quote the counts as facts about the suite; quote a duration only as what that run took
@@ -908,19 +953,23 @@ on that host.
 One consequence of that split is worth stating, because it is the one way these rows can go stale in a
 working tree rather than in CI. `backend/pytest.ini` carries `--junitxml` in `addopts`, so *every* pytest
 invocation writes `backend/reports/junit.xml` — including a single-file run, a `-k` filtered run, and the
-readiness probe. A partial run therefore leaves a non-zero case count where the suite's count belongs. That
-is now compared rather than trusted: the readiness probe writes its own `--junitxml` path, and both
-`dashboard-extract.py` and the workflow's verify step require the stream's case count to equal the collected
-count, naming both figures when they differ (`D355`). If you see that message, re-run the canonical gated
-command in §2.1; the counts below are what it reproduces.
+readiness probe. The other two layers declare their reporters in `frontend/jest.config.js` and
+`e2e/playwright.config.ts`, which has the same effect: one Jest file and one Playwright spec each rewrite
+their layer's stream. A partial run therefore leaves a non-zero case count where the suite's count belongs.
+That is now compared rather than trusted, per layer: the readiness probe writes its own `--junitxml` path,
+the targeted `e2e` scripts pin `--reporter=line`, and both `dashboard-extract.py` and the workflow's two
+verify steps require each stream's case count to equal its witness — the collected count, the registered
+test identities and the discovered case count respectively — naming both figures when they differ (`D355`,
+`D403`, `D404`). If you see that message, re-run that layer's canonical command in §2.1; the counts below
+are what they reproduce.
 
 | Evidence | What was observed |
 |---|---|
-| Backend artifacts | `backend/reports/junit.xml` (`<testsuite name="pytest" errors="0" failures="0" skipped="3" tests="1068">`, that run's `time="12.988"`) plus the Cobertura and JSON coverage files — the two the canonical gated command requests; `backend/coverage.lcov` is the local measurement command's, as §2.1 records — from the gated run on CPython 3.9.13: **1065 passed, 3 skipped, exit 0, 93.33% (182/195)** over `app/core` 100.00% (47/47), `app/db` 100.00% (45/45), `app/services` 94.12% (48/51) and `app/tasks` 80.77% (42/52). The exact gate's own reading is retained beside them as `backend/reports/coverage-gate.txt`: `182 of 195 statements covered = 93.3333% exact, threshold 90%` / `9 file(s) measured` / `coverage gate PASSED` |
-| Frontend artifacts | `frontend/reports/jest-junit.xml` (`<testsuites tests="371" failures="0" errors="0">`, that run's `time="54.122"`, 24 `<testsuite>` children, `skipped` summing to 24 across them) and all five configured coverage reporters, from `jest --ci --coverage`: **21 suites passed / 3 skipped, 347 passed / 24 skipped, exit 0** |
-| E2E artifacts | `e2e/reports/e2e-junit.xml` (`tests="31" failures="0" skipped="0" errors="0"`, that run's `time="19.096366"`; per spec `analytics` 4, `configuration` 6, `dashboard` 3, `isolation` 15, `tweets` 3), `e2e/playwright-report/index.html` (about 456 KB; its exact size moves with the run) and `e2e/test-results/.last-run.json` = `{"status":"passed","failedTests":[]}` |
-| Reproduction | All three suites were re-run end to end after the last change in this checkpoint, on the same host. Backend **1068 collected / 0 collection errors, 1065 passed, 3 skipped, exit 0, 93.33%**; frontend **21 suites passed / 3 skipped, 347 passed / 24 skipped, exit 0**, gated scopes `src/store` 100 / `src/schema` 100 / `src/services` 100 against an 80 bar, and the worst of the twelve gates 100.00%; e2e **31 passed, 0 skipped, 0 failed, 0 flaky, exit 0**. Identical counts, different durations — which is exactly the split described above. Two consecutive gated backend runs read `12.24 s` and `12.09 s`, and the same suite under `pytest -n auto` read `106.81 s` for the identical `1065 passed, 3 skipped`, which is the same point about durations |
-| Test identity | Across both artifacts every `<testcase>` is uniquely identified: 1068 of 1068 distinct `classname`+`name` pairs on the backend, 371 of 371 on the frontend, and not one `classname` or suite name containing a backslash |
+| Backend artifacts | `backend/reports/junit.xml` (`<testsuite name="pytest" errors="0" failures="0" skipped="3" tests="1096">`, that run's `time="12.545"`) plus the Cobertura and JSON coverage files — the two the canonical gated command requests; `backend/coverage.lcov` is the local measurement command's, as §2.1 records — from the gated run on CPython 3.9.13: **1093 passed, 3 skipped, exit 0, 93.33% (182/195)** over `app/core` 100.00% (47/47), `app/db` 100.00% (45/45), `app/services` 94.12% (48/51) and `app/tasks` 80.77% (42/52). The exact gate's own reading is retained beside them as `backend/reports/coverage-gate.txt`: `182 of 195 statements covered = 93.3333% exact, threshold 90%` / `9 file(s) measured` / `coverage gate PASSED` |
+| Frontend artifacts | `frontend/reports/jest-junit.xml` (`<testsuites tests="372" failures="0" errors="0">`, that run's `time="13.52"`, 24 `<testsuite>` children, `skipped` summing to 24 across them) and all five configured coverage reporters, from `jest --ci --coverage`: **21 suites passed / 3 skipped, 348 passed / 24 skipped, exit 0** |
+| E2E artifacts | `e2e/reports/e2e-junit.xml` (`tests="31" failures="0" skipped="0" errors="0"`, that run's `time="23.895578"`; per spec `analytics` 4, `configuration` 6, `dashboard` 3, `isolation` 15, `tweets` 3), `e2e/playwright-report/index.html` (about 456 KB; its exact size moves with the run) and `e2e/test-results/.last-run.json` = `{"status":"passed","failedTests":[]}` |
+| Reproduction | All three suites were re-run end to end after the last change in this checkpoint, on the same host, against a **warm** tree — one where the gated coverage command and the end-to-end suite have each already run, so `backend/coverage.json` and `e2e/reports/e2e-junit.xml` are present; a first run in a fresh clone reports the two artifact-conditional skips the skip register above names as skips rather than passes, at the same 93.33%. Backend **1096 collected / 0 collection errors, 1093 passed, 3 skipped, exit 0, 93.33%**; frontend **21 suites passed / 3 skipped, 348 passed / 24 skipped, exit 0**, gated scopes `src/store` 100 / `src/schema` 100 / `src/services` 100 against an 80 bar, and the worst of the twelve gates 100.00%; e2e **31 passed, 0 skipped, 0 failed, 0 flaky, exit 0**. Identical counts, different durations — which is exactly the split described above. The gated backend run read `12.55 s` against `11.05 s` for the same suite without coverage, and under `pytest -n auto` it read `107.87 s` for the identical `1093 passed, 3 skipped`, which is the same point about durations |
+| Test identity | Across both artifacts every `<testcase>` is uniquely identified: 1096 of 1096 distinct `classname`+`name` pairs on the backend, 372 of 372 on the frontend, and not one `classname` or suite name containing a backslash |
 | E2E harness | All four routes served, with an error-free dev-server log, under Vite 4.5.14 on `127.0.0.1:<4173 + CLONE_INDEX>` |
 
 ### 7.2 Implementation-time acceptance steps — performed
@@ -933,7 +982,7 @@ claim is checkable rather than asserted.
 | A1 | Execute the Playwright suite in a real browser | **Yes** — `npm test` from `e2e/`, `@playwright/test` 1.44.1 driving system **Google Chrome 151.0.7922.76**, resolved by `browsers:require` rather than by a hardcoded path, harness on `127.0.0.1:<4173 + CLONE_INDEX>`, Node v22.23.1. Resolved **by path**: `browsers:require` recorded the executable's SHA-256 into the artifact, and the run was **not digest-bound**, because binding the launch to that digest requires `PLAYWRIGHT_CHROMIUM_EXECUTABLE_SHA256` to be set and it was unset — which is what the artifact's own closing line says, together with two warnings that the executable and its directory are writable by this user | Exit 0. **31 tests over 5 spec files: 31 passed, 0 skipped, 0 failed, 0 flaky, 19.10 s** — per spec `analytics` 4, `configuration` 6, `dashboard` 3, `isolation` 15, `tweets` 3. `e2e/reports/e2e-junit.xml` (`tests="31" failures="0" skipped="0" errors="0"`), `e2e/playwright-report/index.html`, `.last-run.json`, and `e2e/reports/browser.txt` carrying the resolved executable, `Browser version: 151.0.7922.76 (from the install layout)` and `Version 1.44.1`. Nothing is skipped: the chart-construction case runs and asserts the ceiling §3.3 records rather than being skipped for it. Retention on failure is observed rather than only configured — see the A1b row |
 | A1b | Induce a failure and confirm `e2e/test-results/` carries a trace, a screenshot and a video for it | **Yes — performed as a by-product of A3.** The negative validation of the route anchoring failed four `isolation.spec.ts` tests deliberately, and each produced `test-failed-1.png`, `video.webm` and `trace.zip` under its own `e2e/test-results/` subdirectory named after the spec and test title. Those artifacts were deleted with the perturbation | Retention is therefore observed, not merely configured |
 | A2 | Render `blitzy-deck/executive-summary.html` in a browser | **Yes, repeatedly — and re-performed against the compressed deck** — headless Chrome 151 at a 1920×1080 viewport, all 16 slides visited individually via `Reveal.slide(N)`: two independent passes over the compressed bytes and one confirmation pass after the headline KPI was restamped | `Reveal.VERSION "5.1.0"`, `isReady() true`, **16** sections, config read back as `{width:1920, height:1080, hash:true, transition:"slide", controlsTutorial:false}`; **6 of 6** Mermaid diagrams `data-processed="true"` with exactly one non-zero-sized `<svg>` each and real node geometry, including the subgraph-anchored edge on slide 2; **19 of 19** Lucide icons rendered with **zero** surviving `i[data-lucide]` placeholders and none of zero size on its own slide; **9 of 9** network requests HTTP 200, the four integrity-pinned CDN assets among them with decoded byte sizes matching their sha384 declarations exactly; **zero** console messages of any type and **zero** CSP violations, both proven by instruments validated against deliberate violations rather than merely installed; and no clipping or overflow on any slide. Screenshots and recordings survive in the working tree under the git-ignored `blitzy/screenshots/` and `blitzy/screen_recordings/`, one capture per slide and one per diagram; what is committed is the measured table in §7.4, re-measured whenever the deck changes |
-| A3 | Demonstrate the negative validations | **Yes** — **28 critical-path production modules, one primary probe each** (14 backend, 14 frontend; `src/app.tsx` and `src/index.tsx` are excluded as the unmountable ceilings §3.3 records), plus **14 additional probes** on 13 of the same modules and on one harness module — each perturbing exactly one threshold, string or return value, running only the covering target, then restoring the file and re-verifying its sha256 | **42 of 42 probes turned the covering target red** and **42 of 42 restorations were byte-exact**. Nothing was committed: `git status` over `backend/app` and every frontend production path is clean and all nine `# TESTING:` markers are unchanged. The complete ledger, primary and additional, is §7.3. Separately, each fix in this checkpoint carries its own performed-and-reverted negative validation — the coverage precision gate, the dependency-pin grammar, the socket-ownership registry (twice), the spec-bound Firestore client, and the integer-coercion domain. The **security checkpoint's** eleven fail-closed demonstrations are §7.3.4 and are counted separately from the 42, because they perturb a control rather than a production module (D328) |
+| A3 | Demonstrate the negative validations | **Yes** — **28 critical-path production modules, one primary probe each** (14 backend, 14 frontend). Six of the frontend's 20 modules are excluded, and for three different reasons: `src/app.tsx` cannot be mounted at all, which is the ceiling §3.3 records; `src/index.tsx` is the React 18 entry that mounts it and so inherits that ceiling, and it is **not** a §3.3 row; and all four `src/pages/*.tsx` modules are orphaned — `src/app.tsx` routes only to `src/components/*` — of which three cannot mount (§3.3's `useAppDispatch` / `useAppSelector` ceiling) while `src/pages/TweetManagement.tsx` does mount and sits at 100%, so it is excluded as orphaned rather than as a ceiling. Plus **14 additional probes** on 12 of the same modules — one of which, `src/services/api.ts`, carries two — and on one harness module; each perturbing exactly one threshold, string or return value, running only the covering target, then restoring the file and re-verifying its sha256 | **42 of 42 probes turned the covering target red** and **42 of 42 restorations were byte-exact**. Nothing was committed: `git status` over `backend/app` and every frontend production path is clean and all nine `# TESTING:` markers are unchanged. The complete ledger, primary and additional, is §7.3. Separately, each fix in this checkpoint carries its own performed-and-reverted negative validation — the coverage precision gate, the dependency-pin grammar, the socket-ownership registry (twice), the spec-bound Firestore client, and the integer-coercion domain. The **security checkpoint's** eleven fail-closed demonstrations are §7.3.4 and are counted separately from the 42, because they perturb a control rather than a production module (D328) |
 
 ### 7.3 Negative validation — one case per critical-path module
 
@@ -1042,8 +1091,9 @@ carried then — several have since grown, so they are readings rather than curr
 | A14 | `e2e/harness/main.tsx` (harness, not production) | `endDate` `2024-01-31` → `2024-02-29` | `e2e/tests/analytics.spec.ts` | 1 failed, 1 passed — and the failing test's output directory received a trace, a video and a screenshot, independently corroborating A1b |
 
 **Counting these probes.** 28 production modules carry a primary probe (§7.3.1 and §7.3.2);
-13 of them carry a second probe as well, and one harness module carries one, for **42 probes**
-in total. `app/services/api.ts` carries two additional probes rather than one, because the two
+**12** of them carry a second probe as well, one of those 12 carries a third, and one harness
+module carries one, for **42 probes** in total — 28 + 12 + 1 + 1. The module with three is
+`src/services/api.ts`, which holds both A10 and A11 because the two additional probes
 exercise different properties — the URL oracle and the fail-closed guard.
 
 **Two cases had to be redesigned, and the reason is worth recording**, because a perturbation that
@@ -1104,25 +1154,65 @@ re-render idempotence, console, network and Content-Security-Policy. Each figure
 the live DOM, not inferred from the source, and each was taken after the slide compression D337 records,
 so unlike the previous revision of this section it describes the deck as it ships.
 
-**One number changed after those passes, and a further pass confirmed it.** The headline KPI moved
-from `1,390` to the `1,443` this checkpoint measures — the sum of the three result streams, 1065
-backend, 347 frontend and 31 browser — so the deck was reloaded cache-ignoring, twice, and re-read over
-a full sixteen-slide traversal each time: the four `.kpi-value` elements of the KPI slide read `0%`,
-**`1,443`**, `93%`, `42`, with `1,443` still paired to its `Tests passing now` label in card two of
-four, and `1,390` appears in no markup, no attribute, no injected SVG or style content, no slide’s
-painted text on any of the sixteen, and no on-disk byte — nor in un-comma’d form as `1390`. Every
-structural figure in the table below re-measured identically: 16 sections, 6 of 6 diagrams each holding
-exactly one rendered `<svg>` marked `data-processed`, 19 distinct icons with 0 placeholders left
-unreplaced, an empty console on both loads — one of them a cold load addressed straight at the closing
-slide — and 18 of 18 requests answered `200` with 0 Content-Security-Policy violations, which is also
-what proves every sha384 integrity hash matched.
+**One number has changed at each of the last four checkpoints, and each change was confirmed rather than
+assumed.** The headline KPI went `1,390` → `1,443` → `1,455` → `1,458` → the **`1,472`** the delivered
+tree measures, which is the sum of the three result streams as they now stand: **1093 backend, 348
+frontend and 31 browser**. The last move is the largest of the four and it is arithmetic, not a
+re-measurement of the same suite: the delivered backend suite carries 1096 cases where the checkpoint
+before it carried 1082, because two independently developed extensions to the result-stream guards both
+landed — the per-layer declared-versus-witness comparison and the unreasoned-skip refusal — adding 14
+cases to `tests/test_dashboard_extract.py` and `tests/test_docs_contract.py` between them, and the
+frontend gained the served-wire-shape case. So `1,472 = 1093 + 348 + 31`, and the identity is a
+**test** rather than a claim: `test_the_deck_headline_kpi_is_the_sum_of_the_three_streams` reads the
+triple out of `TRACEABILITY-MATRIX.md`, reads the KPI out of the deck through its own
+`Tests passing now` label, and fails if they disagree, while
+`test_every_document_quoting_the_headline_kpi_quotes_the_same_one` fails if this document quotes a
+stale one. `1,458` and `1,455` appear in no on-disk byte of the deck. The browser readings recorded
+below were taken against the earlier value and are unaffected by it: a digit change inside one
+`.kpi-value` span alters no slide count, no diagram, no icon and no request.
 
-Two measurement traps were found while re-reading, recorded so a later automated check does not report a
+**Re-verified in the browser after the KPI moved**, at 1920x1080 over `file://`, so the sentence above is a
+reading rather than an inference. `Reveal.isReady()` true, `Reveal.VERSION` `5.1.0`,
+`Reveal.getTotalSlides()` **16** agreeing with `.reveal .slides > section` **16** and with the section count
+in the file. The KPI grid's four `.kpi-value` elements read `0%`, **`1,472`**, `93%`, `42`, and the one
+holding `1,472` was paired to its `Tests passing now` label by **DOM containment** rather than by index
+arithmetic across the two `.kpi-grid` elements. Every superseded value is gone: a sweep for every
+`\b1,\d{3}\b` grouped number in the rendered document returns **exactly one match**, `1,472`, in both
+`innerHTML` and `textContent`. After a full sixteen-slide traversal, `pre.mermaid svg` **6 of 6** — each
+`data-processed="true"` with a non-degenerate viewBox, no Mermaid error element, and its own injected style
+block — `svg.lucide` **19**, and `i[data-lucide]` **0** with no `<i>` element surviving anywhere. Console
+**empty at every severity** including the `issue` channel where a CSP or SRI failure would appear, and
+**9 of 9** network requests answered `200`, all four sha384 pins matching hashes recomputed independently
+before the browser was opened. Two readings that look like defects and are not: five of the six diagram
+SVGs measure `0x0` because reveal keeps distant slides at `display: none`, which is the same
+position-dependent effect the `innerText` trap above describes; and an **unqualified** `[data-lucide]`
+selector returns 19 rather than 0, because Lucide preserves that attribute on the `<svg>` it generates —
+the element-qualified form is the reading that means what it says, as B7 already records.
+Every structural figure in the table below re-measured identically: 16 sections, 6 of 6
+diagrams each holding exactly one rendered `<svg>` marked `data-processed` and none carrying an error
+element, 19 distinct icons with 0 `i[data-lucide]` placeholders left unreplaced, an **empty console
+across seven queries over the two loads, including an all-severities filter**, and 18 of 18 requests answered `200` over
+the two loads, which is also what proves every sha384 integrity hash matched — the three decoded
+payload sizes are byte-identical to the ones the deck's own source states for its pins. The diagrams
+render **lazily, one slide at a time**: the deck calls `mermaid.run()` over the current slide's nodes
+from its `ready` and `slidechanged` handlers, so a reading taken before the traversal finds 0 of 6
+rendered and one taken after it finds 6 of 6. That is the mechanism, not a defect, and a cold load
+addressed straight at the closing slide reproduces it.
+
+Four measurement traps were found while re-reading, recorded so a later automated check does not report a
 false failure. There are **two** `.kpi-grid` elements, not one: the second is on the isolation slide and
 holds `Live cloud` and `300s`, so an unscoped `.kpi-value` query returns six values rather than four.
 And Lucide **copies** `data-lucide` onto the `<svg>` it generates, so `[data-lucide]` legitimately still
 matches 19 after a successful replacement — B7’s `i[data-lucide]` element-qualified form is the reading
-that means what it says.
+that means what it says. Third, `document.body.innerText` is **position-dependent** here: reveal.js keeps
+only the present slide and the next two `future` ones outside `display: none`, so the KPI is in `innerText`
+at slide 1 and out of it at slide 16, while `textContent` and `innerHTML` hold it at every position. A
+presence check for a number that *should* be there must therefore read one of the latter two; only an
+absence check is safe on all three, which is why the superseded figure is the one asserted against
+`innerText`. Fourth, every rendered diagram carries Mermaid's own injected `<style>`, whose theme rules
+always name `.error-icon` and `.error-text`; a bare `/error/i` test over a block's `textContent` matches
+those rules and reports an error on a perfectly rendered diagram. Strip `<style>` elements first, or test
+for the error *elements* — both readings were taken, and outside the style tags the count is 0 of 6.
 
 **Re-verified at the security checkpoint**, after four slides were reworded and one diagram repaired, in
 three further passes: a full 16-slide walk with viewport captures of the four edited slides, an
@@ -1200,11 +1290,12 @@ Three limits remain, and none should be papered over in a summary derived from t
 - **Only `chromium` is exercised** at the E2E layer, and the browser is a prerequisite the repository
   cannot itself provision. A green E2E run is therefore a statement about one browser family on a host
   that already had one. The same single-family caveat applies to §7.4.
-- **The deck's committed evidence is a record, not an artifact set.** The 30 screenshots and 3 recordings
-  the §7.4 passes produced do exist in the working tree, but `blitzy/screenshots/` and
-  `blitzy/screen_recordings/` are git-ignored, so they are deliberately not committed — they are neither an AAP
-  deliverable nor small. What a reader of this repository gets is the measured table above, which is the
-  substance of what was seen.
+- **The deck's committed evidence is a record, not an artifact set.** The §7.4 passes produced 30
+  screenshots and 3 recordings, but `blitzy/screenshots/` and `blitzy/screen_recordings/` are git-ignored, so
+  those files were deliberately not committed — they are neither an AAP deliverable nor small. **A fresh
+  clone therefore has neither directory populated, and no clone can reproduce the files themselves**; only a
+  run that repeats the passes recreates them, under whatever names it chooses. What a reader of this
+  repository gets is the measured table above, which is the substance of what was seen.
 - **§7.4 attests to rendering, not to editorial quality.** That every diagram draws and every icon
   resolves is a mechanical property. Whether the deck reads well to its intended audience is the
   leadership acceptance the deck itself names as the remaining step.
@@ -1226,9 +1317,16 @@ Four further limits, carried forward from the governance checkpoint:
   `precision` in `backend/.coveragerc`, which is 2, so any total from 89.995 upward passes and prints as
   `90.00`. §3.1 carries the same statement; it is a property of the gate, not of this run, whose measured
   total is 93.33%.
-- **One dependency is pinned below its patched release.** `python-jose[cryptography]==3.3.0` is the
-  version the frozen plan fixes. The exposure and the escalation are recorded in
-  [`./DECISION-LOG.md`](./DECISION-LOG.md); this document does not treat it as closed.
+- **One dependency is pinned above the version the frozen plan names, and the deviation is still with an
+  owner.** The plan's inventory prints `python-jose[cryptography]==3.3.0`; the delivered manifest carries
+  `python-jose[cryptography]==3.5.0` under a one-line `# SECURITY: above CVE-2024-33663 / CVE-2024-33664,
+  fixed in 3.4.0.` marker, and 3.5.0 is the installed version. So the JWT library shipping here is **above**
+  both advisories, not below them. What remains open is the deviation rather than the exposure: ratifying a
+  pin above the printed inventory is one of the seven items the register in
+  [`./DECISION-LOG.md`](./DECISION-LOG.md) §40 puts to an owner, recorded as D292 and D363, and
+  [`./SECURITY-GAPS.md`](./SECURITY-GAPS.md) row 14 carries the full position including the other pinned
+  packages that do sit below a fixed release. `backend/tests/test_dependency_closure.py` holds the manifest
+  to both the marker and the installed version.
 
 - **Only `chromium` is exercised.** That is a limit rather than an omission: the Playwright releases that
   broaden browser support require a Node version above the ceiling this programme is pinned to, so the E2E
@@ -1241,3 +1339,75 @@ but its label lines exceeded Mermaid's 200 px wrapping width while the label wra
 mid-phrase at the SVG edge. The diagram was reflowed and every label line brought under that width;
 re-verification measured zero overflow and zero clipping, and the untouched diagram slides re-rendered
 identically, which is what bounds the change. Recorded as D221 in [`./DECISION-LOG.md`](./DECISION-LOG.md).
+
+### 7.6 QA-findings remediation — the deck and the harness re-measured after the fixes
+
+§7.4 is the record of the passes that preceded a runtime QA review, and D354 keeps such a record as
+history. This section is a **later, separate** set of readings, taken after the eleven deck fixes and two
+harness fixes that `DECISION-LOG.md` §42 records. Where a reading below contradicts one in §7.4, §7.4 is
+not wrong — it describes the deck as it stood then, and this section describes it as it ships now. Three
+§7.4 rows are superseded in that sense and are annotated here rather than edited there:
+
+- **B3** read the runtime configuration live and found reveal's defaults for the two settings D369 and
+  D370 change. Both now differ deliberately: `controlsBackArrows` is `'visible'` and
+  `scrollActivationWidth` is `0`. Every other setting B3 lists is unchanged, and was re-read: `hash`
+  **true**, `controlsTutorial` **false**, `width` **1920**, `height` **1080**, `transition` `"slide"`,
+  `Reveal.VERSION` **5.1.0**, `Reveal.getScale()` **0.96** at a 1920×1080 viewport.
+- **B4b** measured the slide-3 cluster with Mermaid's HTML labels in place. D372 replaced those with SVG
+  `<text>` labels, so the cluster's label is now a `<text>` element rather than a `<span>` in a
+  `<foreignObject>`. The structural census B4b asserts is unchanged — **1** `.cluster`, **2** edge paths,
+  **7** `.node` elements — and the cluster's chrome moved onto the palette under D372's `themeVariables`:
+  fill `rgb(245,245,245)`, stroke `rgb(217,217,217)`, label fill `rgb(51,51,51)`, where it was a pure
+  white fill behind a `#EEF2D9` hairline with a pure black label.
+- **B6** stated that the deck re-runs `mermaid.run()` on every `slidechanged` and that the generated
+  `svg` id rotated on each return. D371 makes rendering **render-once**: the same DOM node, the same svg
+  id and a byte-identical `viewBox` survive an away-and-back cycle, with **zero** MutationObserver
+  records while the slide is away and on return, and JS expandos set on the element surviving eleven
+  slide transitions. B6's conclusion — exactly one `<svg>`, identical box — still holds, by a stronger
+  mechanism than the one it describes.
+
+Conditions: the deck served over HTTP from its own directory, headless Chrome 151, cache-ignoring loads
+throughout, viewport set by CDP emulation with `window.innerWidth` verified in the page on every load.
+Each figure was read from the live DOM.
+
+| Row | What was checked | Reading |
+|---|---|---|
+| C1 | Slide view holds at phone width (D369) | At 390×844: `Reveal.isScrollView()` **false**, `.slides` transform `matrix(0.2, 0, 0, 0.2, -960, -540)`, `.reveal .slides > section` **16**, `.scroll-page` **0**, `.reveal-viewport` `scrollHeight` **844** = `clientHeight`, `body.className` `"reveal-viewport"` with no `reveal-scroll`, and **zero** `scrollviewactivated` events. Before: `isScrollView()` true, transform `none`, sections **0**, scroll pages **16**, `scrollHeight` **13504** |
+| C2 | Navigation does not wedge at phone width (D369) | A 100 ms `setInterval` canary installed before any navigation: **429 of 430** ticks over a 43,000.30 ms window, mean gap **99.99 ms**, worst gap **116.00 ms**, and **zero** gaps above 150 ms. `ArrowRight`×2 → index 2, `Reveal.slide(9,0)` → 9, `Reveal.slide(0,0)` → 0 with the hash cleared. A `.reveal-viewport.scrollTop = 500` write read back **0** |
+| C3 | All six diagrams draw at phone width (D369, D371) | 6 **healthy**, 0 degenerate. Smallest viewBox dimension anywhere **76.000** units — 3.17× the 24-unit floor D371 sets and 52 units clear of it. Each `pre.mermaid` holds exactly one `<svg>` as its only element child with `data-processed="true"`. The literal string `flowchart` appears 8 times in the DOM and is **visible 0 times** (Mermaid's injected `<style>`, five parked off-canvas slides, and reveal's clipped 1×1 `div.aria-status`) |
+| C4 | The controls are perceivable on the dark slides (D370) | On all seven dark slides `.navigate-left` is `enabled` at opacity **0.9** (was 0.3) and the inner `.controls-arrow` computes `drop-shadow(rgb(255,255,255) 0px 0px 4px) drop-shadow(rgb(255,255,255) 0px 0px 2px)`. Peak per-channel deviation from a controls-hidden reference inside the arrow's box: **150/255** and **4.35:1** (slide 4 back), **179/255** and **6.40:1** (slide 4 forward), **180/255** and **9.57:1** (slide 16 back, against a mathematically flat `#1A105F` field whose noise floor is **0**). Before: **2.6/255** and **1.19/255** against a gradient noise floor of 2/255 |
+| C5 | Diagram geometry no longer depends on the stage scale (D372) | `foreignObject` count **0** on all six diagrams and 0 deck-wide; all 31 node labels are `<text>`/`<tspan>`. Slide 5's viewBox width across 1920/1440/1280/1024/768/390 fits `a + b × Reveal.getScale()` at **b = −0.819171, R² = 0.362**, where the same fit on the pre-change readings recovers **b = +200.000000, R² = 1.000000** exactly. Total width spread **0.38 %** across a 4.8× scale range, where it was 152 units. Line breaking is **byte-identical** at all six viewports. Across all six diagrams the residual 390-vs-1920 difference is at most **1.53 %** of width and **1.11 %** of height — reproduced at a plain non-mobile 390×844, so it is glyph-advance quantisation against the device pixel grid rather than a mobile-emulation artifact, and it is two orders of magnitude below the 57 % swing the old law produced on slide 5 alone |
+| C6 | No label overflows or is clipped (D372) | All 31 labels inside both their own node `rect` and the root `<svg>` **on all four sides**, measured two independent ways — a DOM Range union and `getBBox` through `getScreenCTM` — agreeing within 0.63 px. Tightest clearance anywhere **11.35 px** (bottom edge, slide 3); tightest horizontal **23.89 px**. Slide 3's worst case moved from **+67.59 px of overflow** to **−24.29 px of clearance**. No word truncated at any of the six viewports; the 1024 px case that read "Three found" now reads "Three" / "foundations" in full |
+| C7 | Diagram typography and scale (D372) | **52 of 52** label elements compute `Inter, system-ui, sans-serif` at `24px`, fill `rgb(51,51,51)`. Five of six diagrams render at intrinsic 1:1 (CSS÷viewBox ratios 0.999932 / 0.999949 / 0.999935 / 0.999961 / 0.999848); slide 3 is width-pinned at **99.99 %** of the 1560 px column, ratio 0.844371. Effective label sizes **20.27 / 24.00 / 24.00 / 24.00 / 24.00 / 24.00 CSS px** — a **1.18×** band where it was 2.44× (14.6–35.5 px) |
+| C8 | Diagram left edges join the content column (D373) | `h2` rect x = svg rect x = **145.92001342773438** on all six, Δ **0.00**, where the deltas were +65.37 / +151.32 / +451.14 / +126.50 / +65.30 / +65.36. On slides 9 and 15 the `pre.mermaid` computed margin is `20px 0px 0px` and every direct child of the section reports one x value |
+| C9 | The table-to-paragraph gap (D374) | Slide 7: table `bottom` **665.15**, following `<p>` `top` **692.03**, paragraph computed `margin-top` **28px** — a gap of **26.88 screen px = 28.00 CSS px** exactly. Before: `bottom === top === 678.585` and a computed gap of zero |
+| C10 | Diagram rendering is render-once (D371) | Across slide 3 → 11 → 3 the svg id stayed `mermaid-1786360692420`, the `viewBox` string stayed byte-identical, `sameDomNodeIdentity` was **true**, the MutationObserver recorded **0** changes, and the two screenshots were byte-identical. Across three independent 15-key bursts (93.3 / 75.7 / 76.1 ms) landing on slide 16, the settled census found **0 degenerate** in 12 classifications; a `requestAnimationFrame` sampler proved **zero frames are painted** during a burst |
+| C11 | Content-Security-Policy (D379) | `connect-src 'self' https://cdn.jsdelivr.net`, and it is the whole enforced policy — one `<meta http-equiv>` element and no CSP response header, since Python's `SimpleHTTP/0.6` sends none. A same-origin `fetch` of `./references/blitzy-reveal-theme.css` returns **200**, `content-type: text/css`, **24,417 bytes**, with **0** `securitypolicyviolation` events; a control fetch of an off-origin URL still throws with `violatedDirective connect-src`, `disposition "enforce"`, so the zero is not vacuous. (24,417 is the figure as served and on disk, agreeing with the HTTP `Content-Length`. An earlier reading of 23,295 was taken before this checkpoint's mirrored CSS additions and against LF line endings; the file has 964 CRLF pairs, so an LF-normalised copy measures 23,453) |
+| C12 | Deck health after every fix | **Zero** console messages of any level across ten cache-ignoring loads, four machine-speed bursts, a 16-slide traversal and the phone-width navigation stress — proven non-vacuous by a post-measurement self-test that both an `initScript` hook and CDP caught. **90 requests, 89 × 200 and 1 × 304**, nothing else; all three sha384-SRI assets executed. 16 sections, 6 diagrams each holding exactly one `<svg>`, **19** `svg.lucide`, **0** unreplaced `i[data-lucide]`, at both 1920×1080 and 390×844. Per-slide overflow census across all 16 slides: **0** overflowing and **0** clipped elements, worst overflow 0.00 px |
+| C13 | The harness answers a client route to every client (D378) | 60 of 60 method/`Accept` combinations across five paths, plus 10 of 10 requests sending **no** `Accept` header, answer **200 `text/html`**. Before: 30 of 60 and 0 of 10. A 28-cell raw-socket probe confirms the guards unchanged under both a present and an absent header — 503 `application/json` for all three `HARNESS_API_SURFACE` keys, 204 for `/favicon.ico`, and 403 `text/plain` for all five editor spellings, all four out-of-graph paths and `/__control`. The extension-less `/@id/__x00__extless:…` still answers 403, which is what proves the middleware runs after the filesystem guard |
+| C14 | An unmatched harness path is diagnosable (D377) | `/nope-unknown-route` renders one `[data-harness-error="harness-route-not-defined"]`, class `harness-unrouted`, `role="status"`, rect 1424×52; `innerText` **207 chars** where it was **0**; the accessibility tree gains `main > status[atomic, live="polite"]` where it had an empty unnamed `main`. Against `/tweets` the screenshots now differ by **5,999 of 1,296,000 pixels** (bbox x[7..727] y[19..66], max channel delta 255) where they were byte-identical — same 22,610 bytes, same SHA-256, 0 differing. The diagnostic echoes the requested path: `innerText` length tracks path length exactly at 207 / 209 / 220 for a 19- / 21- / 32-character path, and `/tweets/extra-segment` does not fall through (`.tweet-list` is `null`) |
+| C15 | The four harness workspaces are unchanged (D377, D378) | All four post-change screenshots are **byte-identical** to their pre-change captures — 0 of 1,296,000 pixels differing, matching SHA-256s. Every `<main>` still holds **exactly one** direct element child (`DIV.real-time-feed`, `DIV.tweet-list`, `DIV`, `FORM`), `[data-harness-error]` count **0** on all four, and `childNodes.length === children.length`. Console per route matches the pre-change baseline exactly — 6/3, 4/1, 5/2, 4/0 — with **zero new messages** anywhere; the only change is React Router's `No routes matched` warning no longer firing, because the catch-all matches. Only two requests ≥ 400 in the whole session, both the documented fail-closed 503s |
+| C16 | The suite is unmoved by all thirteen fixes | Backend **1065 passed / 3 skipped / 1068 collected** at **93.33 %** under the gated command, exit 0. Frontend **347 passed / 24 skipped / 371 total**, `jest-junit` `failures="0" errors="0"`. End to end **31 passed in 5 spec files**, `e2e-junit.xml` `tests="31" failures="0" skipped="0"`. The three streams sum to the deck's `1,443` |
+
+**Three corrections to earlier transcriptions**, found by measuring rather than by re-reading, and recorded
+here because a wrong detail in a baseline is as misleading as a wrong figure in a result:
+
+- The `/analytics` canvas carries **no** `width` or `height` **attribute** — `getAttribute` returns `null`
+  for both. The 300×150 an earlier note reported as attributes are the HTML-spec IDL defaults, and the
+  rendered rect confirms 300×150.
+- The four `/configuration` inputs carry **no `name` attribute**. They are identified by `id` —
+  `apiKey`, `apiSecret`, `accessToken`, `accessTokenSecret` — are typed text / password / text / password,
+  are all `required`, and each is bound by a `<label for>`.
+- The `/tweets` console error renders as `getTweets is not a function` under Vite's native ESM, not as the
+  `(0 , twitterService_1.getTweets) is not a function` form the ts-jest suite produces. Same defect, same
+  level, same ordinal position, same message count — only the module system differs.
+
+**What this section does not claim.** The single-browser limit in §7.5 applies unchanged: every reading
+above is Chromium. The `1,443` identity is arithmetic over three local runs, not a pipeline run, and §7.5's
+statement that the CI workflow has never executed on a hosted runner still stands. And of the 37 findings
+the QA pass raised, 13 are fixed here; the other 24 have their root cause in production code that AAP §0.8.2
+and §0.11.2 place out of scope, so none is closed. Twenty-three of those were already carried by the
+suggested-next-tasks register in [`../../README.md`](../../README.md) or by
+[`./SECURITY-GAPS.md`](./SECURITY-GAPS.md); the one that was not — that no stylesheet is loaded on any
+screen, so every screen renders as unstyled default HTML — has been added to that register.
+

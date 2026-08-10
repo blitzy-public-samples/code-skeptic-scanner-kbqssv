@@ -135,6 +135,33 @@ const FAILURE_LOG = /console\.error: Error updating Twitter API settings:/;
 /** Status the stub names in the error it throws, which L22 logs alongside its own prefix. */
 const REJECTED_STATUS_IN_LOG = /HTTP status 500/;
 
+/**
+ * Machine-readable reason the rejecting response below carries in its body.
+ *
+ * A responder that states *why* it refused a credential write is only useful if that reason
+ * survives the client layer. It reaches nothing the user can see - L23 alerts one fixed sentence
+ * whatever went wrong, which is `components/Configuration`'s to fix and not this suite's - but it
+ * does now reach the console, because `harness/stubs/configService.ts` carries the drained body
+ * into the error it throws. Asserted below, so a stub that goes back to discarding the body fails
+ * here rather than quietly costing an operator the reason.
+ */
+const REJECTION_REASON = 'config-write-refused';
+
+/** That reason as it appears in the console line, inside the excerpt the stub appends. */
+const REJECTION_REASON_IN_LOG = /Response body: \{"error":"config-write-refused"/;
+
+/**
+ * What the stub puts in place of a submitted credential the response echoed back.
+ *
+ * The rejecting response below deliberately echoes the whole payload, because that is the case the
+ * redaction exists for and the only way to prove it runs: an endpoint that validates credentials and
+ * reports what it received is unremarkable, and without redaction its echo would place four secrets
+ * on a console line, in a Playwright trace and in any screenshot of the devtools panel. Asserting the
+ * placeholder is present, and separately that no typed value is, distinguishes "redacted" from
+ * "the response happened not to contain one".
+ */
+const REDACTED_CREDENTIAL_IN_LOG = /\[redacted credential\]/;
+
 /** Kind of dialog `alert` opens. */
 const ALERT_DIALOG = 'alert';
 
@@ -535,7 +562,16 @@ test.describe('harness route /configuration - TwitterAPISettings (frontend/src/c
         body: request.postDataJSON(),
       });
 
-      await route.fulfill({ status: REJECTED_STATUS, json: {} });
+      /*
+       * A reason, plus an echo of the payload. The reason is what the assertions below require to
+       * survive to the console; the echo is the adversarial half - see REDACTED_CREDENTIAL_IN_LOG -
+       * and it is built from what this request actually carried rather than from a literal, so it
+       * cannot drift from the values typed above.
+       */
+      await route.fulfill({
+        status: REJECTED_STATUS,
+        json: { error: REJECTION_REASON, received: request.postDataJSON() },
+      });
     });
 
     await page.goto(SETTINGS_ROUTE);
@@ -560,6 +596,28 @@ test.describe('harness route /configuration - TwitterAPISettings (frontend/src/c
       const reported = browserDiagnostics.errorText();
       expect(reported).toMatch(FAILURE_LOG);
       expect(reported).toMatch(REJECTED_STATUS_IN_LOG);
+
+      /*
+       * And the reason the responder gave survived with it. The status alone does not distinguish
+       * this refusal from any other 500, and the alert the user sees never distinguishes anything,
+       * so this console line is the only place a reason exists at all - which is why the stub reads
+       * the body of a non-ok response and carries a bounded excerpt of it into what it throws.
+       */
+      expect(reported).toMatch(REJECTION_REASON_IN_LOG);
+
+      /*
+       * Surfacing that body must not surface a credential with it. This response echoed all four
+       * back, so the excerpt genuinely contained them before the stub removed them, and both halves
+       * are asserted: the placeholder proves the redaction ran, and the absence of every typed value
+       * proves it was complete. The second read takes the whole diagnostics ledger rather than only
+       * the failure line, so an echo surfacing anywhere the browser spoke fails this test.
+       */
+      expect(reported).toMatch(REDACTED_CREDENTIAL_IN_LOG);
+
+      const everythingTheBrowserSaid = browserDiagnostics.text();
+      for (const field of CREDENTIAL_FIELDS) {
+        expect(everythingTheBrowserSaid).not.toContain(field.typedValue);
+      }
 
       // Caught rather than propagated: nothing escaped to the page and the route stays mounted.
       expect(browserDiagnostics.pageErrorText()).toBe('');

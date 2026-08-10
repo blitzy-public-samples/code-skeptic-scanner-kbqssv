@@ -24,9 +24,26 @@
  * L59-L61, which that throw makes unreachable from this route; that ceiling is covered by
  * `frontend/src/components/TweetManagement.test.tsx`.
  *
+ * ## Why this file also asserts what an *unmatched* URL renders
+ *
+ * A container that renders with no child and no text is a screen with no reader-visible content, and
+ * that had a consequence beyond this route: it used to be indistinguishable from a URL the harness
+ * does not route at all, because an unrouted path rendered nothing but an empty landmark. The harness
+ * now carries a last-position catch-all that names the path it could not match, so the two are no
+ * longer the same screen, and the first test measures both sides to prove which signals still agree
+ * and which no longer do.
+ *
+ * The application's own ceiling is untouched: `frontend/src/app.tsx` declares no `path="*"` entry, so
+ * a mistyped link, a stale bookmark or a shared deep link still has no not-found page in the product.
+ * The catch-all lives only in the harness entry, below every routed workspace, so what a spec sees at
+ * `/`, `/tweets`, `/analytics` and `/configuration` is unchanged.
+ *
  * @see e2e/README.md - adding a spec to this directory.
- * @see docs/testing/DECISION-LOG.md - the interception, ceiling and layer-boundary rows for this file.
+ * @see docs/testing/DECISION-LOG.md - the interception, ceiling and layer-boundary rows for this file,
+ *   row D377 for the harness catch-all, and row D397 for why none is added to `app.tsx`.
  */
+
+import type { Page } from '@playwright/test';
 
 import {
   type BrowserDiagnostics,
@@ -84,6 +101,83 @@ const MISSING_EXPORT_NAME = /getTweets/;
 const SETTLE_TIMEOUT_MS = 10_000;
 
 /**
+ * A client path no `<Route>` in `harness/main.tsx` declares.
+ *
+ * This is the shape of every mistyped link, stale bookmark and shared deep link the application can
+ * receive. `frontend/src/app.tsx` still declares no `path="*"` entry for it; the harness entry does,
+ * so navigating here exercises the diagnostic rather than a blank document.
+ */
+const UNMATCHED_ROUTE = '/no-such-route';
+
+/**
+ * The `<main>` landmark `harness/main.tsx` renders *above* `<Routes>`.
+ *
+ * It is what makes an unmatched URL diagnosable at all: a route that did not match leaves this
+ * element standing - now holding the catch-all's diagnostic - whereas a component that threw takes it
+ * down with the rest of the root. So the empty-versus-populated-versus-absent landmark separates a
+ * working route, an unrouted path and a torn-down root, which is what the assertions below check.
+ */
+const PAGE_LANDMARK = 'main';
+
+/**
+ * Everything a page could offer as a way out of a dead end.
+ *
+ * Counted rather than enumerated, because the assertion is that there is no recovery control of any
+ * kind - not that some particular one is missing.
+ */
+const RECOVERY_CONTROLS =
+  'a[href], button, [role="link"], [role="button"], nav, form, input, select, textarea';
+
+/**
+ * How the harness reports a path its route table does not cover.
+ *
+ * The catch-all in `harness/main.tsx` renders a `role="status"` element carrying this value in
+ * `data-harness-error`, so the condition is stated in the page. React Router's development-only
+ * `No routes matched location` warning no longer fires, because a route now matches - asserted below,
+ * since its absence is the proof that the catch-all is what answered.
+ */
+const UNROUTED_DIAGNOSTIC = 'harness-route-not-defined';
+
+/** The element carrying {@link UNROUTED_DIAGNOSTIC}. */
+const UNROUTED_DIAGNOSTIC_SELECTOR = `[data-harness-error="${UNROUTED_DIAGNOSTIC}"]`;
+
+/** The warning React Router emits only when nothing matched, and so must no longer emit. */
+const UNMATCHED_ROUTE_WARNING = /No routes matched location/;
+
+/** The three page-level signals a reader could use to tell one screen from another. */
+interface PageSignals {
+  /** `document.title`, the only signal a browser tab itself carries. */
+  title: string;
+
+  /** Rendered text, which is what a person actually reads. */
+  text: string;
+
+  /** How many {@link RECOVERY_CONTROLS} the document offers. */
+  recoveryControls: number;
+}
+
+/**
+ * Reads those three signals.
+ *
+ * Grouped into one evaluation so both sides of the comparison below are taken the same way, from one
+ * document state, rather than assembled from separate reads that could straddle a change.
+ *
+ * @param page - Page under test.
+ * @param controls - Selector counting anything that could offer a way out.
+ * @returns The signals, as one record.
+ */
+function pageSignals(page: Page, controls: string = RECOVERY_CONTROLS): Promise<PageSignals> {
+  return page.evaluate(
+    (selector: string) => ({
+      title: document.title,
+      text: document.body.innerText.trim(),
+      recoveryControls: document.querySelectorAll(selector).length,
+    }),
+    controls,
+  );
+}
+
+/**
  * Console errors the mount fetch reported, read out of the fixture's ledger.
  *
  * Filtering on {@link FETCH_FAILURE_PREFIX} rather than counting every console error keeps the
@@ -101,7 +195,10 @@ function reportedFetchFailures(diagnostics: BrowserDiagnostics): readonly string
 }
 
 test.describe('harness route /tweets - TweetList (frontend/src/components/TweetManagement)', () => {
-  test('renders an empty tweet-list container', async ({ page, browserDiagnostics }) => {
+  test('renders an empty tweet-list container, which the harness now distinguishes an unmatched URL from', async ({
+    page,
+    browserDiagnostics,
+  }) => {
     const interceptedUrls: string[] = [];
 
     // The one failure this route always produces. Anything else the browser reports fails the test.
@@ -132,6 +229,55 @@ test.describe('harness route /tweets - TweetList (frontend/src/components/TweetM
 
       // No `TweetCard` from the map at L59-L61, and no loading node from L62.
       await expect(container.locator('*')).toHaveCount(0);
+
+      /*
+       * What that renders to a reader, which is the second half of this test: nothing. No text, and
+       * no control of any kind. Recorded here so the comparison below has a measured baseline rather
+       * than an assumed one.
+       */
+      const workingRoute = await pageSignals(page);
+      expect(workingRoute.text).toBe('');
+      expect(workingRoute.recoveryControls).toBe(0);
+
+      /*
+       * Now the same page at a path the route table does not declare. The harness entry carries a
+       * last-position catch-all that names the path it could not match, so this navigation renders a
+       * diagnostic where it used to render nothing. The comparison against the working route measured
+       * above is what shows the difference is real rather than asserted: same tab title, different
+       * readable text, and still no way out.
+       *
+       * `frontend/src/app.tsx` declares no catch-all, so the product-level ceiling stands. See
+       * `docs/testing/DECISION-LOG.md` rows D377 and D397, and `docs/testing/TRACEABILITY-MATRIX.md`
+       * row G13.
+       */
+      await page.goto(UNMATCHED_ROUTE);
+
+      const unmatchedRoute = await pageSignals(page);
+
+      // The tab itself still says nothing: one document title covers every route in the harness.
+      expect(unmatchedRoute.title).toBe(workingRoute.title);
+
+      // What changed, and the whole point of the catch-all: readable text where there was none.
+      expect(unmatchedRoute.text).not.toBe(workingRoute.text);
+      expect(unmatchedRoute.text).toContain(UNROUTED_DIAGNOSTIC);
+      expect(unmatchedRoute.text).toContain(UNMATCHED_ROUTE);
+
+      // What has not changed: naming the condition is not offering a way out of it.
+      expect(unmatchedRoute.recoveryControls).toBe(workingRoute.recoveryControls);
+      expect(workingRoute.recoveryControls).toBe(0);
+
+      // The route table did not match, so this route's own container is absent...
+      await expect(page.locator(TWEET_LIST_CONTAINER)).toHaveCount(0);
+
+      // ...while the landmark above `<Routes>` stands and now holds the diagnostic, so an unrouted
+      // path is separable from a torn-down root in the DOM and from a working route on screen.
+      await expect(page.locator(PAGE_LANDMARK)).toBeAttached();
+      await expect(page.locator(PAGE_LANDMARK)).not.toBeEmpty();
+      await expect(page.locator(UNROUTED_DIAGNOSTIC_SELECTOR)).toHaveCount(1);
+      await expect(page.locator(UNROUTED_DIAGNOSTIC_SELECTOR)).toHaveAttribute('role', 'status');
+
+      // And the router's own warning is gone, which is the proof that a route matched.
+      expect(browserDiagnostics.text()).not.toMatch(UNMATCHED_ROUTE_WARNING);
     } finally {
       await test.info().attach('intercepted-requests', {
         body: interceptedUrls.join('\n') || '(no request intercepted)',

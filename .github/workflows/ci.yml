@@ -168,6 +168,22 @@ jobs:
         fi
         echo "ok backend/reports/junit.xml declares $declared cases, equal to the $collected collected"
 
+    # The frontend needs a different partial-run comparison from the backend, because
+    # Jest fails the backend's one by construction: a name filter does not drop the
+    # tests it excludes, it registers every identity and re-classifies the excluded ones
+    # as *skipped*. So `tests=` stays at the full count and equals anything the
+    # readiness step could witness - measured, `-t "formatNumber"` still declares
+    # tests="371" while reporting 300 skipped and 71 passed, and would satisfy both a
+    # presence check and a case-count equality.
+    #
+    # The skips themselves are what discriminate, and they carry their own witness. Every
+    # deliberately skipped frontend test is skipped for a stated reason, and that reason
+    # is in the test's own title: the three page suites each build their `it.skip` titles
+    # from a `BLOCKED: ...` constant naming the missing store export. A filter-induced
+    # skip carries no such marker. So every `<skipped>` in the stream is required to be
+    # one of the reasoned skips, which needs no expected count and stays correct as
+    # reasoned skips are added or resolved.
+    # See docs/testing/DECISION-LOG.md row D384, and D355 for the backend counterpart.
     - name: Verify frontend report artifacts
       if: ${{ !cancelled() && steps.frontend_tests.outcome == 'success' }}
       run: |
@@ -182,6 +198,13 @@ jobs:
           echo "::error file=frontend/reports/jest-junit.xml::result stream declares no test cases"
           exit 1
         fi
+        skipped="$(grep -o '<skipped' frontend/reports/jest-junit.xml | wc -l | tr -d '[:space:]')"
+        reasoned="$(grep -o 'BLOCKED:' frontend/reports/jest-junit.xml | wc -l | tr -d '[:space:]')"
+        if [ "$skipped" != "$reasoned" ]; then
+          echo "::error file=frontend/reports/jest-junit.xml::result stream carries $skipped skipped cases but only $reasoned of them state a BLOCKED: reason - a name-filtered or partial run overwrote the canonical stream, which reports the tests it excluded as skipped"
+          exit 1
+        fi
+        echo "ok frontend/reports/jest-junit.xml declares $skipped skipped cases, all $reasoned of them reasoned"
 
     - name: Upload backend coverage to Codecov
       if: ${{ !cancelled() && steps.backend_tests.outcome == 'success' }}
@@ -213,12 +236,28 @@ jobs:
         if-no-files-found: error
         retention-days: 30
 
+    # Both values are stated rather than inherited, for the reason the `e2e-junit` upload
+    # states at length: an omitted `retention-days` takes the repository or organisation
+    # default, decided somewhere this file cannot see. These two streams carry no
+    # attachment body, so 30 days matches the other result artifacts.
+    #
+    # `if-no-files-found` is now stated on all three single-file uploads, and the value is
+    # not the same on all three, which is the point. `error` here, because the step that
+    # writes each of these carries `if: ${{ !cancelled() }}` and pytest and jest-junit
+    # both write their stream even when tests fail - so absence means the stream was
+    # removed or the runner never got that far, which is worth an annotation rather than a
+    # log line. `warn` on `e2e-junit`, because the e2e job's browser gate is fail-closed:
+    # when it refuses, `Run end-to-end tests` is skipped and no stream is written, which is
+    # correct behaviour and must not be reported as a missing artifact.
+    # See docs/testing/DECISION-LOG.md rows D386 and D318.
     - name: Upload backend test results
       if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: backend-junit
         path: backend/reports/junit.xml
+        if-no-files-found: error
+        retention-days: 30
 
     - name: Upload frontend test results
       if: always()
@@ -226,6 +265,8 @@ jobs:
       with:
         name: frontend-junit
         path: frontend/reports/jest-junit.xml
+        if-no-files-found: error
+        retention-days: 30
 
   e2e:
     runs-on: ubuntu-latest
@@ -319,11 +360,22 @@ jobs:
       run: |
         npm test
 
+    # The last check is the same equality the backend applies, for the same reason: a
+    # zero-case stream is only the loudest way this one can be wrong, and a filtered run
+    # - one spec, one `--grep`, one retry of a single test - leaves a non-zero count that
+    # no presence check can tell from a full suite. Unlike Jest, Playwright genuinely
+    # drops the tests a filter excludes, so the stream's own case count is the
+    # discriminating figure and the discovery step above is its independent witness.
+    # Measured: a filtered run replaces this stream with a 3-case one and satisfied every
+    # check here before this comparison existed.
+    # The scripts that can run a subset pin `--reporter=line` and write no stream at all,
+    # which is the writer-side half of the same protection.
+    # See docs/testing/DECISION-LOG.md rows D385, D403 and D355.
     - name: Verify end-to-end report artifacts
       if: ${{ !cancelled() && steps.e2e_run.outcome != 'skipped' }}
       working-directory: e2e
       run: |
-        for f in reports/e2e-junit.xml playwright-report/index.html; do
+        for f in reports/e2e-junit.xml playwright-report/index.html reports/list-tests.txt; do
           if [ ! -s "$f" ]; then
             echo "::error file=e2e/$f::report missing or empty - the upload below would have carried nothing"
             exit 1
@@ -334,6 +386,17 @@ jobs:
           echo "::error file=e2e/reports/e2e-junit.xml::result stream declares no test cases"
           exit 1
         fi
+        declared="$(grep -Eo 'tests="[0-9]+"' reports/e2e-junit.xml | head -1 | grep -Eo '[0-9]+')"
+        discovered="$(grep -Eo 'Total: [0-9]+ tests? in [0-9]+ files?' reports/list-tests.txt | tail -1 | grep -Eo '[0-9]+' | head -1)"
+        if [ -z "$declared" ] || [ -z "$discovered" ]; then
+          echo "::error file=e2e/reports/e2e-junit.xml::could not read a case count from the result stream (${declared:-none}) or a discovered count from the readiness listing (${discovered:-none})"
+          exit 1
+        fi
+        if [ "$declared" != "$discovered" ]; then
+          echo "::error file=e2e/reports/e2e-junit.xml::result stream declares $declared test cases while discovery found $discovered - a partial, filtered, single-spec or list-only run overwrote the canonical stream"
+          exit 1
+        fi
+        echo "ok e2e/reports/e2e-junit.xml declares $declared cases, equal to the $discovered discovered"
 
     # Seven days, not thirty. The HTML reporter copies every attachment into
     # playwright-report/data/, including the trace, screenshot and video a failing
@@ -367,9 +430,21 @@ jobs:
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: e2e-failure-artifacts
-        path: e2e/test-results/
+        # The three evidence globs rather than the whole directory, because
+        # `e2e/test-results/` is never empty: Playwright writes `.last-run.json` on every
+        # run and leaves one empty directory per test, so a whole-directory path always
+        # matched at least one file and the `warn` below could never fire. Naming the
+        # evidence itself makes the condition mean what it says - on a green run these
+        # match nothing and the step warns, which is the intended signal that there was
+        # no failure to record. Measured both ways: a passing run matches none of the
+        # three, and a controlled failure matches all three.
+        # See docs/testing/DECISION-LOG.md row D387.
+        path: |
+          e2e/test-results/**/*.png
+          e2e/test-results/**/*.webm
+          e2e/test-results/**/trace.zip
         # `warn`, not `error`: trace, screenshot and video are retained on failure
-        # only, so a fully passing run writes nothing here.
+        # only, so a fully passing run legitimately writes none of them.
         if-no-files-found: warn
         # Seven days, for the same reason as the Playwright report above: this is the
         # raw trace, screenshot and video, which is the richest carrier of anything a
@@ -382,6 +457,13 @@ jobs:
       with:
         name: e2e-junit
         path: e2e/reports/e2e-junit.xml
+        # `warn`, and stated rather than inherited, so the value is decided here. This
+        # job's browser gate is fail-closed: when no launchable browser resolves, `Run
+        # end-to-end tests` is skipped and no stream is written at all. That is the gate
+        # working, so `error` here would turn a correct refusal into a second, misleading
+        # failure. The `e2e-test-evidence` upload above keeps `error` and still proves the
+        # readiness and browser-provenance outputs exist. See row D386.
+        if-no-files-found: warn
         # Stated rather than inherited: with no value here the artifact takes the
         # repository or organisation default, which is 90 days unless someone changed
         # it - a longer window than any other artifact this job uploads, decided

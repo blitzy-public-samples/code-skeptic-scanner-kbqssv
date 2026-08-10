@@ -66,6 +66,7 @@ census, not re-derived from the object store.
 """
 
 import io
+import json
 import os
 import re
 
@@ -160,6 +161,29 @@ PASSED_PATTERNS = (
 #: from the frozen plan's literal text or to record that a scope clause already allows it.
 ESCALATED_DEVIATIONS = ("F3", "F4", "F5", "F6", "F12", "F17", "F21")
 
+#: The skips that fire only when a *previous* run's artifact is absent, each with the
+#: reason string its own ``pytest.skip`` call carries. They are why a first pass from a
+#: fresh clone reports fewer passes and more skips than a warm run: neither test can be
+#: evaluated until the artifact it reads exists, and both artifacts are gitignored.
+ARTIFACT_CONDITIONAL_SKIPS = (
+    (os.path.join("backend", "tests", "test_coverage_gate.py"),
+     "backend/coverage.json is written by the gated coverage command"),
+    (os.path.join("backend", "tests", "test_docs_contract.py"),
+     "e2e/reports/e2e-junit.xml is gitignored and absent in a fresh clone"),
+)
+
+#: Documents whose readers run the suite themselves, and would otherwise read the warm
+#: figure as the only one. Each has to state the first-pass figure beside it.
+FIRST_PASS_DOCUMENTS = ("README.md", os.path.join("backend", "tests", "README.md"))
+
+#: How those documents state the first pass. Deliberately not a phrasing
+#: :data:`PASSED_PATTERNS` matches: this is a second, conditional figure, and the
+#: one-figure-everywhere check must not read it as a document disagreeing with itself.
+FIRST_PASS_PATTERN = r"(\d{3,5}) passed and (\d+) skipped on a first pass"
+
+#: How the root README states what a bare ``pytest`` from the repository root produces.
+ROOT_MISUSE_PATTERN = r"\*\*(\d+) failed, (\d{3,5}) passed, (\d+) skipped\*\*"
+
 #: The JWT pin as delivered. A backlog entry describing this change as unattempted is a
 #: document contradicting the manifest beside it, which is the failure this pair catches.
 DELIVERED_PIN = "python-jose[cryptography]==3.5.0"
@@ -201,6 +225,27 @@ E2E_WORD_CLAIMS = (
 
 #: The retained E2E result stream, when a suite has been run in this working tree.
 E2E_JUNIT_PATH = os.path.join(REPOSITORY_ROOT, "e2e", "reports", "e2e-junit.xml")
+
+#: The retained E2E discovery listing, the independent witness of how many cases the layer
+#: has. ``playwright test --list`` writes it and a *result* run never touches it, so it is
+#: what distinguishes a whole-suite stream from a one-spec one.
+E2E_LIST_TESTS_PATH = os.path.join(REPOSITORY_ROOT, "e2e", "reports", "list-tests.txt")
+
+#: The line ``playwright test --list`` closes with, and the only line read out of it.
+E2E_DISCOVERY_TOTAL = r"Total:\s+(\d+)\s+tests?\s+in\s+(\d+)\s+files?"
+
+#: E2E scripts that can run a subset of the suite or wait on a human, and therefore must
+#: never write the canonical result stream. Each pins a reporter override.
+PARTIAL_CAPABLE_E2E_SCRIPTS = ("test:spec", "test:debug", "test:headed")
+
+#: The override each of those scripts pins, replacing the configured reporter list.
+E2E_REPORTER_OVERRIDE = "--reporter=line"
+
+#: The E2E package manifest, read as text so a script body is asserted as written.
+E2E_MANIFEST_PATH = os.path.join(REPOSITORY_ROOT, "e2e", "package.json")
+
+#: The E2E onboarding document, which has to name every command it protects.
+E2E_README_PATH = os.path.join(REPOSITORY_ROOT, "e2e", "README.md")
 
 #: Directories whose every file is part of the delivered suite.
 SCOPE_DIRECTORIES = (
@@ -288,6 +333,33 @@ def _read(path):
     """Return ``path`` decoded as UTF-8, with line endings normalised to ``\\n``."""
     with io.open(path, encoding="utf-8") as handle:
         return handle.read().replace("\r\n", "\n")
+
+
+def _read_artifact(path):
+    """Return the artifact at ``path``, decoded by its byte-order mark.
+
+    Separate from :func:`_read` because the files this reads are produced by a shell capture
+    rather than committed as documents. ``docs/testing/DASHBOARD-TEMPLATE.md`` documents the
+    Windows capture as ``Tee-Object``, and PowerShell 5.1 writes UTF-16LE with a mark, which
+    a UTF-8 reader cannot take either way: strictly it raises ``UnicodeDecodeError`` on the
+    mark, and leniently it yields NUL-separated characters no pattern here can match, so a
+    whole run's witness reads as absent and the census binding goes quietly vacuous. Mirrors
+    ``decode_by_bom`` in docs/testing/dashboard-extract.py, which reads its own copies of
+    these same artifacts. Row D408 of docs/testing/DECISION-LOG.md.
+    """
+    with io.open(path, "rb") as handle:
+        raw = handle.read()
+
+    # Longest mark first, so UTF-32LE's is never matched as UTF-16LE's prefix.
+    for mark, encoding in ((b"\xff\xfe\x00\x00", "utf-32"),
+                           (b"\x00\x00\xfe\xff", "utf-32"),
+                           (b"\xff\xfe", "utf-16"),
+                           (b"\xfe\xff", "utf-16"),
+                           (b"\xef\xbb\xbf", "utf-8-sig")):
+        if raw.startswith(mark):
+            return raw.decode(encoding, errors="replace").replace("\r\n", "\n")
+
+    return raw.decode("utf-8", errors="replace").replace("\r\n", "\n")
 
 
 def _active_lines(path):
@@ -478,9 +550,9 @@ def test_gitignore_anchored_split_matches_the_matrix():
     unanchored = [pattern for pattern in patterns if "/" not in pattern.rstrip("/")]
     matrix = _read(MATRIX_PATH)
 
-    assert "Ten rules are path-anchored" in matrix
-    assert "the remaining thirteen" in matrix
-    assert (len(anchored), len(unanchored)) == (10, 13)
+    assert "Twelve rules are path-anchored" in matrix
+    assert "the remaining fourteen" in matrix
+    assert (len(anchored), len(unanchored)) == (12, 14)
 
 
 def test_gitignore_patterns_enumerated_in_the_matrix_are_the_delivered_ones():
@@ -491,7 +563,24 @@ def test_gitignore_patterns_enumerated_in_the_matrix_are_the_delivered_ones():
     listed = {token.strip() for token in re.findall(r"`([^`]+)`", row[0])}
 
     assert patterns.issubset(listed)
-    assert "package-lock.json" not in patterns, "no active rule may match the lockfile"
+
+
+def test_gitignore_suppresses_only_the_two_generated_lockfiles():
+    """A bare rule would suppress a committed lockfile at any depth, silently.
+
+    The delivery does not commit either lockfile (AAP §0.6.2), so both are output
+    of a documented ``npm install`` and are ignored - but only at the two paths
+    that have a manifest. The Jest counterpart of this case is
+    ``frontend/src/test-utils/dependency-closure.test.ts``; this one keeps the
+    property asserted on a host that never installed the frontend tree.
+    """
+    lockfile_rules = [pattern for pattern in _active_lines(GITIGNORE_PATH)
+                      if "package-lock" in pattern]
+
+    assert sorted(lockfile_rules) == ["e2e/package-lock.json",
+                                      "frontend/package-lock.json"]
+    assert [rule for rule in lockfile_rules if "/" not in rule] == [], (
+        "a bare package-lock.json rule would also suppress a committed lockfile")
 
 
 def test_manifest_pin_census_matches_the_matrix():
@@ -655,19 +744,154 @@ def test_dashboard_retention_table_lists_every_workflow_upload():
     assert stated == len(artifact_names)
 
 
-def test_dashboard_names_every_required_artifact_the_extractor_requires():
-    """A required artifact the dashboard does not name has no documented source."""
+def test_every_result_stream_carries_a_partial_run_check():
+    """A stream without one can publish a filtered run as the whole suite.
+
+    Three streams, three different checks, because the three runners fail
+    differently: the backend and the end-to-end layer compare their case count
+    against an independently produced witness, while Jest re-classifies the tests
+    a filter excludes as *skipped* rather than dropping them, so its count is not
+    discriminating and the reason its skips carry is used instead. The extractor
+    applies the same two comparisons, so a stream refused in CI is also refused
+    when a dashboard is filled locally.
+    """
+    workflow = _read(os.path.join(REPOSITORY_ROOT, ".github", "workflows", "ci.yml"))
     extractor = _read(EXTRACTOR_PATH)
     dashboard = _read(DASHBOARD_PATH)
+
+    assert "while collection found $collected" in workflow, "backend check is missing"
+    assert "while discovery found $discovered" in workflow, "end-to-end check is missing"
+    assert "'BLOCKED:' frontend/reports/jest-junit.xml" in workflow, (
+        "the frontend check no longer counts the reasoned-skip marker")
+    assert "state a BLOCKED: reason" in workflow, (
+        "the frontend check reports no actionable message")
+
+    for function in ("partial_stream_reason", "unreasoned_skip_reason"):
+        assert "def {0}(".format(function) in extractor, function
+        assert "{0}(".format(function) in extractor.split("def collect(")[1], (
+            "collect() does not apply {0}".format(function))
+
+    assert "Three workflow steps additionally read the JUnit streams" in dashboard
+
+
+def _required_artifacts():
+    """The artifact contract ``--require-all`` enforces, as ``(constant, path)`` pairs."""
+    extractor = _read(EXTRACTOR_PATH)
 
     block = re.search(r"^REQUIRED[^=]*=\s*\((.*?)\)\n", extractor, re.S | re.M).group(1)
     constants = re.findall(r"\b([A-Z][A-Z0-9_]{3,})\b", block)
     assert len(constants) == len(set(constants)) >= 11
 
+    pairs = []
     for constant in constants:
         value = re.search(r'^{0} = "([^"]+)"'.format(constant), extractor, re.M)
         assert value is not None, constant
-        assert value.group(1) in dashboard, value.group(1)
+        pairs.append((constant, value.group(1)))
+    return pairs
+
+
+def test_dashboard_names_every_required_artifact_the_extractor_requires():
+    """A required artifact the dashboard does not name has no documented source."""
+    dashboard = _read(DASHBOARD_PATH)
+
+    for constant, relative in _required_artifacts():
+        assert relative in dashboard, "{0} ({1})".format(relative, constant)
+
+
+def _resolve_against(current, target):
+    """``cd`` and redirection-path resolution for both shells, in one form."""
+    parts = [] if current == "." else current.split("/")
+    for segment in target.replace("\\", "/").split("/"):
+        if segment in ("", "."):
+            continue
+        if segment == "..":
+            if parts:
+                parts.pop()
+        else:
+            parts.append(segment)
+    return "/".join(parts) or "."
+
+
+def _producer_blocks():
+    """The two shell blocks section 1 gives as the way to produce every artifact.
+
+    Selected by content rather than by position, so adding a section above them
+    cannot silently select something else: a producer block is one that creates
+    the backend readiness output.
+    """
+    dashboard = _read(DASHBOARD_PATH)
+
+    blocks = {}
+    for language in ("bash", "powershell"):
+        bodies = [body for body in re.findall(
+            r"^```{0}\n(.*?)^```".format(language), dashboard, re.S | re.M)
+            if "collect-only.txt" in body]
+        assert len(bodies) == 1, "{0}: {1} candidate blocks".format(language, len(bodies))
+        blocks[language] = bodies[0]
+    return blocks
+
+
+def _files_written(body):
+    """Every path a producer block redirects into, resolved against its own ``cd``.
+
+    Neither block can be read one line at a time, and neither can be read without
+    modelling how far a ``cd`` reaches. The POSIX one continues a command with a
+    backslash, so a ``cd`` and the redirection it governs sit on different physical
+    lines, and it wraps each command in a subshell, so that ``cd`` is undone at the
+    closing parenthesis -- carrying it forward instead resolves the next relative
+    ``cd`` against it and yields nonsense like ``backend/frontend/reports``. The
+    PowerShell one uses no subshell and changes directory statefully, so one ``cd``
+    governs every later redirection until the next one. Tracking parentheses as a
+    directory stack models both. Comments are stripped first, so a commented-out
+    example cannot satisfy the contract.
+    """
+    joined = body.replace("\\\n", " ")
+    joined = "\n".join(line.split("#")[0] for line in joined.split("\n"))
+
+    directory, enclosing, written = ".", [], []
+    for match in re.finditer(r"(?P<enter>\()|(?P<leave>\))"
+                             r"|\bcd\s+(?P<directory>[\w./\\-]+)"
+                             r"|\b(?:Tee-Object|tee)\s+(?P<path>[\w./\\-]+)", joined):
+        if match.group("enter"):
+            enclosing.append(directory)
+        elif match.group("leave"):
+            directory = enclosing.pop() if enclosing else "."
+        elif match.group("directory"):
+            directory = _resolve_against(directory, match.group("directory"))
+        else:
+            written.append(_resolve_against(directory, match.group("path")))
+    return written
+
+
+def test_both_producer_blocks_create_every_required_text_artifact():
+    """A text artifact no producer command writes cannot be produced from the document.
+
+    The section 2 census names every artifact but runs nothing, so a name there is
+    not evidence that a command creates it -- which is how the frontend discovery
+    census came to be required by ``--require-all``, named by the census, and
+    created by neither block, leaving a reader who followed the document exactly
+    unable to fill the dashboard. Full paths are compared rather than basenames:
+    ``frontend/reports/list-tests.txt`` and ``e2e/reports/list-tests.txt`` differ
+    only in their directory, so a basename check passes while one of them is
+    missing. Both shells are required to write the same set, because an instruction
+    added to one of them is not a cross-platform instruction.
+    """
+    required = [path for _, path in _required_artifacts() if path.endswith(".txt")]
+    assert len(required) >= 5, required
+
+    written = {}
+    for language, body in _producer_blocks().items():
+        written[language] = _files_written(body)
+        for relative in required:
+            assert relative in written[language], (
+                "the {0} producer block writes no {1}; it writes {2}".format(
+                    language, relative, sorted(set(written[language]))))
+
+    assert set(written["bash"]) == set(written["powershell"]), (
+        "the producer blocks do not create the same files -- POSIX only {0}, "
+        "PowerShell only {1}".format(
+            sorted(set(written["bash"]) - set(written["powershell"])),
+            sorted(set(written["powershell"]) - set(written["bash"]))))
 
 
 # --------------------------------------------------------------------------- #
@@ -715,15 +939,98 @@ def test_every_spelled_out_e2e_census_claim_states_the_published_count(relative)
         relative, E2E_PUBLISHED_TESTS, wrong)
 
 
+def _e2e_discovered_census():
+    """Return ``(cases, files)`` from the retained discovery listing, or ``None``.
+
+    The listing is the independent witness of how large the E2E layer is. It is produced by
+    ``npm run test:list``, which pins ``--reporter=line`` and so writes no result stream,
+    and it is never written by a run that executes tests. That makes it the one artifact
+    against which a retained result stream can be judged whole or partial.
+    """
+    if not os.path.isfile(E2E_LIST_TESTS_PATH):
+        return None
+    total = re.search(E2E_DISCOVERY_TOTAL, _read_artifact(E2E_LIST_TESTS_PATH))
+    if total is None:
+        return None
+    return int(total.group(1)), int(total.group(2))
+
+
 def test_the_published_e2e_census_is_the_retained_streams_own_count():
-    """When a run's evidence is present, the published number is bound to it."""
+    """When a *whole* run's evidence is present, the published number is bound to it.
+
+    Both artifacts this reads are gitignored and are produced by a different layer on a
+    different runner, so the binding is only sound while the result stream is the suite. A
+    documented targeted run -- one spec, one ``-g`` title, one ``--last-failed`` -- leaves a
+    smaller non-zero count that no presence check can tell apart from a full run, and
+    asserting the published census against it reports a document defect that does not exist.
+    The discovery listing beside it is the witness, so the two are compared first and the
+    case is withdrawn by name when they disagree rather than failing this suite for
+    something no document said.
+    """
     if not os.path.isfile(E2E_JUNIT_PATH):
         pytest.skip("e2e/reports/e2e-junit.xml is gitignored and absent in a fresh clone")
 
-    root = re.search(r'<testsuites[^>]*\stests="(\d+)"', _read(E2E_JUNIT_PATH))
+    root = re.search(r'<testsuites[^>]*\stests="(\d+)"', _read_artifact(E2E_JUNIT_PATH))
 
     assert root is not None, "the retained E2E stream declares no root case count"
-    assert int(root.group(1)) == E2E_PUBLISHED_TESTS
+    retained = int(root.group(1))
+    discovered = _e2e_discovered_census()
+
+    if discovered is None:
+        pytest.skip(
+            "e2e/reports/list-tests.txt is absent, so nothing here can tell a whole run "
+            "from a targeted one; run `npm run test:list` in e2e/ to retain the witness")
+    if retained != discovered[0]:
+        pytest.skip(
+            "the retained stream declares {0} of the {1} cases discovery reports, so it is "
+            "a targeted run rather than the suite; re-run `npm test` in e2e/ to rebind "
+            "it".format(retained, discovered[0]))
+
+    assert retained == E2E_PUBLISHED_TESTS
+    assert discovered == (E2E_PUBLISHED_TESTS, E2E_PUBLISHED_SPECS)
+
+
+@pytest.mark.parametrize("script", PARTIAL_CAPABLE_E2E_SCRIPTS)
+def test_every_partial_capable_e2e_script_pins_a_reporter_override(script):
+    """A script that can run a subset must not be able to write the canonical stream.
+
+    ``e2e/playwright.config.ts`` declares the JUnit reporter, so every unqualified
+    invocation writes ``e2e/reports/e2e-junit.xml`` -- including a one-spec run and an
+    interactive one. Pinning a reporter on the command line replaces that list, which is the
+    same neutraliser the backend readiness probe and ``test:load`` already apply.
+    """
+    manifest = json.loads(_read(E2E_MANIFEST_PATH))
+    body = manifest["scripts"].get(script)
+
+    assert body is not None, "e2e/package.json declares no {0} script".format(script)
+    assert E2E_REPORTER_OVERRIDE in body, (
+        "{0} runs {1!r}, which writes the configured reporters and would replace the "
+        "canonical result stream with a partial one".format(script, body))
+    assert script in _read(E2E_README_PATH), (
+        "{0} is not documented in e2e/README.md".format(script))
+
+
+@pytest.mark.parametrize("encoding", ("utf-8", "utf-8-sig", "utf-16"))
+def test_the_e2e_witness_is_read_however_the_capture_encoded_it(tmp_path, monkeypatch,
+                                                                encoding):
+    """The witness has to survive both documented captures, or the binding above goes quiet.
+
+    ``bash`` redirection writes UTF-8 and PowerShell 5.1's ``Tee-Object`` writes UTF-16LE
+    with a mark, and the dashboard documents both. A UTF-8 reader fails the second one twice
+    over: strictly it raises on the mark, and leniently it yields NUL-separated characters
+    :data:`E2E_DISCOVERY_TOTAL` cannot match, which withdraws the census case on every
+    Windows run and reports nothing. Each documented encoding is therefore exercised against
+    the real helper rather than against a copy of its logic.
+    """
+    listing = tmp_path / "list-tests.txt"
+    body = ("Listing tests:\n"
+            "  [chromium] > tests/dashboard.spec.ts:9:5 > renders the feed\n"
+            "Total: {0} tests in {1} files\n".format(E2E_PUBLISHED_TESTS,
+                                                     E2E_PUBLISHED_SPECS))
+    listing.write_bytes(body.encode(encoding))
+    monkeypatch.setitem(globals(), "E2E_LIST_TESTS_PATH", str(listing))
+
+    assert _e2e_discovered_census() == (E2E_PUBLISHED_TESTS, E2E_PUBLISHED_SPECS)
 
 
 # --------------------------------------------------------------------------- #
@@ -945,6 +1252,79 @@ def test_the_collected_figure_is_not_below_the_passing_figure():
     assert collected - passing == 3, (
         "{0} collected minus {1} passing is not the 3 reasoned skips the documents "
         "describe".format(collected, passing))
+
+
+@pytest.mark.parametrize("relative,reason", ARTIFACT_CONDITIONAL_SKIPS,
+                         ids=[reason.split()[0] for _path, reason in
+                              ARTIFACT_CONDITIONAL_SKIPS])
+def test_each_artifact_conditional_skip_still_carries_its_stated_reason(relative, reason):
+    """The documents explain the first-pass figure by naming these two skips.
+
+    If one is removed or its reason reworded, the explanation beside the published
+    figure becomes a claim about a skip that no longer exists - so the reason string
+    is asserted verbatim rather than described.
+    """
+    source = _read(os.path.join(REPOSITORY_ROOT, relative))
+
+    assert 'pytest.skip("{0}")'.format(reason) in source, (
+        "{0} no longer skips with the reason the documents quote".format(relative))
+
+
+@pytest.mark.parametrize("relative", FIRST_PASS_DOCUMENTS,
+                         ids=[path.replace(os.sep, "/") for path in FIRST_PASS_DOCUMENTS])
+def test_the_first_pass_figure_is_stated_where_a_reader_would_run_the_suite(relative):
+    """A published figure a fresh clone cannot reproduce is a defect, not a detail.
+
+    The warm figure is correct and stays the headline. What has to sit beside it is
+    the figure a first pass produces, and the two are checked against each other and
+    against the collected total rather than taken on trust: the difference between
+    them is exactly the number of artifact-conditional skips, and the first pass has
+    to account for the whole collection.
+    """
+    document = _read(os.path.join(REPOSITORY_ROOT, relative))
+    conditional = len(ARTIFACT_CONDITIONAL_SKIPS)
+
+    stated = re.findall(FIRST_PASS_PATTERN, document)
+    assert stated, "{0} publishes no first-pass figure".format(relative)
+
+    warm = list(_published_figures(PASSED_PATTERNS))[0]
+    collected = list(_published_figures(COLLECTED_PATTERNS))[0]
+
+    for passed, skipped in stated:
+        passed, skipped = int(passed), int(skipped)
+        assert warm - passed == conditional, (
+            "{0} states {1} passing on a first pass against a warm {2}; the difference "
+            "must be the {3} artifact-conditional skips".format(
+                relative, passed, warm, conditional))
+        assert skipped - (collected - warm) == conditional, (
+            "{0} states {1} skipped on a first pass; that is not the reasoned skips plus "
+            "the {2} artifact-conditional ones".format(relative, skipped, conditional))
+        assert passed + skipped == collected, (
+            "{0}'s first-pass figures sum to {1}, not the {2} collected".format(
+                relative, passed + skipped, collected))
+
+
+def test_the_documented_root_misuse_figures_account_for_the_whole_collection():
+    """The one figure in the README that describes a *failing* run has to add up.
+
+    A bare ``pytest`` from the repository root loads no configuration file, so
+    ``asyncio_mode`` is off and every ``async def`` test errors. The point of
+    publishing that triple is to make the failure recognisable, which it only is if
+    the numbers describe the same collection the paragraph above them states.
+    """
+    readme = _read(os.path.join(REPOSITORY_ROOT, "README.md"))
+
+    stated = re.findall(ROOT_MISUSE_PATTERN, readme)
+    assert len(stated) == 1, "expected exactly one root-misuse triple, found {0}".format(
+        stated)
+
+    failed, passed, skipped = (int(group) for group in stated[0])
+    collected = list(_published_figures(COLLECTED_PATTERNS))[0]
+
+    assert failed > 0, "a triple describing a misuse with no failures explains nothing"
+    assert failed + passed + skipped == collected, (
+        "the documented root run accounts for {0} cases where {1} are collected".format(
+            failed + passed + skipped, collected))
 
 
 def _deck_headline_kpi():

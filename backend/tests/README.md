@@ -7,8 +7,18 @@ production code **actually does today**, including the places where that diverge
 documents, because a test that asserts an intention the code does not implement fails for the wrong
 reason and teaches nobody anything.
 
-**Current state:** 1068 tests collected, 1065 passing, 3 skipped with reasons, 93.33% line coverage on
+**Current state:** 1096 tests collected, 1093 passing, 3 skipped with reasons, 93.33% line coverage on
 the four gated packages. `pytest --collect-only -q` reports zero errors.
+
+**That is a warm reading.** A first run in a fresh clone
+reports **1091 passed and 5 skipped on a first pass**, and both figures are correct.
+Two cases read an artifact a *previous* run wrote, and both
+artifacts are gitignored, so neither exists yet: `tests/test_coverage_gate.py` reads
+`backend/coverage.json`, which §8's gated command writes, and `tests/test_docs_contract.py` reads
+`e2e/reports/e2e-junit.xml`, which the end-to-end suite writes. Each skips with a reason naming the
+artifact rather than failing on its absence, which is the honest disposition for a case whose subject
+has not been produced. Run the gated command once — and the e2e suite once, if you want the second —
+and every later run reads 1093/3. The collected total is 1096 either way and nothing fails.
 
 Those are measurements from CPython 3.9.13 with `backend/requirements-dev.txt` installed, read out of
 `backend/reports/junit.xml` and `backend/coverage.json`. Every figure in this document names the command
@@ -130,7 +140,7 @@ PytestConfigWarning: Unknown config option: rootdir
 It is a computed value, not a declarable one. So the invocation directory is the mechanism, and
 getting it wrong is not a subtle failure. Imports themselves do resolve from the repository root —
 `tests/` is a package, so pytest's prepend import mode puts `backend/` on `sys.path` — and that is what
-makes the failure quiet rather than obvious: a root-level `pytest` collects all 1068 tests and then
+makes the failure quiet rather than obvious: a root-level `pytest` collects all 1096 tests and then
 **fails 21 of them** with warnings on every marker, because `backend/pytest.ini` is not the active
 config file at that level, so `asyncio_mode = auto` is not in effect and every async test is
 mis-handled. Always:
@@ -223,8 +233,8 @@ the extractor reports them together as the `Backend other` layer:
 | `test_dependency_closure.py` | `backend/requirements-dev.txt` — every active line an exact pin, every pin the installed version | 72 |
 | `test_coverage_gate.py` | `backend/.coveragerc` — the `precision` `--cov-fail-under` compares at, and the band it admits | 62 |
 | `test_guard_contract.py` | `conftest.py`'s own guards — credential non-disclosure, endpoint ownership, child-process refusal | 168 |
-| `test_dashboard_extract.py` | `docs/testing/dashboard-extract.py` — its `REQUIRED` contract and its twelve-gate frontend minimum | 31 |
-| `test_docs_contract.py` | the arithmetic `docs/testing/TRACEABILITY-MATRIX.md` and `docs/testing/DASHBOARD-TEMPLATE.md` state, and Rule 4's word and bullet caps on `blitzy-deck/executive-summary.html` | 90 |
+| `test_dashboard_extract.py` | `docs/testing/dashboard-extract.py` — its `REQUIRED` contract, its twelve-gate frontend minimum, and the per-layer refusal of a partial result stream | 39 |
+| `test_docs_contract.py` | the arithmetic `docs/testing/TRACEABILITY-MATRIX.md` and `docs/testing/DASHBOARD-TEMPLATE.md` state, Rule 4's word and bullet caps on `blitzy-deck/executive-summary.html`, and the reporter override every partial-capable `e2e` script pins | 96 |
 
 `test_guard_contract.py` is worth reading first. Every other suite here rests on three promises — that a
 failure message never prints a credential, that a loopback port is authorized only while this process holds
@@ -566,7 +576,7 @@ is never itself mocked — a suite that mocks its own subject asserts nothing.
 
 ## 7. Pitfalls
 
-Four traps, each of which cost real time to find. Read this section before you write a test, not after.
+Six traps, each of which cost real time to find. Read this section before you write a test, not after.
 
 ### Pitfall 1 — Environment seeding must happen at conftest module scope
 
@@ -644,6 +654,63 @@ symbols rather than from reloading them. The `firestore_client` and `app_module`
 the capturing modules *first*, while `get_db` is still the real function, precisely to keep that
 identity intact.
 
+### Pitfall 5 — A `backend/.env` is read, is gitignored, and must never be needed
+
+`Settings.Config.env_file` names `.env`, so pydantic v1 reads `backend/.env` **whenever that file
+exists** — and pydantic v1 reads one through `python-dotenv`, which it does not depend on unless the
+`dotenv` extra is installed. `backend/requirements-dev.txt` therefore pins `python-dotenv==0.21.1`
+under a `# CONFIG:` marker (`D382`). Without that pin, creating a `.env` — which the root
+[`README.md`](../../README.md) §Configuration instructs a developer to do — made the **whole suite
+non-collectable**, because `conftest.py`'s `pytest_configure` cannot import `app.core.config` and
+refuses the run:
+
+```
+UsageError: backend/tests/conftest.py could not import app.core.config, so the backend
+settings cannot be verified: ImportError: python-dotenv is not installed, run
+'pip install pydantic[dotenv]'
+```
+
+Two things follow, and both are properties of the suite rather than advice.
+
+- **The suite does not need a `.env`, and one cannot decide a value inside it.** pydantic v1 resolves a
+  field from `os.environ` **before** the `.env` source, and the prologue assigns every managed name by
+  unconditional assignment (§4.1), so a `.env` entry for a managed field is outranked. Measured: with a
+  `.env` declaring `POPULARITY_THRESHOLD=4242` on disk, the whole suite still passes and
+  `tests/unit/test_core_config.py` still reads `100`.
+  A `.env` entry for a field the suite expects to be *absent* — `NOTION_API_KEY` is the one — is a
+  different matter, because nothing in the environment outranks it. That case is refused rather than
+  tolerated, by the session-scoped `verify_settings_singletons` fixture (§4.2) rather than by the
+  `pytest_configure` gate, which compares only the assigned fields. Every test errors, each with:
+
+  ```
+  AssertionError: app.core.config.settings.NOTION_API_KEY is a str of 19 characters,
+  fingerprint 5afb0dd6d7b849df (value withheld); it must be None. NOTION_API_KEY is set
+  in the environment or in backend/.env.
+  ```
+
+  Note what that message does *not* contain: the value. And note that it is only reachable at all
+  because the dotenv pin exists — without it the run dies at configure time instead.
+- **`.env` is gitignored** (`D382`). It is the file a real credential gets pasted into, it is never a
+  deliverable, and before the rule existed it was committable. If you need one for running the
+  application rather than the tests, §1 lists the eight variables it would carry.
+
+### Pitfall 6 — `case_sensitive = True` is inert on Windows, and the suite asserts the declaration rather than the effect
+
+`Settings.Config` declares `case_sensitive = True`, and `tests/unit/test_core_config.py` asserts exactly
+that: **the declaration**, not the behaviour it produces. That is deliberate, because the behaviour is
+platform-dependent and the declaration is not.
+
+On Windows `os.environ` is itself case-insensitive — setting `qa_LoWeR_Probe` makes `QA_LOWER_PROBE`
+readable — so a lowercase `secret_key` satisfies the `SECRET_KEY` field and `popularity_threshold=999`
+also sets `POPULARITY_THRESHOLD`. On `ubuntu-latest`, which is the runner
+[`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml) declares, the same names are distinct
+and the declaration is effective.
+
+So: do not write a test that asserts a lowercase name is *rejected*. It would pass on the CI runner and
+fail on a Windows developer machine, which is a test whose result depends on the host rather than on the
+code. `D383` records the divergence; the production `Config` block is pre-existing and outside the two
+authorized touches, so nothing here changes it.
+
 ---
 
 ## 8. Run commands
@@ -685,7 +752,7 @@ exactly what stops a whole-tree total being labelled G1.
 | Debug | `pytest -vv -s --log-cli-level=DEBUG --showlocals --tb=long` |
 | Stop at first failure | `pytest -x --tb=short` |
 | **Collection gate** | `pytest --collect-only -q --junitxml=reports/collect-only-junit.xml` |
-| Parallel — **does not start on Windows**, see below | `pytest -n auto` |
+| Parallel — **runs, but is markedly slower on this host**, see below | `pytest -n auto` |
 
 Quote a parametrised node id — the `[` and `]` are shell metacharacters in most shells.
 
@@ -698,18 +765,36 @@ first run after an install is slower — about nineteen seconds here — because
 
 | Command | Expected outcome |
 |---|---|
-| `pytest` | `1065 passed, 3 skipped` |
+| `pytest` | `1093 passed, 3 skipped` |
 | `pytest tests/unit -m unit` | `492 passed, 3 skipped` |
 | `pytest tests/integration -m integration` | `150 passed` |
-| `pytest tests/test_dependency_closure.py` | `72 passed` |
+| `pytest tests/test_dependency_closure.py` | `73 passed` |
 | `pytest tests/test_coverage_gate.py` | `62 passed` |
 | `pytest tests/test_guard_contract.py` | `168 passed` |
-| `pytest tests/test_dashboard_extract.py` | `31 passed` |
-| `pytest tests/test_docs_contract.py` | `90 passed` |
-| `pytest --collect-only -q` | `1068 tests collected`, **zero errors** |
+| `pytest tests/test_dashboard_extract.py` | `44 passed` |
+| `pytest tests/test_docs_contract.py` | `104 passed` |
+| `pytest --collect-only -q` | `1096 tests collected`, **zero errors** |
 | The gate | `Required test coverage of 90% reached. Total coverage: 93.33%`, then the exact gate's `PASSED` |
 
-The counts close on the whole: 492 + 3 + 150 + 72 + 62 + 168 + 31 + 90 = 1068, the collected total above.
+The counts close on the whole: 492 + 3 + 150 + 73 + 62 + 168 + 44 + 104 = 1096, the collected total above.
+
+**Those are warm-tree readings, and a first run in a fresh clone is two passes short of them.** Two tests
+read a result artifact that `.gitignore` keeps out of version control, and each skips rather than fails
+while its artifact has not been produced yet — deliberately, so that this suite stays runnable on its own:
+
+| Skipped on a first run | Reason it prints | What produces the artifact |
+|---|---|---|
+| `tests/test_coverage_gate.py::test_counts_and_files_are_read_from_the_real_report` | `backend/coverage.json is written by the gated coverage command` | the canonical producer block above, through its `--cov-report=json` |
+| `tests/test_docs_contract.py::test_the_published_e2e_census_is_the_retained_streams_own_count` | `e2e/reports/e2e-junit.xml is gitignored and absent in a fresh clone` | `npm test` from `e2e/` |
+
+So a clean clone's first `pytest` reads `1063 passed, 5 skipped`, its
+`pytest tests/test_coverage_gate.py` reads `61 passed, 1 skipped` and its
+`pytest tests/test_docs_contract.py` reads `89 passed, 1 skipped`; the collected total is unchanged at 1068
+and the coverage gate is unaffected, still reading 93.33%. Run the canonical producer block once and the
+end-to-end suite once, and every figure above is reproduced exactly. Note that the plain
+`--cov-fail-under=90` form on its own does **not** clear the first of the two, because it requests no JSON
+report. Those two skips are the one exception to the skip convention stated below: they name an absent
+artifact rather than an unimplemented production feature.
 
 Provenance for the table, in the same form used throughout this document:
 
@@ -765,12 +850,15 @@ the same arrangement, one step each; the root [`README.md`](../../README.md) tab
 > `--reporters=default`, which replaces the configured reporter list. Verified by hashing that file either
 > side of a probe: unchanged.
 
-### On `-n auto`, and why it does not start on Windows
+### On `-n auto`, and why it is not the default
 
-`pytest-xdist` is installed and works — `pytest -n auto` reports the same `1065 passed, 3 skipped`, and
+`pytest-xdist` is installed and works — `pytest -n auto` starts, runs to completion and reports the
+same `1093 passed, 3 skipped`, and
 `-n 2` reaches it in about 9 seconds. It is **not** enabled by default, and on a many-core machine it is
-markedly *slower*: on this host `-n auto` took 166 seconds against roughly 8 seconds serial, because
-process startup dominates a suite this fast. Nothing in the design depends on execution order, so
+markedly *slower*: on this host `-n auto` took 108 seconds against roughly 11 seconds serial, because
+process startup dominates a suite this fast. That figure moves with how busy the host is — separate
+readings on this machine span roughly 107 to 250 seconds — so treat the order of magnitude rather than
+the number as the point. Nothing in the design depends on execution order, so
 parallelism is always safe; it is just rarely worth it. Prefer `-n 4` over `-n auto` if you want it.
 
 **It works for a reason worth knowing, because it did not before.** An xdist worker calls
@@ -1127,8 +1215,11 @@ suites against real symbols.
 | `test_process_tweet_deduplication` | `unit/test_tasks_tweet_processor.py::test_on_status_deduplication` | `app/tasks/tweet_processor.py` implements no deduplication. |
 | `test_generate_response_rate_limiting` | `unit/test_tasks_response_generator.py::test_generate_response_rate_limiting` | Neither `app/tasks/response_generator.py` nor `app/services/llm_service.py` implements rate limiting. |
 
-These are the three skips a green run reports. Each is written out in full, so implementing the feature
-is a matter of removing one decorator.
+These are the three skips a green run reports on a warm tree, and the only three that name a feature. A
+first run in a fresh clone reports two more, which name an absent gitignored artifact rather than a missing
+feature; both are listed under [What each command should print](#what-each-command-should-print) and both
+disappear once the gated coverage command and the end-to-end suite have each run once. Each of the three
+above is written out in full, so implementing the feature is a matter of removing one decorator.
 
 ### Why the 15 were removed rather than migrated
 

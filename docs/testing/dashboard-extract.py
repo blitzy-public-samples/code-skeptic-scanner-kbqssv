@@ -749,7 +749,9 @@ def junit(path: str) -> Dict[str, object]:
 
 
 def partial_stream_reason(stream: Dict[str, object],
-                          collected: Optional[int]) -> Optional[str]:
+                          collected: Optional[int],
+                          witness: str = "collection found",
+                          remedy: str = "Re-run the canonical gated command") -> Optional[str]:
     """Return why ``stream`` is a partial run, or ``None`` when it is not one.
 
     A zero-case stream is already refused as a discovery stub, and a *partial* one is the
@@ -759,16 +761,72 @@ def partial_stream_reason(stream: Dict[str, object],
     those invocations writes the canonical stream. The collected count from the readiness
     artifact is an independent witness of how many cases the suite has, so the two are
     compared and a difference is reported rather than published.
+
+    All three runners have this property, not only pytest: ``frontend/jest.config.js``
+    declares the ``jest-junit`` reporter and ``e2e/playwright.config.ts`` declares the
+    ``junit`` one, so a single-file Jest run and a single-spec Playwright run each write
+    their layer's canonical stream too. Each layer therefore supplies its own witness --
+    the collected count for the backend, the registered test identities for the frontend,
+    the discovered case count for the end-to-end layer -- and this one comparison serves
+    all three.
+
+    :param stream: A parsed result stream, as :func:`junit` returns it.
+    :param collected: What that layer's witness says the suite holds, or ``None`` when the
+        witness artifact is absent, in which case no comparison is made.
+    :param witness: How the message names the witness, so a reader is told which artifact
+        disagreed rather than being left to guess the layer.
+    :param remedy: The command the message tells a reader to re-run.
     """
     if collected is None or not stream.get("available"):
         return None
     tests = int(stream["tests"])   # type: ignore[arg-type]
     if tests == collected:
         return None
-    return ("declares {0} test cases while collection found {1} - this is a partial, "
-            "filtered or single-file run, not the suite. Re-run the canonical gated "
-            "command; every figure taken from it would otherwise understate the suite."
-            .format(tests, collected))
+    return ("declares {0} test cases while {1} {2} - this is a partial, "
+            "filtered or single-file run, not the suite. {3}; every figure taken from it "
+            "would otherwise understate the suite."
+            .format(tests, witness, collected, remedy))
+
+
+#: The marker every deliberately skipped frontend test carries in its own title. The three
+#: page suites build their `it.skip` titles from a `BLOCKED: ...` constant naming the store
+#: export that is missing, so the reason travels inside the name - which is what makes an
+#: unreasoned skip in that stream detectable without an expected count.
+REASONED_SKIP_MARKER = "BLOCKED:"
+
+
+def unreasoned_skip_reason(stream: Dict[str, object]) -> Optional[str]:
+    """Return why ``stream`` is a filtered Jest run, or ``None`` when it is not one.
+
+    The comparison :func:`partial_stream_reason` makes cannot work on a Jest stream. A
+    name filter does not drop the tests it excludes: Jest registers every identity and
+    re-classifies the excluded ones as *skipped*, so the root ``tests`` attribute still
+    declares the full suite and equals every witness a readiness artifact could offer.
+    Measured, ``-t "formatNumber"`` declares 371 cases while reporting 300 skipped and 71
+    passed, and satisfies both a presence check and a case-count equality.
+
+    What does discriminate is the skips themselves. Every deliberate skip in this suite
+    states its reason in its own title through :data:`REASONED_SKIP_MARKER`; a
+    filter-induced skip carries no marker. So a skip without one is reported, and the
+    check needs no expected count - it stays correct as reasoned skips are added or
+    resolved.
+    """
+    if not stream.get("available"):
+        return None
+    skips = stream["skips"]   # type: ignore[index]
+    unreasoned = [case for case in skips
+                  if REASONED_SKIP_MARKER not in str(case.get("name", ""))]
+    if not unreasoned:
+        return None
+    return ("declares {total} skipped cases of which {count} state no "
+            "'{marker}' reason, the first being {example!r} - this is a name-filtered or "
+            "partial run, not the suite. Jest reports the tests a filter excludes as "
+            "skipped, so the case total cannot tell the two apart. Re-run the canonical "
+            "command; every figure taken from this stream would otherwise report "
+            "excluded tests as deliberate skips."
+            .format(total=len(skips), count=len(unreasoned),
+                    marker=REASONED_SKIP_MARKER,
+                    example=str(unreasoned[0].get("name", ""))[:120]))
 
 
 def layer_rows(stream: Dict[str, object],
@@ -1300,10 +1358,14 @@ def render(data: Dict[str, object]) -> str:
     out.append("## 6.4 Readiness")
     out.append("")
     partial = data.get("backend_partial_stream")
+    fe_partial = data.get("frontend_partial_stream")
+    e2e_partial = data.get("e2e_partial_stream")
     collected_matches = (ready.get("available") and be.get("available")
                          and ready.get("collected") == be.get("tests"))
     e2e_matches = (e2e_ready.get("available") and e2e.get("available")
                    and e2e_ready.get("declared_tests") == e2e.get("tests"))
+    fe_identities_match = (fe_ready.get("available") and fe.get("available")
+                           and fe_ready.get("declared_tests") == fe.get("tests"))
     fe_loaded_all = (fe_ready.get("available") and fe_discovered.get("available")
                      and fe_ready.get("count") == fe_discovered.get("count"))
     out.append(table(
@@ -1348,15 +1410,24 @@ def render(data: Dict[str, object]) -> str:
              if fe_ready.get("available") else MISSING],
             ["Frontend test identities registered equal the frontend total in 6.3",
              FRONTEND_READINESS, "equal",
-             str(fe_ready.get("declared_tests")) if fe_ready.get("available") else MISSING,
-             ("PASS" if fe_ready.get("declared_tests") == fe.get("tests") else "FAIL")
-             if fe_ready.get("available") and fe.get("available") else MISSING],
+             ("{0}; the result stream {1}".format(fe_ready.get("declared_tests"), fe_partial)
+              if fe_partial else
+              (str(fe_ready.get("declared_tests")) if fe_ready.get("available")
+               else MISSING)),
+             "FAIL" if fe_partial else
+             (("PASS" if fe_identities_match else "FAIL")
+              if fe_ready.get("available") and fe.get("available") else MISSING)],
             ["E2E tests discovered", E2E_LIST_TESTS, "equals the E2E total in 6.3",
-             "{0} in {1} files".format(e2e_ready.get("declared_tests"),
-                                       e2e_ready.get("declared_files"))
-             if e2e_ready.get("available") else MISSING,
-             ("PASS" if e2e_matches else "FAIL")
-             if e2e_ready.get("available") and e2e.get("available") else MISSING],
+             ("{0} in {1} files; the result stream {2}".format(
+                 e2e_ready.get("declared_tests"), e2e_ready.get("declared_files"),
+                 e2e_partial)
+              if e2e_partial else
+              ("{0} in {1} files".format(e2e_ready.get("declared_tests"),
+                                         e2e_ready.get("declared_files"))
+               if e2e_ready.get("available") else MISSING)),
+             "FAIL" if e2e_partial else
+             (("PASS" if e2e_matches else "FAIL")
+              if e2e_ready.get("available") and e2e.get("available") else MISSING)],
         ]))
     out.append("")
 
@@ -1432,15 +1503,45 @@ def collect() -> Dict[str, object]:
     fe = junit(FRONTEND_JUNIT)
     e2e = junit(E2E_JUNIT)
     ready = backend_readiness()
+    fe_ready = jest_readiness(FRONTEND_READINESS)
+    e2e_ready = listed_count(E2E_LIST_TESTS, r"\.spec\.ts:")
 
-    # A partial backend stream is withdrawn here rather than reported beside the count it
+    # A partial stream is withdrawn here rather than reported beside the count it
     # contradicts, so no panel, KPI or trend figure is built from it and `--require-all`
-    # exits non-zero. The reason travels separately, because the readiness row in 6.4 has
+    # exits non-zero. The reason travels separately, because the readiness rows in 6.4 have
     # to say what went wrong rather than fall back to "not produced".
+    #
+    # One comparison per layer, each against that layer's own witness: the backend's
+    # collected count, the test identities the frontend readiness probe registered, and the
+    # case count end-to-end discovery reports. Every runner here writes its canonical
+    # stream on any invocation, so withdrawing only the backend's left two of the three
+    # able to publish a targeted run's figures as the suite's.
     partial = partial_stream_reason(
         be, ready.get("collected") if ready.get("available") else None)   # type: ignore[arg-type]
     if partial is not None:
         be = {"available": False, "source": BACKEND_JUNIT, "reason": partial}
+
+    fe_partial = partial_stream_reason(
+        fe,
+        fe_ready.get("declared_tests") if fe_ready.get("available") else None,   # type: ignore[arg-type]
+        witness="the readiness probe registered",
+        remedy="Re-run `npm run test:ci` in frontend/")
+    if fe_partial is not None:
+        fe = {"available": False, "source": FRONTEND_JUNIT, "reason": fe_partial}
+
+    e2e_partial = partial_stream_reason(
+        e2e,
+        e2e_ready.get("declared_tests") if e2e_ready.get("available") else None,   # type: ignore[arg-type]
+        witness="discovery found",
+        remedy="Re-run `npm test` in e2e/")
+    if e2e_partial is not None:
+        e2e = {"available": False, "source": E2E_JUNIT, "reason": e2e_partial}
+    # The frontend counterpart, withdrawn on a different witness because Jest's filter
+    # semantics defeat the count comparison above. Same disposition: no panel, KPI or trend
+    # figure is built from a filtered stream, and `--require-all` exits non-zero.
+    unreasoned = unreasoned_skip_reason(fe)
+    if unreasoned is not None:
+        fe = {"available": False, "source": FRONTEND_JUNIT, "reason": unreasoned}
 
     streams = [s for s in (be, fe, e2e) if s.get("available")]
     coverage = backend_coverage()
@@ -1463,10 +1564,13 @@ def collect() -> Dict[str, object]:
         "e2e_junit": e2e,
         "backend_readiness": ready,
         "backend_partial_stream": partial,
+        "frontend_partial_stream": fe_partial,
+        "e2e_partial_stream": e2e_partial,
+        "frontend_unreasoned_skips": unreasoned,
         "backend_coverage_gate": exact_coverage_gate(),
         "frontend_discovery": listed_count(FRONTEND_LIST_TESTS, r"\.test\.tsx?$"),
-        "frontend_readiness": jest_readiness(FRONTEND_READINESS),
-        "e2e_readiness": listed_count(E2E_LIST_TESTS, r"\.spec\.ts:"),
+        "frontend_readiness": fe_ready,
+        "e2e_readiness": e2e_ready,
         "e2e_browser": browser_provenance(),
         "e2e_evidence": e2e_evidence(),
     }

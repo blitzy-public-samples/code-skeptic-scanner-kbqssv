@@ -8,9 +8,17 @@
    Block 4  Components
    Block 5  Mermaid container
    Block 6  Tables
+   Block 7  Deck layout helpers
 
    Stage: 1920 x 1080
    Families: Inter, Space Grotesk, Fira Code
+
+   This file and the inline <style> block of blitzy-deck/executive-summary.html
+   carry the same declarations. The deck is a single self-contained file, so it
+   does not load this one; keeping them in step is manual, and a change to one
+   has to be mirrored in the other. Rule 4's canonical-theme obligation is what
+   this file answers, and Block 7 is what makes it able to render the deck
+   rather than merely resemble it.
    ========================================================================== */
 
 
@@ -276,6 +284,16 @@
   color: var(--blitzy-primary);
 }
 
+/* The arrows sit in a corner that straddles the stage edge: inside it a divider or
+   the closing slide reaches the same violet they are painted in, outside it is the
+   white page margin. The surface-coloured halo separates them from both.
+   See docs/testing/DECISION-LOG.md row D370. */
+
+.reveal .controls .controls-arrow {
+  filter: drop-shadow(0 0 4px var(--blitzy-surface-0))
+    drop-shadow(0 0 2px var(--blitzy-surface-0));
+}
+
 /* Keyboard focus indicator for the navigation arrows, which reveal.js renders
    with `outline: 0`. */
 
@@ -380,6 +398,11 @@
   background: none;
   border-left-color: var(--blitzy-accent-teal);
 }
+
+/* A solid marker rather than the gradient the light slides use, and deliberately so:
+   the gradient begins at `--blitzy-primary`, which reaches only 2.60:1 against the
+   closing slide's navy, below the 3:1 a non-text indicator needs, while this teal
+   reaches 13.17:1. See docs/testing/DECISION-LOG.md row D375. */
 
 .reveal .slides section.slide-title ul > li::before,
 .reveal .slides section.slide-divider ul > li::before,
@@ -762,7 +785,7 @@
   width: 100%;
   max-width: 1560px;
   max-height: 760px;
-  margin: 24px auto 0;
+  margin: 24px 0 0;
   padding: 0;
   background: none;
   border: 0;
@@ -781,18 +804,31 @@
   overflow: visible;
 }
 
+/* `max-width` carries no `!important`, so Mermaid's own inline cap - the diagram's
+   intrinsic width - wins over this one wherever it is the smaller of the two. A
+   diagram is therefore drawn at its authored size or reduced to fit, never enlarged
+   to fill the column, which is what held one label at 14.6px while another reached
+   35.5px in the same deck. `margin: 0` keeps the left edge on the content column.
+   See docs/testing/DECISION-LOG.md rows D372 and D373. */
+
 .reveal .slides section .mermaid svg {
   display: block;
   width: auto;
   height: auto;
-  max-width: 100% !important;
+  max-width: 100%;
   max-height: 760px;
-  margin: 0 auto;
+  margin: 0;
   background: none;
 }
 
 .reveal .slides section .mermaid > * {
-  text-align: center;
+  text-align: left;
+}
+
+/* Generated diagram labels paint in full; the measured label box does not clip them. */
+
+.reveal .slides section .mermaid svg foreignObject {
+  overflow: visible;
 }
 
 /* Generated diagram label typography */
@@ -845,6 +881,15 @@
   background: var(--blitzy-surface-0);
   border: 1px solid var(--blitzy-border);
   text-align: left;
+}
+
+/* A table carries 28px above it and none below, while body copy carries none above,
+   so a paragraph that follows a table met its bottom border at a gap of zero. The
+   same 28px restores the rhythm on both sides.
+   See docs/testing/DECISION-LOG.md row D374. */
+
+.reveal .slides section table + p {
+  margin-top: 28px;
 }
 
 .reveal .slides section table caption {
@@ -906,6 +951,120 @@
 .reveal .slides section table td .kpi-value {
   font-size: 34px;
   letter-spacing: -0.01em;
+}
+
+
+/* --------------------------------------------------------------------------
+   Block 7 - Deck layout helpers
+   Layout-only additions for this deck: heading rows, two-column splits,
+   diagram size modifiers, compact tables and non-list icon-row items.
+   -------------------------------------------------------------------------- */
+
+/* Heading row: icon chip beside a heading */
+
+.reveal .slides section .deck-headrow {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  margin: 0 0 24px;
+}
+
+.reveal .slides section .deck-headrow h2 {
+  margin: 0;
+}
+
+/* Two-column split */
+
+.reveal .slides section .deck-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: start;
+  gap: 48px;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 20px 0 0;
+}
+
+.reveal .slides section .deck-split-table-wide {
+  grid-template-columns: 0.8fr 1.2fr;
+}
+
+.reveal .slides section .deck-col {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.reveal .slides section .deck-col .eyebrow {
+  margin: 0 0 14px;
+}
+
+.reveal .slides section .deck-split .mermaid {
+  max-height: 470px;
+  margin: 0;
+}
+
+.reveal .slides section .deck-split .mermaid svg {
+  max-height: 470px;
+}
+
+.reveal .slides section .deck-split table {
+  margin: 0;
+  font-size: 22px;
+}
+
+.reveal .slides section .deck-split table th {
+  font-size: 20px;
+  padding: 16px 18px;
+}
+
+.reveal .slides section .deck-split table td {
+  padding: 14px 18px;
+}
+
+/* Diagram size modifiers */
+
+.reveal .slides section .mermaid.deck-diagram-sm {
+  max-height: 270px;
+  margin: 20px auto 0;
+}
+
+.reveal .slides section .mermaid.deck-diagram-sm svg {
+  max-height: 270px;
+}
+
+.reveal .slides section .mermaid.deck-diagram-md {
+  max-height: 620px;
+}
+
+.reveal .slides section .mermaid.deck-diagram-md svg {
+  max-height: 620px;
+}
+
+/* Compact table */
+
+.reveal .slides section table.deck-table-compact {
+  font-size: 23px;
+}
+
+.reveal .slides section table.deck-table-compact th {
+  font-size: 21px;
+  padding: 16px 20px;
+}
+
+.reveal .slides section table.deck-table-compact td {
+  padding: 15px 20px;
+}
+
+/* Icon-row items authored as inline elements */
+
+.reveal .slides section .icon-row > .icon-row-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  font-size: 26px;
+  line-height: 1.3;
 }
 
 /* Reduced motion. The reveal configuration keeps the mandated slide transition;

@@ -27,6 +27,13 @@ A partial result stream has to be refused, not published
     exactly like a full one. The collected count in the readiness artifact is the
     independent witness, so the two are compared.
 
+    All three runners behave this way: ``frontend/jest.config.js`` declares the
+    ``jest-junit`` reporter and ``e2e/playwright.config.ts`` declares the ``junit``
+    one, so a single-file Jest run and a single-spec Playwright run overwrite their
+    layer's stream as readily as a filtered pytest run overwrites the backend's.
+    Each comparison is therefore made against that layer's own witness, and the
+    cases below cover all three.
+
 Scope
 -----
 This module imports no ``app`` module and reads no committed artifact: every case
@@ -458,6 +465,314 @@ def test_no_comparison_is_made_without_a_collected_count():
 
     assert extractor.partial_stream_reason(stream, None) is None
     assert extractor.partial_stream_reason({"available": False}, 1015) is None
+
+
+# --------------------------------------------------------------------------- #
+# A filtered frontend result stream: refused on the reason its skips carry.
+#
+# The comparison above cannot see this one. A Jest name filter does not drop the
+# tests it excludes - it registers every identity and re-classifies the excluded
+# ones as skipped - so the root case count still declares the whole suite and
+# equals every witness a readiness artifact could offer. What discriminates is
+# that a deliberate skip in this suite states its reason in its own title.
+# --------------------------------------------------------------------------- #
+
+
+def jest_junit(passed, reasoned_skips=0, filtered_skips=0):
+    """A ``jest-junit`` stream whose skips carry, or do not carry, a reason.
+
+    :param passed: cases reported as passing.
+    :param reasoned_skips: skipped cases whose name carries the ``BLOCKED:`` marker,
+        as an ``it.skip`` in this suite does.
+    :param filtered_skips: skipped cases whose name does not, as a ``-t`` filtered
+        run produces.
+    """
+    cases = []
+    for number in range(passed):
+        cases.append('<testcase classname="src/utils/formatUtils.test.ts" '
+                     'name="formatNumber case {0}" time="0.001" />'.format(number))
+    for number in range(reasoned_skips):
+        cases.append(
+            '<testcase classname="src/pages/Dashboard.test.tsx" '
+            'name="pages/Dashboard renders case {0} - BLOCKED: src/store/index.ts '
+            'exports no useAppDispatch" time="0"><skipped /></testcase>'.format(number))
+    for number in range(filtered_skips):
+        cases.append('<testcase classname="src/store/tweetSlice.test.ts" '
+                     'name="tweetSlice reducer case {0}" time="0">'
+                     "<skipped /></testcase>".format(number))
+    total = passed + reasoned_skips + filtered_skips
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<testsuites name="jest tests" tests="{total}" failures="0" errors="0" '
+        'time="1.000">'
+        '<testsuite name="suite" errors="0" failures="0" skipped="{skipped}" '
+        'tests="{total}" time="1.000">{cases}</testsuite>'
+        "</testsuites>".format(total=total, skipped=reasoned_skips + filtered_skips,
+                               cases="".join(cases))
+    )
+
+
+#: Path constants redirected away for a frontend-only case, so it reads only what it wrote.
+FRONTEND_ISOLATED_CONSTANTS = tuple(
+    name for name in ISOLATED_CONSTANTS if name != "FRONTEND_JUNIT"
+) + ("BACKEND_JUNIT", "BACKEND_COLLECT_ONLY")
+
+
+def _frontend_only(tmp_path, monkeypatch, passed, reasoned_skips=0, filtered_skips=0):
+    """Point the extractor at one synthetic frontend stream and nothing else."""
+    stream = _write(str(tmp_path / "reports" / "jest-junit.xml"),
+                    jest_junit(passed, reasoned_skips, filtered_skips))
+    monkeypatch.setattr(extractor, "FRONTEND_JUNIT", stream)
+    for constant in FRONTEND_ISOLATED_CONSTANTS:
+        monkeypatch.setattr(extractor, constant, str(tmp_path / ("absent-" + constant)))
+    monkeypatch.setattr(extractor, "REQUIRED", (stream,))
+    return stream
+
+
+def test_a_filtered_frontend_stream_is_withdrawn_rather_than_published(
+    tmp_path, monkeypatch
+):
+    """The case a count comparison cannot see: 300 skipped, 24 of them reasoned."""
+    stream = _frontend_only(tmp_path, monkeypatch, passed=71, reasoned_skips=24,
+                            filtered_skips=276)
+
+    data = extractor.collect()
+
+    assert data["frontend_junit"]["available"] is False
+    assert data["frontend_junit"]["source"] == stream
+    assert "declares 300 skipped cases of which 276 state no 'BLOCKED:' reason" in (
+        data["frontend_junit"]["reason"])
+    assert data["frontend_unreasoned_skips"] is not None
+    # Nothing downstream may carry the filtered figures.
+    assert data["trend"]["tests"] == 0
+    assert data["trend"]["skipped"] == 0
+
+
+def test_a_filtered_frontend_stream_is_named_on_stderr_and_is_fatal(
+    tmp_path, monkeypatch, capsys
+):
+    """It parses, declares the full case count, and is still refused and reported."""
+    _frontend_only(tmp_path, monkeypatch, passed=71, reasoned_skips=24,
+                   filtered_skips=276)
+
+    status = extractor.main(["--require-all", "--json"])
+    reported = capsys.readouterr().err
+
+    assert status == 1
+    assert "artifact unusable: frontend result stream" in reported
+    assert "state no 'BLOCKED:' reason" in reported
+
+
+def test_a_frontend_stream_whose_every_skip_is_reasoned_is_accepted(
+    tmp_path, monkeypatch
+):
+    """The positive case, so the refusal above cannot pass by always refusing."""
+    _frontend_only(tmp_path, monkeypatch, passed=347, reasoned_skips=24)
+
+    data = extractor.collect()
+
+    assert data["frontend_junit"]["available"] is True
+    assert data["frontend_junit"]["tests"] == 371
+    assert data["frontend_junit"]["skipped"] == 24
+    assert data["frontend_junit"]["passed"] == 347
+    assert data["frontend_unreasoned_skips"] is None
+    assert data["trend"]["tests"] == 371
+
+
+def test_a_frontend_stream_with_no_skip_at_all_is_accepted(tmp_path, monkeypatch):
+    """A suite that resolves every blocker must not be read as a filtered run."""
+    _frontend_only(tmp_path, monkeypatch, passed=371)
+
+    data = extractor.collect()
+
+    assert data["frontend_junit"]["available"] is True
+    assert data["frontend_junit"]["skipped"] == 0
+    assert data["frontend_unreasoned_skips"] is None
+
+
+def test_an_unavailable_frontend_stream_is_left_as_it_was():
+    """An absent or unparseable stream is already reported; it is not re-refused."""
+    assert extractor.unreasoned_skip_reason({"available": False}) is None
+    assert extractor.unreasoned_skip_reason(
+        {"available": True, "skips": []}) is None
+
+# --------------------------------------------------------------------------- #
+# The same refusal for the other two streams, each against its own witness.
+# --------------------------------------------------------------------------- #
+
+
+#: Per-layer parametrisation of the same contract: the layer, which label ``main`` reports
+#: it under, how the message names that layer's witness, and which readiness row of section
+#: 6.4 has to state the reason instead of falling back to "not produced".
+PARTIAL_LAYERS = (
+    ("frontend", "frontend result stream", "the readiness probe registered",
+     "| Frontend test identities registered equal the frontend total in 6.3 |"),
+    ("e2e", "end-to-end result stream", "discovery found",
+     "| E2E tests discovered |"),
+)
+
+#: Short parametrisation ids, so a case name states the layer under test.
+PARTIAL_LAYER_IDS = [layer[0] for layer in PARTIAL_LAYERS]
+
+
+def frontend_junit(tests, skipped=0):
+    """A ``jest-junit`` stream declaring ``tests`` cases over one suite.
+
+    The root carries no ``skipped`` attribute, which is jest-junit's own shape and the
+    reason :func:`junit` sums that total from the suites.
+    """
+    cases = []
+    for number in range(tests):
+        state = "<skipped />" if number < skipped else ""
+        cases.append(
+            '<testcase classname="src/store/tweetSlice.test.ts" '
+            'name="tweetSlice case {0}" time="0.004">{1}</testcase>'.format(number, state))
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<testsuites name="jest tests" tests="{0}" failures="0" errors="0" time="1.500">'
+        '<testsuite name="src/store/tweetSlice.test.ts" errors="0" failures="0" '
+        'skipped="{1}" timestamp="2026-01-01T00:00:00" time="1.500" tests="{0}">{2}'
+        "</testsuite></testsuites>".format(tests, skipped, "".join(cases))
+    )
+
+
+def e2e_junit(tests, files=1):
+    """A Playwright ``junit`` stream declaring ``tests`` cases over ``files`` suites."""
+    suites = []
+    for suite in range(files):
+        cases = "".join(
+            '<testcase name="harness case {0}" classname="spec{1}.spec.ts" '
+            'time="0.500"></testcase>'.format(number, suite)
+            for number in range(tests // files))
+        suites.append(
+            '<testsuite name="spec{0}.spec.ts" timestamp="2026-01-01T00:00:00" '
+            'hostname="chromium" tests="{1}" failures="0" skipped="0" time="1.000" '
+            'errors="0">{2}</testsuite>'.format(suite, tests // files, cases))
+    return (
+        '<testsuites id="" name="" tests="{0}" failures="0" skipped="0" errors="0" '
+        'time="2.000">{1}</testsuites>'.format(tests, "".join(suites))
+    )
+
+
+def jest_summary(registered):
+    """The summary of a name-filtered Jest run that registered ``registered`` identities."""
+    return (
+        "Test Suites: 24 skipped, 0 of 24 total\n"
+        "Tests:       {0} skipped, {0} total\n"
+        "Snapshots:   0 total\n"
+        "Time:        12.14 s\n"
+        'Ran all test suites with tests matching "__readiness_probe_that_matches_no_test__".\n'
+        .format(registered)
+    )
+
+
+def playwright_listing(discovered, files=1):
+    """The tail of a retained ``playwright test --list --reporter=line`` run."""
+    listed = "".join(
+        "  [chromium] > spec0.spec.ts:{0}:7 > harness case {0}\n".format(number)
+        for number in range(discovered))
+    return "{0}Total: {1} tests in {2} files\n".format(listed, discovered, files)
+
+
+def _one_layer_only(tmp_path, monkeypatch, layer, declared, witnessed):
+    """Point the extractor at one synthetic stream and its own witness artifact.
+
+    Every other path constant is redirected to a file that does not exist, so the case
+    reads only what it wrote and the two streams it is not about stay unavailable.
+    """
+    absent = list(ISOLATED_CONSTANTS) + ["BACKEND_JUNIT", "BACKEND_COLLECT_ONLY"]
+    if layer == "frontend":
+        stream = _write(str(tmp_path / "reports" / "jest-junit.xml"), frontend_junit(declared))
+        witness = _write(str(tmp_path / "reports" / "load-tests.txt"), jest_summary(witnessed))
+        monkeypatch.setattr(extractor, "FRONTEND_JUNIT", stream)
+        monkeypatch.setattr(extractor, "FRONTEND_READINESS", witness)
+        absent = [name for name in absent
+                  if name not in ("FRONTEND_JUNIT", "FRONTEND_READINESS")]
+    else:
+        stream = _write(str(tmp_path / "reports" / "e2e-junit.xml"), e2e_junit(declared))
+        witness = _write(str(tmp_path / "reports" / "list-tests.txt"),
+                         playwright_listing(witnessed))
+        monkeypatch.setattr(extractor, "E2E_JUNIT", stream)
+        monkeypatch.setattr(extractor, "E2E_LIST_TESTS", witness)
+        absent = [name for name in absent
+                  if name not in ("E2E_JUNIT", "E2E_LIST_TESTS")]
+    for constant in absent:
+        monkeypatch.setattr(extractor, constant, str(tmp_path / ("absent-" + constant)))
+    monkeypatch.setattr(extractor, "REQUIRED", (stream, witness))
+    return stream, witness
+
+
+@pytest.mark.parametrize("layer,label,witness,row_prefix",
+                         PARTIAL_LAYERS, ids=PARTIAL_LAYER_IDS)
+def test_a_partial_stream_is_withdrawn_rather_than_published(
+    tmp_path, monkeypatch, layer, label, witness, row_prefix
+):
+    """The frontend and e2e streams get the refusal the backend stream already had."""
+    stream, _witness = _one_layer_only(
+        tmp_path, monkeypatch, layer, declared=6, witnessed=371)
+
+    data = extractor.collect()
+    withdrawn = data[layer + "_junit"]
+
+    assert withdrawn["available"] is False
+    assert withdrawn["source"] == stream
+    assert "declares 6 test cases while {0} 371".format(witness) in withdrawn["reason"]
+    assert data[layer + "_partial_stream"] is not None
+    # Nothing downstream may carry the partial figure.
+    assert data["trend"]["tests"] == 0
+
+
+@pytest.mark.parametrize("layer,label,witness,row_prefix",
+                         PARTIAL_LAYERS, ids=PARTIAL_LAYER_IDS)
+def test_a_partial_stream_is_named_on_stderr_and_is_fatal(
+    tmp_path, monkeypatch, capsys, layer, label, witness, row_prefix
+):
+    """A stream that parses, declares cases and is still wrong is reported and fatal."""
+    _one_layer_only(tmp_path, monkeypatch, layer, declared=6, witnessed=371)
+
+    status = extractor.main(["--require-all", "--json"])
+    reported = capsys.readouterr().err
+
+    assert status == 1
+    assert "artifact unusable: {0}".format(label) in reported
+    assert "declares 6 test cases while {0} 371".format(witness) in reported
+
+
+@pytest.mark.parametrize("layer,label,witness,row_prefix",
+                         PARTIAL_LAYERS, ids=PARTIAL_LAYER_IDS)
+def test_a_complete_stream_is_accepted(
+    tmp_path, monkeypatch, capsys, layer, label, witness, row_prefix
+):
+    """The positive case, so the refusal above cannot pass by always refusing."""
+    _one_layer_only(tmp_path, monkeypatch, layer, declared=371, witnessed=371)
+
+    data = extractor.collect()
+    extractor.main(["--require-all", "--json"])
+    reported = capsys.readouterr().err
+
+    accepted = data[layer + "_junit"]
+
+    assert accepted["available"] is True
+    assert accepted["tests"] == 371
+    assert data[layer + "_partial_stream"] is None
+    assert data["trend"]["tests"] == 371
+    assert label not in reported
+
+
+@pytest.mark.parametrize("layer,label,witness,row_prefix",
+                         PARTIAL_LAYERS, ids=PARTIAL_LAYER_IDS)
+def test_the_partial_reason_is_stated_in_that_layers_readiness_row(
+    tmp_path, monkeypatch, layer, label, witness, row_prefix
+):
+    """6.4 states what went wrong, rather than falling back to "not produced"."""
+    _one_layer_only(tmp_path, monkeypatch, layer, declared=6, witnessed=371)
+
+    rendered = extractor.render(extractor.collect())
+
+    row = [line for line in rendered.split("\n") if line.startswith(row_prefix)]
+    assert len(row) == 1
+    assert "declares 6 test cases while {0} 371".format(witness) in row[0]
+    assert row[0].rstrip().endswith("| FAIL |")
 
 
 def test_the_extractor_runs_on_the_pinned_interpreter():

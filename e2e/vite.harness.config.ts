@@ -170,7 +170,8 @@ const STUB_MODULES: Record<string, string> = {
  * Every value is `undefined`, which is what the same import already carries under
  * Jest and CommonJS, so the importer reaches the same branch here as everywhere
  * else. `TweetCard` in particular stays `undefined`: rendering it is an invalid
- * element type that unmounts the route.
+ * element type, and because nothing in `harness/main.tsx` is an error boundary that
+ * throw unmounts the whole React root rather than only the route.
  *
  * Keys are paths under `frontend/src` without an extension. Values map an export
  * name to an expression evaluated in that module's own scope.
@@ -407,6 +408,21 @@ const CONTROL_PATH_PREFIX = '/__';
 
 /** Placeholder Vite substitutes for the leading NUL of a virtual id in a URL. */
 const NULL_BYTE_URL_PLACEHOLDER = '__x00__';
+
+/**
+ * URL prefix of every request Vite addresses to a module rather than to a path: `/@fs/`,
+ * `/@id/`, `/@vite/` and `/@react-refresh`. A client route never begins with it, so it is the
+ * one prefix {@link isClientRoutePath} can refuse wholesale.
+ */
+const MODULE_URL_PREFIX = '/@';
+
+/**
+ * `Accept` value {@link harnessRouteAcceptNormaliser} substitutes when a client-route request
+ * carries one the SPA fallback would refuse. The single media type the fallback tests for, and
+ * exactly what the document it serves is.
+ */
+const ROUTE_ACCEPT = 'text/html';
+
 
 /**
  * esbuild TypeScript options in string form, which suppresses Vite's own tsconfig
@@ -992,6 +1008,107 @@ function harnessApiFailClosed(): Plugin {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Client-route Accept normaliser                                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Whether the SPA history fallback would refuse a request carrying `accept`.
+ *
+ * These are the three header conditions `connect-history-api-fallback` - the package
+ * `appType: 'spa'` runs the fallback through - tests before it rewrites, restated so the
+ * decision to normalise is made against the same rule that would otherwise refuse:
+ * the header must be present, must not lead with `application/json`, and must name
+ * either `text/html` or a bare wildcard somewhere.
+ *
+ * @param accept - The request's `Accept` header, absent as `undefined`.
+ * @returns `true` when the fallback would pass the request on rather than rewrite it.
+ */
+function fallbackRefusesAccept(accept: string | undefined): boolean {
+  if (typeof accept !== 'string') {
+    return true;
+  }
+  if (accept.indexOf('application/json') === 0) {
+    return true;
+  }
+  return !(accept.includes(ROUTE_ACCEPT) || accept.includes('*/*'));
+}
+
+/**
+ * Whether `pathname` addresses a client route of `harness/main.tsx` rather than a module, an
+ * asset, a control endpoint or an API path.
+ *
+ * Four exclusions, narrowest first. A module URL is refused by prefix. A control endpoint is
+ * refused by prefix. Every {@link HARNESS_API_SURFACE} key is refused by exact match, so an
+ * API path is never mistaken for a route even though none of them carries an extension. What
+ * remains is refused unless its last segment is extension-less, which is what separates
+ * `/tweets` from `/main.tsx`, `/index.html` and every asset request.
+ *
+ * @param method - Request method, already narrowed to `GET` or `HEAD` by the caller.
+ * @param pathname - Request path with query and fragment removed.
+ */
+function isClientRoutePath(method: string, pathname: string): boolean {
+  if (pathname.startsWith(MODULE_URL_PREFIX) || pathname.startsWith(CONTROL_PATH_PREFIX)) {
+    return false;
+  }
+  if (pathname === FAVICON_PATH) {
+    return false;
+  }
+  if (HARNESS_API_SURFACE[`${method} ${pathname}`] !== undefined) {
+    return false;
+  }
+  return path.posix.extname(pathname) === '';
+}
+
+/**
+ * Substitutes {@link ROUTE_ACCEPT} on a client-route request whose own `Accept` would make the
+ * SPA history fallback pass it through to a 404, and passes every other request on untouched.
+ *
+ * `appType: 'spa'` answers a client route by rewriting it to the harness entry, but only for a
+ * request whose `Accept` satisfies {@link fallbackRefusesAccept}. A browser navigation always
+ * does; a client that asks for JSON, asks for a script, or sends no `Accept` at all does not, and
+ * received 404 for `/tweets` while a navigation to the same path received the harness page. The
+ * route table is a property of the harness, not of the requesting client, so the answer is made
+ * the same for all of them.
+ *
+ * Ordered after {@link harnessFilesystemGuard} and {@link harnessApiFailClosed} so a refused
+ * path is never reconsidered here. This middleware only ever rewrites one request header and
+ * always calls `next()`: it serves nothing, so it can neither answer a path those guards
+ * refused nor turn a refusal into a success. A path that reaches the fallback is answered with
+ * the harness entry, which is already served at `/` - no request reaches a file it could not
+ * reach before.
+ *
+ * @see docs/testing/DECISION-LOG.md - row D378.
+ */
+function harnessRouteAcceptNormaliser(): Plugin {
+  return {
+    name: 'harness-route-accept-normaliser',
+    enforce: 'pre',
+
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        const method = req.method ?? '';
+
+        // The fallback rewrites these two methods only; normalising any other would
+        // promise an answer it still would not give.
+        if (method !== 'GET' && method !== 'HEAD') {
+          next();
+          return;
+        }
+
+        const pathname = withoutQuery(req.url ?? '').split('#')[0];
+        if (!isClientRoutePath(method, pathname) || !fallbackRefusesAccept(req.headers.accept)) {
+          next();
+          return;
+        }
+
+        req.headers.accept = ROUTE_ACCEPT;
+        next();
+      });
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /* Configuration                                                              */
 /* -------------------------------------------------------------------------- */
 
@@ -1004,10 +1121,17 @@ export default defineConfig({
   // SPA history fallback: every client route serves the harness entry.
   appType: 'spa',
 
-  // All three custom plugins carry `enforce: 'pre'` and run before `react()`. The
+  // All four custom plugins carry `enforce: 'pre'` and run before `react()`. The
   // filesystem guard is first, so a refused request is never answered by a later
-  // plugin.
-  plugins: [harnessFilesystemGuard(), harnessApiFailClosed(), harnessSourceResolver(), react()],
+  // plugin; the Accept normaliser follows both guards, so it never reconsiders a path
+  // either of them refused.
+  plugins: [
+    harnessFilesystemGuard(),
+    harnessApiFailClosed(),
+    harnessRouteAcceptNormaliser(),
+    harnessSourceResolver(),
+    react(),
+  ],
 
   server: {
     // Host and port are the values resolved in the harness-origin section above,

@@ -9,6 +9,7 @@ import {
   BACKEND_SERVER_ERROR_STATUS,
   CONFIGURED_BASE_URL,
   DEFAULT_GENERATED_RESPONSE,
+  SERIALIZED_FIXED_TWEET_TIMESTAMP,
   configuredBaseBackendHandlers,
   importWithConfiguredBase,
   lastRecordedRequest,
@@ -16,7 +17,7 @@ import {
   unsetBaseBackendHandlers,
 } from '../test-utils/handlers';
 import { server } from '../test-utils/msw-server';
-import { FIXED_TWEET_TIMESTAMP, makeTweet } from '../test-utils/factories';
+import { makeTweet } from '../test-utils/factories';
 
 import { fetchTweetById, fetchTweets, generateResponse } from './api';
 import * as apiModule from './api';
@@ -215,7 +216,10 @@ describe('fetchTweetById', () => {
   it('resolves with the intercepted tweet, whose timestamp arrives as an ISO string', async () => {
     const result = await fetchTweetById('42');
 
-    expect(result).toEqual({ ...makeTweet({ tweet_id: '42' }), timestamp: FIXED_TWEET_TIMESTAMP });
+    expect(result).toEqual({
+      ...makeTweet({ tweet_id: '42' }),
+      timestamp: SERIALIZED_FIXED_TWEET_TIMESTAMP,
+    });
     expect(typeof result.timestamp).toBe('string');
   });
 

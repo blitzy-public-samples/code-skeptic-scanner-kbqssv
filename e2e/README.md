@@ -127,8 +127,20 @@ declares `node>=16`. **1.45.0** is the first release that declares `node>=18`, a
 declared Node ceiling first.
 
 A newer Node also runs this suite: it was last exercised end to end on **Node v22.23.1 / npm 10.9.8**,
-green. Every pinned package declares an open-ended minimum, so a higher Node is compatible. Node 16 is
-what CI declares; anything from 16 upward works locally.
+green. Every package this manifest pins declares an open-ended minimum, so a higher Node is compatible.
+
+**The installed closure is a different statement from the pins, and it no longer reaches down to 16.**
+Audited by walking every installed `package.json` and evaluating `semver.satisfies(target, engines.node)`:
+on **Node 22.23.1** nothing in either tree is excluded, and on **Node 16.20.2** one package here is —
+`node-releases@2.0.53`, `>=18`, arriving transitively through the `browserslist`/`autoprefixer` chain —
+alongside four in `frontend/`, which [`../frontend/TESTING.md`](../frontend/TESTING.md) §1 tabulates. No
+*direct* declaration in either manifest excludes 16, so no pin has drifted; what moved is a floating
+transitive graph underneath frozen declarations, which is what shipping without a lockfile permits. Node
+16.x therefore remains what CI **declares** and what the pins were **selected against**, while Node 22 is
+the runtime this suite is **exercised on** — and the suite has never been executed on Node 16 in this
+environment, so nothing here claims it was. Closing the gap needs a committed lockfile, an `engines`
+field, or a raised ceiling, none of which is available inside the authorized change surface (AAP §0.6.2
+and §0.8.1); `D381` records the measurement and the choice an owner has to make.
 
 ### Install, in this order
 
@@ -351,9 +363,9 @@ back to the registry when the local executable is missing.
 
 **What "executed as written" covers, and what it does not.** The non-interactive forms have been run
 verbatim on this checkout and their outcome is recorded in section 8: `npm test`, `npm run test:list`,
-`npm run browsers:require` (including with `--min-major` and against a deliberately bogus executable),
-`npm run browsers:verify`, `./node_modules/.bin/playwright --version`, and single-spec and
-single-title `playwright test` invocations. The three **interactive** forms — `test:headed`,
+`npm run test:spec`, `npm run browsers:require` (including with `--min-major` and against a
+deliberately bogus executable), `npm run browsers:verify`, `./node_modules/.bin/playwright --version`,
+and single-spec and single-title `playwright test` invocations. The three **interactive** forms — `test:headed`,
 `test:debug` and `report` — have not been exercised here and cannot be, since each waits on a human
 or serves until interrupted. They are listed because they are the right tool while writing a spec,
 not because a run of them is being reported.
@@ -365,8 +377,19 @@ not because a run of them is being reported.
 | `e2e` | `npm test` | The whole suite. Starts the harness, runs 31 tests, stops the harness |
 | repository root | `npm --prefix e2e test` | The same run, without changing directory |
 | `frontend` | `npm run test:e2e` | The same run, chained through `npm --prefix ../e2e run test` |
-| `e2e` | `npm run test:headed` | The same run with a visible browser window. Interactive |
-| `e2e` | `npm run test:debug` | The same run under the Playwright inspector. Interactive |
+| `e2e` | `npm run test:headed` | The same run with a visible browser window. Interactive; writes no result stream |
+| `e2e` | `npm run test:debug` | The same run under the Playwright inspector. Interactive; writes no result stream |
+
+**`npm test` is the only writer of the canonical result stream, and that is deliberate.**
+`playwright.config.ts` declares the JUnit reporter, so any unqualified invocation writes
+`reports/e2e-junit.xml` — including one that runs a single spec, and one a human abandons half way
+through the inspector. The count left behind is non-zero and smaller than the suite's, which no
+presence or non-zero check can tell apart from a full run, so `test:spec`, `test:headed` and
+`test:debug` each pin `--reporter=line` and write no stream at all. The consumers compare as well as
+check: `dashboard-extract.py` and the workflow's e2e verify step both require the stream's case count
+to equal the count `reports/list-tests.txt` discovered, and
+`backend/tests/test_docs_contract.py::test_the_published_e2e_census_is_the_retained_streams_own_count`
+withdraws itself by name rather than failing when the two disagree. See `D403`.
 
 **The CI form is the first one**: `.github/workflows/ci.yml` sets `working-directory: e2e` and runs
 `npm test`. That resolves `playwright` through `node_modules/.bin`, so the runner is the version this
@@ -399,10 +422,16 @@ listing. Use one of the `e2e`-local forms when you need to pass anything.
 | Run from | Command | Does |
 | --- | --- | --- |
 | `e2e` | `npm run test:list` | Lists the 31 tests and exits. The collection check for this layer; needs no browser. Use it rather than a bare `playwright test --list`, which writes the configured reporters and replaces your last result stream with an all-skipped stub |
-| `e2e` | `npm test -- tests/dashboard.spec.ts` | One spec |
-| `e2e` | `npm test -- -g "renders an empty tweet-list container"` | One test by title |
+| `e2e` | `npm run test:spec -- tests/dashboard.spec.ts` | One spec. Reports to the console and leaves the canonical result stream alone |
+| `e2e` | `npm run test:spec -- -g "renders an empty tweet-list container"` | One test by title, same protection |
 | `e2e` | `npm run test:headed -- -g "<title>"` | One test, visible |
-| repository root | `npm --prefix e2e test -- -g "<title>"` | The same, without changing directory. The `--` is required: without it npm consumes the flag and the whole suite runs |
+
+Use `test:spec` rather than `npm test -- <path>` for anything narrower than the whole suite. Both run
+the same pinned runner over the same config; the difference is the reporter. `npm test -- <path>` writes
+`reports/e2e-junit.xml` with only the cases it ran, which is a partial stream in the place the suite's
+own results belong — the defect that made a documented single-spec command turn the *backend* suite red
+(`D403`). `test:spec` pins `--reporter=line`, so the last full run's evidence survives your targeted one.
+| repository root | `npm --prefix e2e test -- -g "<title>"` | The same, without changing directory. The `--` is required: without it npm consumes `-g` and the title's remaining words reach Playwright as **positional file filters**, so the run fails with `Error: No tests found. Make sure that arguments are regular expressions matching test files.` — and, because the configured reporters still run, it overwrites `reports/e2e-junit.xml` with a zero-case stub. Re-run `npm test` to restore the stream |
 
 Every form goes through a `package.json` script, so the runner is always
 `e2e/node_modules/.bin/playwright`; anything after `--` is passed straight to it.
@@ -419,9 +448,14 @@ by default, or at the port your `CLONE_INDEX` / `E2E_PORT` / `HARNESS_PORT` reso
 foreground until interrupted. You do **not** need this to run the suite; `playwright.config.ts` starts
 and stops its own instance.
 
-Note when probing it by hand: request a route with an HTML `Accept` header. Vite's history fallback is
-`Accept`-sensitive, so `curl http://127.0.0.1:4173/tweets` with a default `Accept: */*` returns 404
-while a browser gets 200. See section 6.
+Probing it by hand needs no particular `Accept` header: every client route answers 200 `text/html` to a
+GET or a HEAD whatever the request asks for, including a request that asks for JSON and a request that
+sends no `Accept` at all. `harness-route-accept-normaliser` in `vite.harness.config.ts` is what makes
+that true; section 6 explains what it normalises and why.
+Before the normaliser existed the fallback was `Accept`-sensitive, and the boundary sat where the
+header was *missing* rather than where it was broad: `Accept: text/html` and `Accept: */*` reached the
+harness entry while `Accept: application/json` and a request carrying no `Accept` at all both got a 404.
+That is why the normaliser is there, and it is recorded in `D391`.
 
 ### Reading the results
 
@@ -472,6 +506,16 @@ subjects are extension-less **files**, not directories:
 | `/analytics` | `TrendCharts` | `frontend/src/components/Analytics` | default | [`tests/analytics.spec.ts`](./tests/analytics.spec.ts) |
 | `/configuration` | `TwitterAPISettings` | `frontend/src/components/Configuration` | default | [`tests/configuration.spec.ts`](./tests/configuration.spec.ts) |
 
+A fifth `<Route>` sits last in the table and matches only when none of those four does. It renders
+`UnroutedPath`, which names the requested path, lists the four that exist, and says to add a `<Route>`
+to `harness/main.tsx`; the element carries `data-harness-error="harness-route-not-defined"` and
+`role="status"`, so it is queryable as well as readable. It exists because an unmatched path used to
+render an empty `<main>` — indistinguishable on screen from `/tweets`, whose component legitimately
+renders an empty container, so the two produced byte-identical screenshots and a mistyped URL looked
+like a working route. `<Routes>` renders one match, so this entry never appears alongside a routed
+component and changes nothing about the four workspaces above. It also catches an over-long path such
+as `/tweets/extra-segment`, which matches no entry and must not quietly render `/tweets`.
+
 Three to six tests per route spec, plus fifteen in `isolation.spec.ts` — thirty-one in total, **none of
 them a skip**, so a green run reads **31 passed, 0 skipped**. Which test pins which behaviour is
 recorded in
@@ -488,10 +532,15 @@ object per render would re-fire the effects that depend on it.
 This is a property of the components, and the specs assert it rather than working around it:
 
 - **`/`** renders its heading and nothing else. Every member of a non-empty tweet collection is
-  rendered by `TweetCard`, which is defined nowhere and therefore `undefined` — an invalid element type
-  that unmounts the route. Specs fulfil the collection request with `[]`; the non-empty
+  rendered by `TweetCard`, which is defined nowhere and therefore `undefined` — an invalid element
+  type. Nothing in the harness, in the component or anywhere in `frontend/src` is an error boundary,
+  so that throw does not merely unmount the route: it unmounts the **whole React root**, taking the
+  `<main>` landmark `harness/main.tsx` renders above `<Routes>` with it and leaving `#root` empty.
+  React's unmount then runs the component's own cleanup, which clears the 30-second poll — and with
+  the component gone nothing reinstalls it, so the route cannot refetch its way back. Specs fulfil
+  the collection request with `[]`; the non-empty
   [`fixtures/tweets.json`](./fixtures/tweets.json) exists only for the one test that documents this
-  ceiling.
+  ceiling, and that test asserts each of those consequences.
 - **`/analytics`** renders its heading and its `<canvas>` on every response that does not opt in.
   `harness/stubs/analyticsService.ts` rejects by default, which holds the component on its
   caught-failure branch and keeps it from constructing a chart. Three of the four tests in
@@ -499,9 +548,11 @@ This is a property of the components, and the specs assert it rather than workin
 
   The fourth opts in, by fulfilling the trend route with the stub's `x-harness-forward-trend-series`
   header, and asserts the opposite: the component reaches `new Chart(...)`, Chart.js reports a chart
-  part no module registered, the error escapes the passive effect uncaught, and the route comes down.
-  That is why forwarding is opt-in rather than the default — it is destructive, and only the test that
-  asserts the destruction wants it. It is an active test, not a skip: this is the **only** layer where
+  part no module registered, the error escapes the passive effect uncaught, and — with no error
+  boundary anywhere above it — the **whole React root** comes down, landmark included, `#root`
+  emptied, and no route reachable afterwards without a document reload. That is why forwarding is
+  opt-in rather than the default — it is destructive at page scope, not route scope, and only the
+  test that asserts the destruction wants it. It is an active test, not a skip: this is the **only** layer where
   the missing-`Chart.register` ceiling can be observed at all, because a real browser hands the
   component a live 2D context, where jsdom fails earlier on the context itself. The jsdom side is
   covered by `frontend/src/components/Analytics.test.tsx`, which substitutes the constructor instead.
@@ -660,10 +711,31 @@ import it may already be the aliased absolute path rather than `@/components/X`,
 **both** forms. If you add a subject and match only the bare specifier, it will resolve in some import
 positions and not others.
 
-**Vite's history fallback is `Accept`-sensitive.** A route request carrying `Accept: */*` — the default
-for `curl` and most scripted clients — returns 404, while the same URL in a browser returns 200 and the
-harness entry. When probing by hand, send `Accept: text/html`. A 404 from `/tweets` is almost never the
-harness being broken.
+**Vite's history fallback is `Accept`-sensitive, and `harness-route-accept-normaliser` is what hides
+that.** `appType: 'spa'` answers a client route through `connect-history-api-fallback`, which passes a
+request straight on to a 404 unless its `Accept` header is present, does not lead with
+`application/json`, and names either `text/html` or a bare wildcard. A browser navigation always
+qualifies; a client asking for JSON, asking for a script, or sending no `Accept` at all does not, so
+`/tweets` used to answer 404 to one caller and the harness entry to another. The normaliser substitutes
+`text/html` on a GET or HEAD request for an extension-less path that is not a module URL, a control
+path, `/favicon.ico` or one of the three `HARNESS_API_SURFACE` keys, so the route table now answers the
+same way to every client. It rewrites one header and never responds, and it is ordered after both
+guards, so a path either of them refuses is never reconsidered — the 403s and 503s in section 5 are
+unaffected. A 404 from `/tweets` is now worth investigating rather than dismissing.
+
+For the record, this is the boundary as it was measured on `/tweets` **before** the normaliser, and it
+is why the plugin exists rather than a documented workaround:
+
+| Request header | Status, pre-normaliser |
+|---|---|
+| `Accept: text/html` | 200 |
+| `Accept: */*` — curl's default, and most scripted clients | 200 |
+| `Accept: application/json` | 404 |
+| no `Accept` header at all | **404** |
+
+The last row was the one that caught people, because the client that produces it does not look
+unusual: PowerShell 5.1's `Invoke-WebRequest -UseBasicParsing` sends only `user-agent`, `host` and
+`connection`, and `curl -H "Accept:"` suppresses the header outright. All four rows now answer 200. See `D378` for the plugin and `D391` for the measurement.
 
 **`frontend/tsconfig.json` points at a `tsconfig.node.json` that does not exist**, and that dangling
 reference breaks every `.tsx` transform under a stock Vite server. The harness supplies

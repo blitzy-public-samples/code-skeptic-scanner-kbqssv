@@ -15,6 +15,17 @@
 'use strict';
 
 /*
+ * No worker-count computation lives here any more. Capping Jest's default at four was measured and
+ * found insufficient - the teardown advisory still appeared on two runs in three, because it is
+ * decided by scheduling latency inside a fixed 500 ms window rather than by how many children there
+ * are - so the run is put in band instead, below. A cap is subsumed by that: one worker is under any
+ * ceiling, and no pool is created at all.
+ *
+ * @see frontend/TESTING.md - the measurement, in section 1.
+ * @see docs/testing/DECISION-LOG.md - row D366 for the delivered value, D405 for the cap it replaces.
+ */
+
+/*
  * Timezone pin, set in the main process before any worker is spawned: every suite renders local date
  * parts in UTC.
  *
@@ -43,7 +54,9 @@ const TSCONFIG = {
  *
  * `<testcase classname>` carries the left side and `<testcase name>` the right, so the two joined by ` > `
  * are the string `currentTestId()` returns and stamps on every intercepted-request and contract-violation
- * record. The right side is also Jest's own `currentTestName`, so it is a valid `jest -t` pattern verbatim.
+ * record. The right side is also Jest's own `currentTestName`. `jest -t` is `testNamePattern`, a regular
+ * expression rather than a literal, so an emitted name is usable as a `-t` pattern once its regex
+ * metacharacters are escaped - most of these names carry the parentheses their `describe` title uses.
  *
  * `jest-junit` builds its `{filepath}` with `path.relative`, so on Windows it arrives with backslashes;
  * `{title}` is the leaf title alone and `{classname}` the ancestor titles joined by `ancestorSeparator`.
@@ -72,6 +85,29 @@ module.exports = {
 
   /* Registers the jest-dom matchers and the msw request-interception lifecycle. */
   setupFilesAfterEnv: ['<rootDir>/src/test-utils/setup-jest.ts'],
+
+  /*
+   * Worker count and per-test deadline. Both are declared here rather than on a script, so that every
+   * entry point - `npm test`, `test:coverage`, `test:ci`, `test:load` and a bare `npx jest` - inherits
+   * the same two numbers, and a run's outcome does not depend on how many cores the host has.
+   *
+   * `maxWorkers: 1` puts the run in Jest's in-band path (`shouldRunInBand` takes it as soon as
+   * `maxWorkers <= 1` and no `workerIdleMemoryLimit` is set), so no child process is spawned at all.
+   * That is a determinism guarantee rather than a throughput choice: a worker pool is torn down with a
+   * fixed 500 ms grace period per child that no configuration key can extend, and a child that misses
+   * it is force-killed and reported as a teardown leak - an outcome decided by how contended the host
+   * is, not by anything a test does. Nothing in this suite requires a worker: `--detectOpenHandles`
+   * reports no open handle, `setup-jest.ts` closes the msw server in `afterAll`, and Jest gives each
+   * test file its own module registry and jsdom environment in band exactly as it does in a worker.
+   *
+   * `testTimeout: 30000` replaces Jest's 5 s default. The component suites drive `user-event` through
+   * several `waitFor` boundaries, and a per-test deadline has to hold on a loaded host and not only an
+   * idle one, so it is set far above the cost of the slowest test rather than near it.
+   *
+   * @see docs/testing/DECISION-LOG.md - row D366 for the sizing of both numbers and what was rejected.
+   */
+  maxWorkers: 1,
+  testTimeout: 30000,
 
   /*
    * Two transformers, matched in declaration order: the extension-less component modules,

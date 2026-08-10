@@ -65,10 +65,14 @@ npm install
 ```
 
 **`npm ci` will not work here, and that is deliberate.** No `package-lock.json` is committed (`D93`,
-`D159`), and `npm ci` refuses to run without a lockfile, so the CI workflow uses `npm install` too. A
-lockfile `npm install` writes locally is not ignored either — it stays visible to `git status` and to
-review (`D144`) — so decide deliberately whether to commit it. The reproducibility cost of shipping
-without one is real and is the first entry in §[10](#10-suggested-next-tasks).
+`D159`), and `npm ci` refuses to run without a lockfile, so the CI workflow uses `npm install` too. The
+lockfile that `npm install` writes is **ignored**, at the anchored path `frontend/package-lock.json`
+(`D380`): with the decision not to commit it standing, it is output of a documented command rather than
+a deliverable, and leaving it untracked-and-unignored meant every documented install dirtied a clean
+tree. The rule is anchored rather than bare so a lockfile committed at any other path stays visible,
+and `git add -f frontend/package-lock.json` is what reverses the decision — deliberately, which is the
+point. The reproducibility cost of shipping without one is real, is what `D381` measures, and is the
+first entry in §[10](#10-suggested-next-tasks).
 
 Install the `frontend` tree **before** the `e2e` tree: the harness aliases React out of
 `frontend/node_modules` so exactly one copy exists (`D48`). See [`../e2e/README.md`](../e2e/README.md).
@@ -82,14 +86,33 @@ Install the `frontend` tree **before** the `e2e` tree: the harness aliases React
   caret range can admit a release with an advisory against it. This is a known, escalated residual,
   not something to fix on your own initiative — `D171` records it and `D172` records the gate that
   keeps it from widening quietly.
-- **`EBADENGINE` for `postcss-load-config@6.0.1` — on Node 16 only.** That package declares
-  `engines.node: ">= 18"` and arrives transitively through the floating `tailwindcss ^3.3.2`. It is
-  pre-existing, has nothing to do with the test stack, and is deliberately not fixed. On Node ≥18 it
-  does not appear at all, which is why the Node v22.23.1 verification named above saw no `EBADENGINE`
-  line.
+- **`EBADENGINE` on Node 16 — four packages in this tree, one more under `e2e/`.** Every one arrives
+  **transitively**: no direct declaration in either manifest excludes Node 16, and on Node v22.23.1
+  none of them is excluded at all, which is why the verification named above saw no `EBADENGINE`
+  line. Audited by walking every installed `package.json` and evaluating
+  `semver.satisfies(target, engines.node)`:
 
-An `EBADENGINE` warning naming a **test** package is a different matter: it means a pin has drifted
-and the toolchain no longer matches the runtime. Investigate that one.
+  | Package | Declares | Arrives through |
+  |---|---|---|
+  | `@testing-library/dom@10.4.1` | `>=18` | `@testing-library/user-event@14.6.3`, whose `^14.4.3` is a frozen baseline range (`D171`); `@testing-library/react@14.3.1` correctly resolves its own `@testing-library/dom@9.3.4`, which declares `>=14` |
+  | `@inquirer/external-editor@1.0.3` | `>=18` | `msw@1.3.5` → `inquirer@8.2.7` |
+  | `postcss-load-config@6.0.1` | `>= 18` | the floating `tailwindcss ^3.3.2`, resolving `3.4.19`, whose own range is `^4.0.2 \|\| ^5.0 \|\| ^6.0` |
+  | `node-releases@2.0.53` | `>=18` | the `browserslist`/`autoprefixer` chain — present in `frontend/` and in `e2e/` |
+
+  **The `msw` row is the one worth reading twice.** `msw` is pinned at `1.3.5` *because* the 2.x line
+  requires `node>=18` (`D180`), and its own transitive tree now reaches a `>=18` package anyway. So the
+  pin still does what it was chosen for — the direct dependency supports Node 16 — while the installed
+  closure no longer does. That is a property of shipping without a lockfile, not of the pin.
+
+  **What this means in practice.** The pins are all still correct and none has drifted: an
+  `EBADENGINE` warning naming a **direct** test dependency would mean a pin no longer matches the
+  runtime, and there is none. What the table shows instead is that a floating transitive graph has
+  moved underneath four frozen declarations. It is not fixable from inside this file's authorized
+  surface — AAP §0.8.1 scopes `frontend/package.json` to devDependencies and test scripts, so no
+  `engines` field and no `overrides` block may be added here, and AAP §0.6.2 decides against
+  committing a lockfile, which is the only thing that would freeze the graph. `D381` records the
+  measurement, the three ways out and which of them an owner has to choose; the root
+  [`README.md`](../README.md) §Suggested next tasks carries the same ask.
 
 ### The seven commands
 
@@ -125,13 +148,77 @@ ad-hoc invocations, so the command you run locally is the command CI runs.
 
 The `-t` pattern matches the full test name — every enclosing `describe` title and the leaf title,
 joined by single spaces. That is exactly the string the JUnit report puts in `<testcase name>`
-(§[7](#7-coverage-gates-and-artifacts)), so you can copy a name out of a failing report and pass it
-straight to `-t`.
+(§[7](#7-coverage-gates-and-artifacts)), so a failing report tells you what to select on.
+
+**Escape it first.** `-t` is `testNamePattern`, a *regular expression*, not a literal — so a name copied
+out of a report is only a usable pattern once its regex metacharacters are escaped. Most of this suite's
+names carry the parentheses their `describe` title uses, and unescaped parentheses are read as a capture
+group, which selects nothing:
+
+```bash
+# Selects nothing: the parentheses are a capture group, and Jest reports every test skipped.
+npm test -- -t "RealTimeFeed (src/components/Dashboard) renders the feed heading inside the wrapper element"
+
+# Selects exactly that test.
+npm test -- -t "RealTimeFeed \(src/components/Dashboard\) renders the feed heading inside the wrapper element"
+
+# Needs no escaping, because the name carries no metacharacter.
+npm test -- -t "does not refetch at 29999 ms"
+```
+
+A leaf title is usually the shorter and safer thing to select on, since the enclosing `describe` is where
+the parenthesised file path lives. The escaping requirement is `D367`.
+
+One thing a targeted run costs you: the `jest-junit` reporter is declared in
+[`jest.config.js`](./jest.config.js), so a one-file or `-t` filtered run writes `reports/jest-junit.xml`
+with only the cases it ran. That is a **partial** stream sitting where the suite's results belong, and it
+is refused rather than published — `docs/testing/dashboard-extract.py` compares it against the test
+identities `test:load` registered and withdraws it by name, exiting 1 under `--require-all`. If you see
+that message, `npm run test:ci` reproduces the whole stream. See `D404`.
+
+### Parallelism
+
+`jest.config.js` declares `maxWorkers: 1`, so there is no pool. That is the end state of two attempts at
+the same advisory, and the order matters if you are thinking of raising it. Capping Jest's default —
+`Math.max(1, Math.min(4, os.cpus().length - 1))`, one worker per core less one but never more than four —
+was implemented and measured first, and on this 64-core host it did take `npm run test:ci` from 65 s
+**with** the *"a worker process has failed to exit gracefully"* warning to 22–27 s without it across three
+runs. But the warning came back on two runs in three once the host was loaded, because it is not a
+function of worker count: a pool is torn down with a fixed 500 ms grace period per child, so whether a
+child makes it is decided by OS scheduling. One worker removes the pool and the whole class of outcome,
+and it subsumes the cap — one is below any ceiling. There are 24 suites, and every surplus worker still
+boots a jsdom environment and an msw `setupServer` whose teardown is what printed the warning. See `D405`
+for the cap and `D366` for the value the file carries.
 
 ### Snapshots
 
 There are none, anywhere, and none should be added. Nothing is ever written back to the tree
 implicitly, which is what makes `--ci` safe to use as the default rather than a special mode.
+
+### Determinism: one process, one deadline
+
+Two keys in [`jest.config.js`](./jest.config.js) exist so that a run's *outcome* does not depend on the
+machine it runs on. They are in the config rather than on a script, so `npm test`, `test:coverage`,
+`test:ci` and a bare `npx jest` all inherit them and the command you run locally is the command CI runs.
+
+| Key | Value | What it buys |
+| --- | --- | --- |
+| `maxWorkers` | `1` | No child process. Jest takes its in-band path as soon as `maxWorkers <= 1`, so a worker pool is never created and never has to be torn down. |
+| `testTimeout` | `30000` | Headroom over Jest's 5 s default for the component suites, which drive `user-event` through several `waitFor` boundaries. |
+
+Neither is a throughput decision, and the worker one is worth understanding before you change it. Jest
+ends a worker pool by sending each child a stop message and giving it a **fixed 500 ms** to exit; a child
+that misses that window is killed and reported as `A worker process has failed to exit gracefully and
+has been force exited`. The delay is a constant inside `jest-worker` — no configuration key extends it —
+so on a contended host that warning is decided by how quickly the OS schedules a child, not by anything
+a test does. Running in band removes the pool, and with it that whole class of outcome.
+
+It is not covering for a leak. `--detectOpenHandles` reports none,
+[`src/test-utils/setup-jest.ts`](./src/test-utils/setup-jest.ts) closes the msw server in `afterAll`, and
+Jest gives each test file its own module registry and its own jsdom environment in band exactly as it does
+in a worker — so per-file isolation is the same either way, which is why the suite passes in reverse file
+order. Raise `maxWorkers` and you reintroduce a load-dependent warning; the sizing of both numbers, and
+what was rejected, is `D366`.
 
 ## 2. What is under test, and the one principle that explains the assertions
 
@@ -640,10 +727,10 @@ before quoting any of it — a number that outlives the tree it was taken on is 
 | Command | `npm run test:ci` from `frontend/`, which is `jest --ci --coverage --watchAll=false` |
 | Runner | `jest` 29.7.0 with `ts-jest` 29.4.12 and `jest-environment-jsdom` 29.5.0, installed from [`package.json`](./package.json) |
 | Runtime | Node v22.23.1 / npm 10.9.8, Windows |
-| Artifacts | `frontend/reports/jest-junit.xml` for the counts (root `tests="371" failures="0" errors="0"`, 24 `<testsuite>` children) and `frontend/coverage/coverage-summary.json` for every percentage in the table |
+| Artifacts | `frontend/reports/jest-junit.xml` for the counts (root `tests="372" failures="0" errors="0"`, 24 `<testsuite>` children) and `frontend/coverage/coverage-summary.json` for every percentage in the table |
 | Commit | Recorded by the tooling, not written here: `python ../docs/testing/dashboard-extract.py` prints the branch and commit of the tree it read in its §1.0 block, so re-run it beside the suite and quote that rather than a hash copied into prose |
 
-Suites: 3 skipped, 21 passed, 21 of 24 total. Tests: 24 skipped, 347 passed, 371 total. 0 snapshots.
+Suites: 3 skipped, 21 passed, 21 of 24 total. Tests: 24 skipped, 348 passed, 372 total. 0 snapshots.
 
 The 24 skips are the three page suites that cannot mount, and every one of them carries its own
 blocker reason — the skip is per test, not a blanket `describe.skip`, so a skipped identity still
@@ -699,7 +786,9 @@ back to a source location and to the requests that test made:
 - `<testsuite name>` and `<testcase classname>` — the `rootDir`-relative test file with forward slashes,
   e.g. `src/store/tweetSlice.test.ts`.
 - `<testcase name>` — every enclosing `describe` title plus the leaf title, joined by single spaces.
-  Valid as a `jest -t` pattern verbatim.
+  It is Jest's own `currentTestName`, so it is the string to select a test by; because `-t` is a regular
+  expression, escape its metacharacters before using it as a pattern
+  (§[1](#targeted-runs), `D367`).
 - `<testcase file>` — the same path in the platform's own separator style, which is what CI annotators
   read.
 
@@ -745,11 +834,14 @@ jsdom says so before Chart.js looks anything up in its registry — so that noti
 is what the real-library case here observes, and this suite asserts exactly that. The E2E layer has a
 browser and therefore a context, and its fourth test opts into `e2e/harness/stubs/analyticsService.ts`'s
 `x-harness-forward-trend-series` header so a well-formed series reaches `renderCharts`. It then asserts
-the unregistered-part error, that it arrived as an uncaught page error, and that the route came down.
+the unregistered-part error, that it arrived as an uncaught page error, and that the **whole React root**
+came down with it — the harness's `<main>` landmark included and `#root` left empty, because no error
+boundary exists anywhere above the component.
 
 So neither layer hides the other's gap and neither should be described as covering the other's part:
 **jsdom pins the context notice, the browser pins the registration failure.** Forwarding stays opt-in
-because it is destructive — it unmounts the route — and only the test asserting the destruction wants it (`D327`).
+because it is destructive at page scope rather than route scope, and only the test asserting the
+destruction wants it (`D327`).
 
 ### The four chart paths, kept apart
 
@@ -874,7 +966,7 @@ surface (`D193`).
 other.
 
 `npm run test:list` (`jest --listTests`) is **discovery only**. It walks `roots` against `testMatch` and prints the files
-it would run — **23** on this run, exit 0. It loads nothing, transforms nothing and resolves no import,
+it would run — **24** on this run, exit 0, the same 24 the readiness probe below loads. It loads nothing, transforms nothing and resolves no import,
 so it cannot tell you the suite is loadable: a file with a broken import or a failing transform is
 listed exactly like a healthy one.
 
@@ -887,16 +979,19 @@ jest --ci --watchAll=false --runInBand --reporters=default -t "__readiness_probe
 
 Jest can only know a test's name after it has transformed the file, executed it at module scope and run
 its `describe` callbacks, so this transforms and loads all **24** files, evaluates every module in their
-import graphs, registers all **371** test identities, then runs zero test bodies. On this run it exits
+import graphs, registers all **372** test identities, then runs zero test bodies. On this run it exits
 **0** in about 13 seconds reporting `Test Suites: 24 skipped, 0 of 24 total` and
-`Tests: 371 skipped, 371 total`, retained at `frontend/reports/load-tests.txt`, which the dashboard
+`Tests: 372 skipped, 372 total`, retained at `frontend/reports/load-tests.txt`, which the dashboard
 extractor reads and requires.
 
-Two flags earn their place. `--runInBand` keeps it in one process, which is what keeps the retained output
-clean — the worker pool otherwise adds a teardown warning that has nothing to do with readiness.
+Two flags earn their place. `--runInBand` states the single-process run on the command line rather than
+inheriting it: `maxWorkers: 1` in [`jest.config.js`](./jest.config.js) already puts every run in that path
+(§[1](#determinism-one-process-one-deadline)), and the flag keeps this probe correct if that key is ever
+raised — a worker pool would otherwise add a teardown warning to the retained output that has nothing to do
+with readiness.
 `--reporters=default` **replaces** the configured reporter list, and without it this probe is a real Jest
 run whose `jest-junit` reporter overwrites `reports/jest-junit.xml` with its own all-skipped stream: a file
-declaring `tests="371" failures="0"` in which every case is skipped, which no consumer can distinguish
+declaring `tests="372" failures="0"` in which every case is skipped, which no consumer can distinguish
 from a run in which nothing executed — the same zero-information stub `pytest --collect-only` and
 `playwright test --list` each write. Measured both ways: with the flag, that file's SHA-256 is unchanged
 either side of a probe; without it, it changed.

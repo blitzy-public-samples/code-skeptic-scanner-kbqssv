@@ -7,13 +7,16 @@
        must not be a second: a browser enforces the intersection of every
        Content-Security-Policy it is given, so an added tag can only contradict this one.
 
-       `default-src 'none'` blocks every destination not named here, so only the pinned
-       jsDelivr origin and the Google Fonts pair may serve this file anything. reveal.js and
+       `default-src 'none'` blocks every destination not named here, so only this file's own
+       origin, the pinned jsDelivr origin and the Google Fonts pair may serve this file
+       anything. reveal.js and
        Mermaid inject style elements at runtime and this deck's own style and bootstrap script
        are inline, so those two directives admit 'unsafe-inline'. `img-src data:` covers the
        inline favicon and `font-src data:` a font a stylesheet may inline. `connect-src` names
-       the jsDelivr origin the scripts themselves come from, which is what developer tools
-       follow for their sourceMappingURL comments; this file issues no fetch and no XHR.
+       'self' plus the jsDelivr origin the scripts themselves come from, which is what
+       developer tools follow for their sourceMappingURL comments; this file issues no fetch
+       and no XHR of its own, and 'self' keeps a reader's own same-origin probe - of the
+       canonical theme copy beside this file, for instance - from being refused.
        `form-action 'none'` blocks submission and `base-uri 'none'` blocks base-tag injection.
 
        `frame-ancestors` is deliberately absent: a meta-delivered policy ignores it, and
@@ -31,7 +34,7 @@
     style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com;
     font-src https://fonts.gstatic.com data:;
     img-src 'self' data:;
-    connect-src https://cdn.jsdelivr.net; base-uri 'none'; form-action 'none'" />
+    connect-src 'self' https://cdn.jsdelivr.net; base-uri 'none'; form-action 'none'" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
@@ -331,6 +334,16 @@
       color: var(--blitzy-primary);
     }
 
+    /* The arrows sit in a corner that straddles the stage edge: inside it a divider or
+       the closing slide reaches the same violet they are painted in, outside it is the
+       white page margin. The surface-coloured halo separates them from both.
+       See docs/testing/DECISION-LOG.md row D370. */
+
+    .reveal .controls .controls-arrow {
+      filter: drop-shadow(0 0 4px var(--blitzy-surface-0))
+        drop-shadow(0 0 2px var(--blitzy-surface-0));
+    }
+
     .reveal .controls button:focus-visible {
       outline: 4px solid var(--blitzy-primary-deep);
       outline-offset: 4px;
@@ -429,6 +442,11 @@
       background: none;
       border-left-color: var(--blitzy-accent-teal);
     }
+
+    /* A solid marker rather than the gradient the light slides use, and deliberately so:
+       the gradient begins at `--blitzy-primary`, which reaches only 2.60:1 against the
+       closing slide's navy, below the 3:1 a non-text indicator needs, while this teal
+       reaches 13.17:1. See docs/testing/DECISION-LOG.md row D375. */
 
     .reveal .slides section.slide-title ul > li::before,
     .reveal .slides section.slide-divider ul > li::before,
@@ -809,7 +827,7 @@
       width: 100%;
       max-width: 1560px;
       max-height: 760px;
-      margin: 24px auto 0;
+      margin: 24px 0 0;
       padding: 0;
       background: none;
       border: 0;
@@ -828,18 +846,25 @@
       overflow: visible;
     }
 
+    /* `max-width` carries no `!important`, so Mermaid's own inline cap - the diagram's
+       intrinsic width - wins over this one wherever it is the smaller of the two. A
+       diagram is therefore drawn at its authored size or reduced to fit, never enlarged
+       to fill the column, which is what held one label at 14.6px while another reached
+       35.5px in the same deck. `margin: 0` keeps the left edge on the content column.
+       See docs/testing/DECISION-LOG.md rows D372 and D373. */
+
     .reveal .slides section .mermaid svg {
       display: block;
       width: auto;
       height: auto;
-      max-width: 100% !important;
+      max-width: 100%;
       max-height: 760px;
-      margin: 0 auto;
+      margin: 0;
       background: none;
     }
 
     .reveal .slides section .mermaid > * {
-      text-align: center;
+      text-align: left;
     }
 
     /* Generated diagram labels paint in full; the measured label box does not clip them. */
@@ -898,6 +923,15 @@
       background: var(--blitzy-surface-0);
       border: 1px solid var(--blitzy-border);
       text-align: left;
+    }
+
+    /* A table carries 28px above it and none below, while body copy carries none above,
+       so a paragraph that follows a table met its bottom border at a gap of zero. The
+       same 28px restores the rhythm on both sides.
+       See docs/testing/DECISION-LOG.md row D374. */
+
+    .reveal .slides section table + p {
+      margin-top: 28px;
     }
 
     .reveal .slides section table caption {
@@ -1032,9 +1066,12 @@
 
     /* Diagram size modifiers */
 
+    /* No horizontal `auto`: centring inside the 1560px column pushed these two
+       diagrams 68px right of the x=146 content column that every heading, table
+       and paragraph sits on. See docs/testing/DECISION-LOG.md row D373. */
     .reveal .slides section .mermaid.deck-diagram-sm {
       max-height: 270px;
-      margin: 20px auto 0;
+      margin: 20px 0 0;
     }
 
     .reveal .slides section .mermaid.deck-diagram-sm svg {
@@ -1128,7 +1165,7 @@
           </div>
           <div class="kpi-card">
             <span class="kpi-icon" aria-hidden="true"><i data-lucide="list-checks" aria-hidden="true" focusable="false"></i></span>
-            <span class="kpi-value">1,443</span>
+            <span class="kpi-value">1,472</span>
             <span class="kpi-label">Tests passing now</span>
           </div>
           <div class="kpi-card">
@@ -1439,12 +1476,38 @@
            version. See docs/testing/SECURITY-GAPS.md row 17 (D325). */
         securityLevel: 'strict',
         theme: 'base',
+        /* SVG text labels rather than HTML ones, declared at BOTH levels. Mermaid
+           measures an HTML label with `getBoundingClientRect`, which reports this
+           deck's CSS-transformed stage in screen pixels, so a node was sized by the
+           stage scale while the label inside it was not: the diagram box measured
+           `76 + 200 x scale` in user units, and every label was clipped at every
+           viewport below 1920. An SVG label is measured with `getBBox` in user
+           units, which no ancestor transform can distort.
+           The flowchart-scoped key alone is NOT enough - Mermaid 11.4.0's unified
+           renderer honours it for cluster and edge labels but reads the top-level
+           key when it builds node labels, so both are declared.
+           `flowchart.wrappingWidth` is deliberately left at its 200-user-unit
+           default, which wraps a long authored line onto further lines rather than
+           letting it leave its box.
+           See docs/testing/DECISION-LOG.md rows D372 and D376. */
+        htmlLabels: false,
+        flowchart: {
+          htmlLabels: false
+        },
+        fontFamily: "'Inter', system-ui, sans-serif",
         themeVariables: {
           primaryColor: '#F2F0FE',
           primaryTextColor: '#333333',
           primaryBorderColor: '#5B39F3',
           lineColor: '#999999',
-          secondaryColor: '#F4EFF6'
+          secondaryColor: '#F4EFF6',
+          tertiaryColor: '#F5F5F5',
+          tertiaryTextColor: '#333333',
+          clusterBkg: '#F5F5F5',
+          clusterBorder: '#D9D9D9',
+          titleColor: '#333333',
+          fontFamily: "'Inter', system-ui, sans-serif",
+          fontSize: '24px'
         }
       });
 
@@ -1469,6 +1532,36 @@
         return true;
       }
 
+      /* Smallest `viewBox` extent a real diagram of this deck draws into. Mermaid
+         resolves successfully with a 16-unit box when it measured nothing, and the
+         smallest genuine extent here is 50.8, so this separates the two.
+         See docs/testing/DECISION-LOG.md row D371. */
+      var MIN_DIAGRAM_EXTENT = 24;
+
+      /* A diagram counts as drawn only when all three agree: the marker Mermaid writes,
+         a graph in the DOM, and a `viewBox` large enough to hold one. A marker with no
+         svg, or an svg drawn at the zero-measurement size, is a failed render and stays
+         eligible for another attempt. */
+      function isDrawn(node) {
+        var svg = node.querySelector('svg');
+        if (node.getAttribute(PROCESSED_ATTR) !== 'true' || svg === null) {
+          return false;
+        }
+        var box = (svg.getAttribute('viewBox') || '').split(/[\s,]+/);
+        return box.length === 4
+          && parseFloat(box[2]) > MIN_DIAGRAM_EXTENT
+          && parseFloat(box[3]) > MIN_DIAGRAM_EXTENT;
+      }
+
+      /* Mermaid sizes a diagram from live DOM measurements, so one inside a slide
+         reveal.js has put beyond its view distance - `display: none`, no layout box -
+         measures zero and draws blank. A diagram is rendered only while it has a box;
+         otherwise it waits for the slide change that brings it into view. */
+      function isMeasurable(node) {
+        return node.getClientRects().length > 0
+          && node.getBoundingClientRect().width > 0;
+      }
+
       function diagramsOn(slide) {
         if (!slide || typeof slide.querySelectorAll !== 'function') {
           return [];
@@ -1476,32 +1569,56 @@
         return Array.prototype.slice.call(slide.querySelectorAll(DIAGRAM_SELECTOR));
       }
 
-      /* Slide whose diagrams are mid-render, plus a flag for a slide that
-         arrived while that render was still running. A cold load addressed
-         straight at a diagram slide fires every lifecycle path at once, and
-         restoring the source under an in-progress render would tear out the
-         subtree it is drawing into. */
-      var renderingSlide = null;
-      var rerenderQueued = false;
+      /* Diagrams of `scope` awaiting a successful render that can be measured now,
+         restored to their source so `mermaid.run` accepts them. A drawn diagram and an
+         unmeasurable one are both left exactly as they are: the order of these tests is
+         load-bearing, because resetting either would discard a drawing for nothing. */
+      function pendingDiagramsOn(scope) {
+        return diagramsOn(scope).filter(function (node) {
+          return !isDrawn(node) && isMeasurable(node) && resetDiagram(node);
+        });
+      }
 
-      function renderDiagrams(slide) {
-        if (!slide) {
-          return;
+      /* Scroll view shows every slide at once, so the render scope is the whole deck
+         rather than one slide. Reveal below pins slide view, so this is the guard for a
+         reader who selects scroll view explicitly. */
+      function renderScope() {
+        if (typeof Reveal.isScrollView === 'function' && Reveal.isScrollView()) {
+          return document;
         }
-        if (renderingSlide) {
-          if (renderingSlide !== slide) {
-            rerenderQueued = true;
+        return Reveal.getCurrentSlide();
+      }
+
+      /* Scope whose diagrams are mid-render, plus the scopes that arrived while that
+         render was still running. A cold load addressed straight at a diagram slide
+         fires every lifecycle path at once, and restoring the source under an
+         in-progress render would tear out the subtree it is drawing into. */
+      var renderingScope = null;
+      var deferredScopes = [];
+
+      function deferScope(scope) {
+        if (scope && deferredScopes.indexOf(scope) === -1) {
+          deferredScopes.push(scope);
+        }
+      }
+
+      function renderDiagrams(scope) {
+        if (renderingScope) {
+          if (scope && renderingScope !== scope) {
+            deferScope(scope);
           }
           return;
         }
-        if (!diagramsOn(slide).length) {
+        var target = scope;
+        var nodes = target ? pendingDiagramsOn(target) : [];
+        while (target && !nodes.length) {
+          target = deferredScopes.length ? deferredScopes.shift() : null;
+          nodes = target ? pendingDiagramsOn(target) : [];
+        }
+        if (!target) {
           return;
         }
-        var nodes = diagramsOn(slide).filter(resetDiagram);
-        if (!nodes.length) {
-          return;
-        }
-        renderingSlide = slide;
+        renderingScope = target;
         try {
           var pending = mermaid.run({ nodes: nodes, suppressErrors: false });
           if (pending && typeof pending.then === 'function') {
@@ -1518,13 +1635,35 @@
         }
       }
 
+      /* Measurability is tested when a render is scheduled, and Mermaid measures when it
+         completes, so a navigation fast enough to hide the slide in between resolves
+         successfully having measured nothing. Discard that drawing rather than leave a
+         graph in the DOM which no reader can see and no error reports.
+         See docs/testing/DECISION-LOG.md row D371. */
+      function discardFailedRenders(scope) {
+        diagramsOn(scope).forEach(function (node) {
+          if (!isDrawn(node) && node.querySelector('svg') !== null) {
+            resetDiagram(node);
+          }
+        });
+      }
+
+      /* The slide on screen is served first, then every scope a faster-than-render
+         navigation passed over that is still measurable. One that is not waits for the
+         slide change that brings it back into view. */
       function settleRender() {
-        renderingSlide = null;
-        relayout();
-        if (rerenderQueued) {
-          rerenderQueued = false;
-          renderDiagrams(Reveal.getCurrentSlide());
+        var rendered = renderingScope;
+        renderingScope = null;
+        if (rendered) {
+          discardFailedRenders(rendered);
         }
+        relayout();
+        var current = renderScope();
+        var queued = deferredScopes.indexOf(current);
+        if (queued !== -1) {
+          deferredScopes.splice(queued, 1);
+        }
+        renderDiagrams(current);
       }
 
       /* Diagrams are inserted after reveal.js has already measured the slide,
@@ -1549,7 +1688,7 @@
       function refresh() {
         cacheDiagramSources();
         renderIcons();
-        renderDiagrams(Reveal.getCurrentSlide());
+        renderDiagrams(renderScope());
       }
 
       /* Reveal setup */
@@ -1561,6 +1700,11 @@
         hash: true,
         transition: 'slide',
         controlsTutorial: false,
+        /* The two settings below are the only ones here that differ from reveal's own
+           defaults. See docs/testing/DECISION-LOG.md rows D369, which keeps the fixed
+           stage at every viewport width, and D370, for the back control. */
+        controlsBackArrows: 'visible',
+        scrollActivationWidth: 0,
         width: 1920,
         height: 1080
       }).then(refresh);

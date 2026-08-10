@@ -3,7 +3,7 @@ import type { AxiosResponse } from 'axios';
 
 import * as twitterService from './twitterService';
 import { getLatestTweets, getTweetDetails } from './twitterService';
-import { FIXED_TWEET_TIMESTAMP, makeFeedTweet, makeTweet } from '../test-utils/factories';
+import { makeFeedTweet, makeTweet } from '../test-utils/factories';
 import type { FeedTweet } from '../test-utils/factories';
 import {
   ALLOWED_REQUEST_ORIGINS,
@@ -15,6 +15,7 @@ import {
   BACKEND_SERVER_ERROR_STATUS,
   BACKEND_UNPROCESSABLE_STATUS,
   CONFIGURED_BASE_URL,
+  SERIALIZED_FIXED_TWEET_TIMESTAMP,
   configuredBaseBackendHandlers,
   importWithConfiguredBase,
   lastRecordedRequest,
@@ -198,7 +199,7 @@ describe('getTweetDetails', () => {
   it('resolves to the tweet the default handler serves when the request runs end to end', async () => {
     const expected: SerializedTweet = {
       ...makeTweet({ tweet_id: TWEET_ID }),
-      timestamp: FIXED_TWEET_TIMESTAMP,
+      timestamp: SERIALIZED_FIXED_TWEET_TIMESTAMP,
     };
 
     await expect(getTweetDetails(TWEET_ID)).resolves.toEqual(expected);

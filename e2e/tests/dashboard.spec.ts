@@ -17,14 +17,26 @@
  * below is anchored to. A non-empty collection reaches `TweetCard` at L24-L26, which no module
  * exports.
  *
- * The 30-second `setInterval` at L16 and the `clearInterval` at L18 are covered by
- * `frontend/src/components/Dashboard.test.tsx` under fake timers, not here.
+ * What that costs is larger than the route. Nothing in the subject, in `harness/main.tsx` or
+ * anywhere in `frontend/src` is an error boundary, so the invalid element type unmounts the whole
+ * root: the `<main>` landmark the harness renders above `<Routes>` goes too, and `#root` is left
+ * empty. React's unmount then runs the L18 cleanup, which clears the 30-second poll L16 installed -
+ * and with the component gone nothing reinstalls it, so the route cannot refetch its way back. The
+ * third test asserts each of those, reading an in-page timer ledger rather than waiting out a poll
+ * boundary.
+ *
+ * The 30-second `setInterval` at L16 and the `clearInterval` at L18 are otherwise covered by
+ * `frontend/src/components/Dashboard.test.tsx` under fake timers, which is where the *interval
+ * period* itself is asserted; what this file adds is that the same cleanup is what makes the
+ * ceiling terminal.
  *
  * @see e2e/README.md - adding a spec to this directory.
  * @see docs/testing/DECISION-LOG.md - the interception, ceiling and layer-boundary rows for this file.
  */
 
 import path from 'node:path';
+
+import type { Page } from '@playwright/test';
 
 import { expect, HARNESS_ORIGIN, test } from './harness-fixtures';
 
@@ -116,6 +128,83 @@ const REPORTING_COMPONENT = /Check the render method of `RealTimeFeed`/;
  * `setInterval` at `components/Dashboard` L16, so only the mount request falls inside it.
  */
 const SETTLE_TIMEOUT_MS = 10_000;
+
+/**
+ * The `<main>` landmark `harness/main.tsx` renders *above* `<Routes>`, so it belongs to the page
+ * rather than to any route.
+ *
+ * That is what makes it the oracle for blast radius: a route element disappearing leaves this
+ * standing, and this disappearing means the unmount reached above the route into the root itself.
+ */
+const PAGE_LANDMARK = 'main';
+
+/** Element `harness/index.html` provides and `harness/main.tsx` mounts the whole tree into. */
+const REACT_ROOT = '#root';
+
+/** Interval period `components/Dashboard` L16 installs its poll at. */
+const POLL_PERIOD_MS = 30_000;
+
+/**
+ * One entry of the in-page timer ledger {@link TIMER_LEDGER_SCRIPT} keeps.
+ *
+ * `delay` is recorded for a `set` and absent for a `clear`, which is what `setInterval` and
+ * `clearInterval` respectively carry.
+ */
+interface TimerOperation {
+  op: 'set' | 'clear';
+  id: number;
+  delay?: number;
+}
+
+/**
+ * Records every `setInterval` and `clearInterval` the page performs, in order.
+ *
+ * Installed as an init script so it is in place before any application module evaluates, and both
+ * wrappers delegate to the real implementation, so nothing about the subject's timing changes -
+ * this observes, it does not substitute.
+ *
+ * It exists because the alternative is unusable: proving a 30-second poll is *dead* by waiting for
+ * the boundary it would have fired at costs more than this file's whole per-test budget, and a
+ * request count that has not grown yet is not the same claim. The ledger settles it mechanically -
+ * the interval was installed, then cleared, and no later `set` replaced it.
+ */
+const TIMER_LEDGER_SCRIPT = `
+  window.__timerOperations = [];
+  const nativeSetInterval = window.setInterval;
+  const nativeClearInterval = window.clearInterval;
+  window.setInterval = function (handler, delay, ...rest) {
+    const id = nativeSetInterval.call(window, handler, delay, ...rest);
+    window.__timerOperations.push({ op: 'set', id, delay });
+    return id;
+  };
+  window.clearInterval = function (id) {
+    window.__timerOperations.push({ op: 'clear', id });
+    return nativeClearInterval.call(window, id);
+  };
+`;
+
+/**
+ * Reads that ledger.
+ *
+ * @param page - Page under test.
+ * @returns Every recorded operation, oldest first.
+ */
+function timerOperations(page: Page): Promise<TimerOperation[]> {
+  return page.evaluate(() => (window as unknown as {
+    __timerOperations: TimerOperation[];
+  }).__timerOperations);
+}
+
+/**
+ * Returns the markup inside {@link REACT_ROOT}, which is empty exactly when React has unmounted
+ * the whole tree.
+ *
+ * @param page - Page under test.
+ * @returns The root's inner markup.
+ */
+function reactRootMarkup(page: Page): Promise<string> {
+  return page.locator(REACT_ROOT).evaluate((element: Element) => element.innerHTML);
+}
 
 test.describe('harness route / - RealTimeFeed (frontend/src/components/Dashboard)', () => {
   test('renders the Real-Time Tweet Feed heading inside the feed container', async ({ page }) => {
@@ -220,6 +309,9 @@ test.describe('harness route / - RealTimeFeed (frontend/src/components/Dashboard
       UNCAUGHT_RENDER_REPORT,
     );
 
+    // Installed before any module evaluates, so the poll L16 installs is recorded from the start.
+    await page.addInitScript(TIMER_LEDGER_SCRIPT);
+
     // A non-empty collection drives the map at L24-L26 into the undefined `TweetCard`.
     for (const glob of TWEET_COLLECTION_GLOBS) {
       await page.route(glob, async (route) => {
@@ -257,6 +349,42 @@ test.describe('harness route / - RealTimeFeed (frontend/src/components/Dashboard
       expect(reported).toMatch(DUPLICATE_KEY_WARNING);
 
       await expect(page.locator(FEED_CONTAINER)).toHaveCount(0);
+
+      /*
+       * And it took more than the route. `harness/main.tsx` renders the `<main>` landmark and the
+       * `<Routes>` element *above* every route element, and nothing anywhere is an error boundary,
+       * so the throw unmounts the whole root: the landmark goes with the feed and `#root` is left
+       * empty. Asserted because the blast radius is the finding - a reader told only that "the route
+       * came down" will expect the rest of the page to have survived, and none of it does.
+       */
+      await expect(page.locator(PAGE_LANDMARK)).toHaveCount(0);
+      expect(await reactRootMarkup(page)).toBe('');
+
+      /*
+       * The poll died with it, and permanently. React's unmount runs the L18 cleanup, so the 30 s
+       * interval L16 installed is cleared - and because the component is gone, nothing reinstalls
+       * it. The route therefore cannot recover on its own: the very mechanism that would have
+       * refetched is what the teardown removed.
+       *
+       * Read from the ledger rather than from a wall-clock wait, so the claim is "the interval was
+       * cleared and not replaced" rather than "no request had arrived yet".
+       */
+      const operations = await timerOperations(page);
+      const installedPolls = operations.filter(
+        (operation) => operation.op === 'set' && operation.delay === POLL_PERIOD_MS,
+      );
+      const clears = operations.filter((operation) => operation.op === 'clear');
+
+      expect(installedPolls.length).toBeGreaterThan(0);
+      expect(clears).toHaveLength(1);
+      expect(installedPolls.map((operation) => operation.id)).toContain(clears[0].id);
+
+      // Nothing was installed after that clear, so no replacement poll exists.
+      const afterTheClear = operations.slice(operations.indexOf(clears[0]) + 1);
+      expect(afterTheClear.filter((operation) => operation.op === 'set')).toEqual([]);
+
+      // One request, and no second one, consistent with a poll that no longer exists.
+      expect(interceptedUrls).toHaveLength(1);
     } finally {
       await test.info().attach('intercepted-requests', {
         body: interceptedUrls.join('\n') || '(no request intercepted)',

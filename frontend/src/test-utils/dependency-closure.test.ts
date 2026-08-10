@@ -306,17 +306,23 @@ describe('e2e/package.json declares exact versions only', () => {
 });
 
 /**
- * The rule whose absence lets the properties above be enforced at all: with `package-lock.json` ignored,
- * neither package could ever commit the integrity-hashed graph, and `npm ci` - which refuses to run without a
- * lockfile - would stay unavailable. The suppression was removed; this keeps it removed.
+ * The shape of the lockfile suppression, which is a consequence of the properties above rather than an
+ * exception to them: no lockfile is committed, so the exact-pin table and the installed-version comparisons
+ * are the only integrity reference either manifest has. A lockfile a documented `npm install` writes is
+ * therefore generated output, and both rules are **path-anchored** to the two packages that have a manifest -
+ * a bare `package-lock.json` would suppress one at any depth, including a future committed one, and that is
+ * the failure this asserts against. `git add -f` is what overrides an anchored rule, so reversing the
+ * decision stays a deliberate act rather than a silent one.
  */
-describe('.gitignore does not suppress npm lockfiles', () => {
-  it('has no active rule naming package-lock.json', () => {
+describe('.gitignore suppresses only the two generated npm lockfiles', () => {
+  it('anchors a rule to each package and declares no bare package-lock.json', () => {
     const rules = readFileSync(join(REPOSITORY_ROOT, '.gitignore'), 'utf8')
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter((line) => line.length > 0 && !line.startsWith('#'));
+    const lockfileRules = rules.filter((rule) => rule.includes('package-lock'));
 
-    expect(rules.filter((rule) => rule.includes('package-lock'))).toEqual([]);
+    expect(lockfileRules.sort()).toEqual(['e2e/package-lock.json', 'frontend/package-lock.json']);
+    expect(lockfileRules.filter((rule) => !rule.includes('/'))).toEqual([]);
   });
 });

@@ -50,13 +50,17 @@ import {
   CONFIGURED_BASE_PATH_PREFIX,
   CONFIGURED_BASE_URL,
   ROUTE_CONTRACTS,
+  SERIALIZED_FIXED_TWEET_TIMESTAMP,
   UNSET_BASE_PATH_PREFIX,
   acknowledgeIsolationViolations,
   configuredBaseBackendHandlers,
   lastRecordedRequest,
   makeDefaultTweetsJson,
+  serializeTimestamp,
   unsetBaseBackendHandlers,
 } from './handlers';
+import type { SerializedTweet } from './handlers';
+import { fixedTweetTimestamp } from './factories';
 import { server } from './msw-server';
 
 /** Origin jsdom serves this suite from, and one of the two the handlers are registered under. */
@@ -122,6 +126,40 @@ describe('every pattern names an exact path', () => {
       consoleError.mockRestore();
       consoleWarn.mockRestore();
     }
+  });
+});
+
+describe('the serialised timestamp is the backend’s own spelling', () => {
+  /*
+   * `app/schema/tweet.py` types `timestamp` as a naive `datetime` and pydantic v1 serialises it through
+   * `datetime.isoformat()`, so the wire form carries no offset and no millisecond field.
+   * `backend/tests/integration/test_http_tweets.py` pins the endpoint's own output as
+   * `2024-01-01T00:00:00`; this is that shape, and the assertions below hold the double to it. A
+   * `Date.prototype.toISOString()` value would instead read `…T12:00:00.000Z`, marking the value a
+   * UTC instant — a spelling no endpoint in this application produces.
+   */
+  const BACKEND_TIMESTAMP_SHAPE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
+
+  it('serves the fixture instant with no milliseconds and no zone marker', async () => {
+    server.use(...configuredBaseBackendHandlers({ dependencyOverridden: true }));
+
+    const response = await request('get', `${CONFIGURED_TWEETS_URL}?page=1&limit=10`);
+    const served = (response.data as SerializedTweet[]).map((tweet) => tweet.timestamp);
+
+    // The value every serialised payload carries, and the shape the backend emits.
+    expect(served).toEqual([
+      SERIALIZED_FIXED_TWEET_TIMESTAMP,
+      SERIALIZED_FIXED_TWEET_TIMESTAMP,
+      SERIALIZED_FIXED_TWEET_TIMESTAMP,
+    ]);
+    expect(SERIALIZED_FIXED_TWEET_TIMESTAMP).toMatch(BACKEND_TIMESTAMP_SHAPE);
+    expect(SERIALIZED_FIXED_TWEET_TIMESTAMP).toBe('2024-01-15T12:00:00');
+    // A spelling change only: the instant is still the one the factories build.
+    expect(new Date(`${SERIALIZED_FIXED_TWEET_TIMESTAMP}Z`).getTime()).toBe(
+      fixedTweetTimestamp().getTime(),
+    );
+    // And it is reached through the exported helper, so no caller restates the transformation.
+    expect(serializeTimestamp(fixedTweetTimestamp())).toBe(SERIALIZED_FIXED_TWEET_TIMESTAMP);
   });
 });
 

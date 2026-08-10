@@ -88,7 +88,7 @@
 import { rest } from 'msw';
 import type { ResponseComposition, RestContext, RestHandler } from 'msw';
 
-import { makeTweet } from './factories';
+import { fixedTweetTimestamp, makeTweet } from './factories';
 
 type TweetFixture = ReturnType<typeof makeTweet>;
 
@@ -97,16 +97,50 @@ export type SerializedTweet = Omit<TweetFixture, 'timestamp'> & {
   timestamp: string;
 };
 
+/** The milliseconds-and-`Z` tail `Date.prototype.toISOString` appends, which the backend never emits. */
+const UTC_INSTANT_TAIL = /\.\d{3}Z$/;
+
+/**
+ * One `Date` in the exact spelling the backend puts on the wire: `YYYY-MM-DDTHH:MM:SS`, with no offset
+ * and no milliseconds.
+ *
+ * `app/schema/tweet.py` types `timestamp` as a naive `datetime`, and pydantic v1 serialises that through
+ * `datetime.isoformat()`, which omits both — `backend/tests/integration/test_http_tweets.py` pins the
+ * result as `2024-01-01T00:00:00`. `toISOString()` alone would emit a millisecond field and a `Z`, marking
+ * the value as a UTC instant, which is a shape no endpoint in this application produces.
+ *
+ * @param instant - The fixture `Date` to put on the wire.
+ * @returns The same instant in the backend's own spelling.
+ * @see docs/testing/DECISION-LOG.md - row D406.
+ */
+export function serializeTimestamp(instant: Date): string {
+  return instant.toISOString().replace(UTC_INSTANT_TAIL, '');
+}
+
+/**
+ * The `timestamp` every default tweet carries on the wire: the factories' fixed tweet instant in the
+ * backend's spelling. Exported so a suite asserting one serialised tweet states this literal rather than
+ * deriving it, and so a drift in {@link serializeTimestamp} fails a named assertion rather than every
+ * suite that compares a payload.
+ *
+ * @see ./factories - `FIXED_TWEET_TIMESTAMP`, the same instant as a `Date`.
+ */
+export const SERIALIZED_FIXED_TWEET_TIMESTAMP = serializeTimestamp(fixedTweetTimestamp());
+
 /**
  * One `TweetFixture` in the shape it takes on the wire. The array members are rebuilt, so the returned
  * object shares nothing with the tweet it was derived from.
+ *
+ * Every handler answers with the output of this function rather than with the fixture itself. Handing a
+ * fixture straight to `ctx.json` would leave `timestamp` to `JSON.stringify`, which calls
+ * `Date.prototype.toJSON` and emits the UTC-instant spelling the backend does not use.
  */
-function serializeTweet(tweet: TweetFixture): SerializedTweet {
+export function serializeTweet(tweet: TweetFixture): SerializedTweet {
   return {
     ...tweet,
     ai_tools: [...tweet.ai_tools],
     media_urls: [...tweet.media_urls],
-    timestamp: tweet.timestamp.toISOString(),
+    timestamp: serializeTimestamp(tweet.timestamp),
   };
 }
 
@@ -1150,7 +1184,7 @@ export const frontendIsolationHandlers: RestHandler[] = [
       }
 
       record(screened, 200);
-      return res(ctx.status(200), ctx.json(makeDefaultTweets()));
+      return res(ctx.status(200), ctx.json(makeDefaultTweetsJson()));
     }),
   ),
 
@@ -1170,7 +1204,10 @@ export const frontendIsolationHandlers: RestHandler[] = [
       }
 
       record(screened, 200);
-      return res(ctx.status(200), ctx.json(makeTweet({ tweet_id: req.params.tweetId })));
+      return res(
+        ctx.status(200),
+        ctx.json(serializeTweet(makeTweet({ tweet_id: req.params.tweetId }))),
+      );
     }),
   ),
 
@@ -1442,7 +1479,7 @@ export function configuredBaseBackendHandlers(
         }
 
         record(screened, 200);
-        return res(ctx.status(200), ctx.json(makeDefaultTweets()));
+        return res(ctx.status(200), ctx.json(makeDefaultTweetsJson()));
       }),
     ),
 

@@ -20,8 +20,8 @@
  *
  * | Fulfilment | Outcome |
  * |------------|---------|
- * | Non-ok status | a status `Error`, thrown before any body is parsed |
- * | Ok, body is not a trend series | `TrendSeriesContractError` |
+ * | Non-ok status | a status `Error` naming the status and a bounded excerpt of the body, thrown before any body is parsed |
+ * | Ok, body is not a trend series - unequal `labels`/`values` lengths included | `TrendSeriesContractError` |
  * | Ok, body is a trend series | `UnrenderableTrendSeriesError` |
  * | Ok, a trend series, `FORWARD_TREND_SERIES_HEADER` set | resolves, carrying the subject into `renderCharts` |
  *
@@ -29,10 +29,10 @@
  *
  * | Test | Behaviour asserted |
  * |------|--------------------|
- * | 1 | `components/Analytics` L18-L20 catch a failed trend request and log it, leaving the L66-L69 heading and canvas mounted |
+ * | 1 | `components/Analytics` L18-L20 catch a failed trend request and log it - with the reason the responder gave, not the status alone - leaving the L66-L69 heading and canvas mounted |
  * | 2 | `components/Analytics` L16 calls `getTrendData(dateRange)` once per mount, and `harness/stubs/analyticsService.ts` builds `/api/trends?start=…&end=…` from that argument |
  * | 3 | The L68 canvas is absent from the browser's accessibility tree, so the analytics content reaches assistive technology not at all |
- * | 4 | `components/Analytics` L40 constructs a `Chart` from the tree-shakeable L2 export that no module registers, which throws out of the L26-L30 effect and takes the route down |
+ * | 4 | `components/Analytics` L40 constructs a `Chart` from the tree-shakeable L2 export that no module registers, which throws out of the L26-L30 effect and takes the **whole React root** down - landmark included, `#root` emptied, and no route reachable afterwards without a reload |
  *
  * Tests 1 to 3 leave the stub on its default rejecting path. Test 4 is the one place in this suite
  * that opts into the forwarding path, and the only place in the repository where the
@@ -59,8 +59,12 @@
  *   tests 2 and 3 to read.
  * - **Test 4 - the construction path.** With the stub's forwarding header set, the context is
  *   acquired, the unregistered `'line'` controller raises, and the error propagates out of an
- *   unwrapped passive effect and unmounts the subject. Test 4 asserts each of those three, so the
- *   ceiling is measured in a real browser rather than left as a description.
+ *   unwrapped passive effect. Nothing above it is an error boundary - not in the subject, not in
+ *   `harness/main.tsx`, and nowhere in `frontend/src` - so React unmounts the root rather than the
+ *   route: the `<main>` landmark the harness renders above `<Routes>` goes too, `#root` is left
+ *   empty, and a subsequent history change moves the URL without rendering anything. Test 4
+ *   asserts each of those, so the ceiling and its true blast radius are both measured in a real
+ *   browser rather than left as a description.
  *
  * ## The canvas carries no accessible name - a documented ceiling
  *
@@ -78,6 +82,8 @@
  */
 
 import path from 'node:path';
+
+import type { Page } from '@playwright/test';
 
 import {
   FORWARD_TREND_SERIES_HEADER,
@@ -150,6 +156,20 @@ const TRENDS_FIXTURE = path.join(__dirname, '..', 'fixtures', 'trends.json');
 /** Prefix `components/Analytics` L19 logs a caught trend-request failure under. */
 const TREND_FAILURE_LOG = /Error fetching trend data:/;
 
+/**
+ * Machine-readable reason the failing trend response below carries in its body.
+ *
+ * A responder that states *why* it refused is only useful if that reason survives the client
+ * layer, and until `harness/stubs/analyticsService.ts` carried the drained body into the error it
+ * throws, this value reached nothing - not the screen, not an alert, and not even the console,
+ * because the component logs only what the rejection carries. Asserted below, so a future stub
+ * that goes back to discarding the body fails here rather than quietly costing a reader the reason.
+ */
+const TREND_FAILURE_REASON = 'trend-upstream-failed';
+
+/** That reason as it appears in the console line, inside the excerpt the stub appends. */
+const TREND_FAILURE_REASON_IN_LOG = /Response body: \{"error":"trend-upstream-failed"\}/;
+
 /** {@link TREND_FAILURE_LOG} as an allow-list pattern, keyed on the console record's rendered form. */
 const EXPECTED_TREND_FAILURE = /console\.error: Error fetching trend data:/;
 
@@ -186,6 +206,35 @@ const CANVAS_CANDIDATE_ROLES = ['image', 'img', 'figure', 'canvas', 'graphics-do
 
 /** Role of the one element the subject does contribute, its L67 heading. */
 const HEADING_ROLE = 'heading';
+
+/**
+ * The `<main>` landmark `harness/main.tsx` renders *above* `<Routes>`, so it belongs to the page
+ * rather than to any route.
+ *
+ * That is what makes it the oracle for blast radius: a route element disappearing leaves this
+ * standing, and this disappearing means the unmount reached above the route into the root itself.
+ */
+const PAGE_LANDMARK = 'main';
+
+/** Element `harness/index.html` provides and `harness/main.tsx` mounts the whole tree into. */
+const REACT_ROOT = '#root';
+
+/** Client route the recovery probe navigates to - any route the harness declares will do. */
+const RECOVERY_PROBE_ROUTE = '/tweets';
+
+/**
+ * Returns the markup inside {@link REACT_ROOT}, which is empty exactly when React has unmounted
+ * the whole tree.
+ *
+ * Read through `innerHTML` rather than through a locator count, because the assertion is that
+ * *nothing at all* is left rather than that one selector no longer matches.
+ *
+ * @param page - Page under test.
+ * @returns The root's inner markup.
+ */
+function reactRootMarkup(page: Page): Promise<string> {
+  return page.locator(REACT_ROOT).evaluate((element: Element) => element.innerHTML);
+}
 
 /** One node of Chromium's accessibility tree, as `page.accessibility.snapshot` reports it. */
 interface AccessibilityNode {
@@ -241,11 +290,18 @@ test.describe('harness route /analytics - TrendCharts (frontend/src/components/A
       EXPECTED_TREND_FAILURE,
     );
 
-    // A non-ok status rejects inside the stub before any body is parsed, so `chartData` stays
-    // null and the effect at L26-L30 never calls `renderCharts`.
+    /*
+     * A non-ok status rejects inside the stub before any body is parsed, so `chartData` stays
+     * null and the effect at L26-L30 never calls `renderCharts`. The body carries a reason,
+     * which is what makes the console assertion below a test of the whole chain rather than of
+     * the status code alone: responder -> drained body -> thrown message -> the component's log.
+     */
     await page.route(TREND_REQUEST_GLOB, async (route) => {
       interceptedUrls.push(route.request().url());
-      await route.fulfill({ status: TREND_REQUEST_FAILURE_STATUS, json: {} });
+      await route.fulfill({
+        status: TREND_REQUEST_FAILURE_STATUS,
+        json: { error: TREND_FAILURE_REASON },
+      });
     });
 
     await page.goto(CHARTS_ROUTE);
@@ -274,6 +330,15 @@ test.describe('harness route /analytics - TrendCharts (frontend/src/components/A
           timeout: SETTLE_TIMEOUT_MS,
         })
         .toMatch(TREND_FAILURE_LOG);
+
+      /*
+       * And the reason the responder gave survived the whole way to that line. The status alone
+       * would not distinguish this refusal from any other 500, which is exactly the complaint
+       * this assertion answers: `harness/stubs/analyticsService.ts` reads the body of a non-ok
+       * response and carries a bounded excerpt of it into the message it throws, so the one
+       * console line the component emits names both the status and the cause.
+       */
+      expect(browserDiagnostics.errorText()).toMatch(TREND_FAILURE_REASON_IN_LOG);
 
       // The rejection was caught at L18-L20, so it never reached the page as an uncaught error.
       expect(browserDiagnostics.pageErrorText()).toBe('');
@@ -476,6 +541,32 @@ test.describe('harness route /analytics - TrendCharts (frontend/src/components/A
       await expect(
         page.getByRole('heading', { level: CHARTS_HEADING_LEVEL, name: CHARTS_HEADING }),
       ).toHaveCount(0);
+
+      /*
+       * It took more than the route. `harness/main.tsx` renders the `<main>` landmark and the
+       * `<Routes>` element *above* every route element, and neither it nor React has a boundary
+       * here, so the throw unmounts the whole root: the landmark goes with the route and `#root`
+       * is left empty. Asserted because the blast radius is the finding - a reader who is told only
+       * that "the route came down" will expect the rest of the page to have survived, and none of
+       * it does.
+       */
+      await expect(page.locator(PAGE_LANDMARK)).toHaveCount(0);
+      expect(await reactRootMarkup(page)).toBe('');
+
+      /*
+       * Nothing is left to answer a history change either, so the teardown is not recoverable from
+       * inside the page. This drives the same client-side navigation an in-app link would, and the
+       * URL moves while the document stays empty - which is why the ceiling is a page-level failure
+       * rather than a route-level one.
+       */
+      await page.evaluate((route) => {
+        window.history.pushState({}, '', route);
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      }, RECOVERY_PROBE_ROUTE);
+
+      await expect(page).toHaveURL(new RegExp(`${RECOVERY_PROBE_ROUTE}$`));
+      expect(await reactRootMarkup(page)).toBe('');
+      await expect(page.locator(PAGE_LANDMARK)).toHaveCount(0);
 
       // One request, so the unmount was the end of it rather than the start of a remount loop.
       expect(interceptedUrls).toHaveLength(1);
