@@ -280,8 +280,17 @@
 
 /* Reveal chrome */
 
+/* Reveal draws the arrow cluster entirely in `em` against `.reveal .controls`, whose
+   own font-size is 10px by default, which puts each arrow's hit target at 36x36 - below
+   the 44x44 minimum a pointer target is expected to offer. Declaring 13px here scales
+   every metric of the cluster together, taking the target to 46.8x46.8, without
+   overriding a single one of reveal's own rules and without touching any setting Rule 4
+   constrains. The deck's inline block carries the identical declaration.
+   See docs/testing/DECISION-LOG.md row D423. */
+
 .reveal .controls {
   color: var(--blitzy-primary);
+  font-size: 13px;
 }
 
 /* The arrows sit in a corner that straddles the stage edge: inside it a divider or
@@ -1023,9 +1032,16 @@
 
 /* Diagram size modifiers */
 
+/* No horizontal `auto` on the small modifier. Centring inside the 1560px content
+   column pushed the two diagrams that carry it 68px right of the x=146 column every
+   other element on the slide aligns to, so the margin is top-only and the diagram
+   stays left-aligned with its heading. This copy read `20px auto 0` until the parity
+   check below was written, which is the whole reason the check exists.
+   See docs/testing/DECISION-LOG.md rows D373 and D424. */
+
 .reveal .slides section .mermaid.deck-diagram-sm {
   max-height: 270px;
-  margin: 20px auto 0;
+  margin: 20px 0 0;
 }
 
 .reveal .slides section .mermaid.deck-diagram-sm svg {

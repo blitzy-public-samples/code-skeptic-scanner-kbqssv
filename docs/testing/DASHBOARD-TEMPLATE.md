@@ -943,7 +943,7 @@ Each item below was produced and inspected. The delivered-suite rows supersede t
 demonstration figures that this section previously carried; the demonstration numbers survive only in
 §1.2, labelled as the floors they were.
 
-Read the two kinds of number in these rows differently. The **counts** — 1150 backend cases with 3 skips,
+Read the two kinds of number in these rows differently. The **counts** — 1251 backend cases with 3 skips,
 383 frontend cases with 24 skips, 31 E2E tests with no skip, and zero failures anywhere — are properties of the
 suite, and a re-run reproduces them exactly; the reproduction below is the evidence for that. Every
 **`time` attribute** is a property of the one invocation that wrote the file, so a later run overwrites it
@@ -965,11 +965,11 @@ are what they reproduce.
 
 | Evidence | What was observed |
 |---|---|
-| Backend artifacts | `backend/reports/junit.xml` (`<testsuite name="pytest" errors="0" failures="0" skipped="3" tests="1150">`, that run's `time="12.545"`) plus the Cobertura and JSON coverage files — the two the canonical gated command requests; `backend/coverage.lcov` is the local measurement command's, as §2.1 records — from the gated run on CPython 3.9.13: **1147 passed, 3 skipped, exit 0, 93.33% (182/195)** over `app/core` 100.00% (47/47), `app/db` 100.00% (45/45), `app/services` 94.12% (48/51) and `app/tasks` 80.77% (42/52). The exact gate's own reading is retained beside them as `backend/reports/coverage-gate.txt`: `182 of 195 statements covered = 93.3333% exact, threshold 90%` / `9 file(s) measured` / `coverage gate PASSED` |
-| Frontend artifacts | `frontend/reports/jest-junit.xml` (`<testsuites tests="383" failures="0" errors="0">`, that run's `time="13.52"`, 24 `<testsuite>` children, `skipped` summing to 24 across them) and all five configured coverage reporters, from `jest --ci --coverage`: **21 suites passed / 3 skipped, 348 passed / 24 skipped, exit 0** |
+| Backend artifacts | `backend/reports/junit.xml` (`<testsuite name="pytest" errors="0" failures="0" skipped="3" tests="1251">`, that run's `time="14.729"`) plus the Cobertura and JSON coverage files — the two the canonical gated command requests; `backend/coverage.lcov` is the local measurement command's, as §2.1 records — from the gated run on CPython 3.9.13: **1248 passed, 3 skipped, exit 0, 93.33% (182/195)** over `app/core` 100.00% (47/47), `app/db` 100.00% (45/45), `app/services` 94.12% (48/51) and `app/tasks` 80.77% (42/52). The exact gate's own reading is retained beside them as `backend/reports/coverage-gate.txt`: `182 of 195 statements covered = 93.3333% exact, threshold 90%` / `9 file(s) measured` / `coverage gate PASSED` |
+| Frontend artifacts | `frontend/reports/jest-junit.xml` (`<testsuites tests="383" failures="0" errors="0">`, that run's `time="13.52"`, 24 `<testsuite>` children, `skipped` summing to 24 across them) and all five configured coverage reporters, from `jest --ci --coverage`: **21 suites passed / 3 skipped, 359 passed / 24 skipped, exit 0** |
 | E2E artifacts | `e2e/reports/e2e-junit.xml` (`tests="31" failures="0" skipped="0" errors="0"`, that run's `time="23.895578"`; per spec `analytics` 4, `configuration` 6, `dashboard` 3, `isolation` 15, `tweets` 3), `e2e/playwright-report/index.html` (about 456 KB; its exact size moves with the run) and `e2e/test-results/.last-run.json` = `{"status":"passed","failedTests":[]}` |
-| Reproduction | All three suites were re-run end to end after the last change in this checkpoint, on the same host, against a **warm** tree — one where the gated coverage command and the end-to-end suite have each already run, so `backend/coverage.json` and `e2e/reports/e2e-junit.xml` are present; a first run in a fresh clone reports the two artifact-conditional skips the skip register above names as skips rather than passes, at the same 93.33%. Backend **1150 collected / 0 collection errors, 1147 passed, 3 skipped, exit 0, 93.33%**; frontend **21 suites passed / 3 skipped, 359 passed / 24 skipped, exit 0**, gated scopes `src/store` 100 / `src/schema` 100 / `src/services` 100 against an 80 bar, and the worst of the twelve gates 100.00%; e2e **31 passed, 0 skipped, 0 failed, 0 flaky, exit 0**. Identical counts, different durations — which is exactly the split described above. The gated backend run read `12.55 s` against `11.05 s` for the same suite without coverage, and under `pytest -n auto` it read `107.87 s` for the identical `1147 passed, 3 skipped`, which is the same point about durations |
-| Test identity | Across both artifacts every `<testcase>` is uniquely identified: 1150 of 1150 distinct `classname`+`name` pairs on the backend, 383 of 383 on the frontend, and not one `classname` or suite name containing a backslash |
+| Reproduction | All three suites were re-run end to end after the last change in this checkpoint, on the same host, against a **warm** tree — one where the gated coverage command and the end-to-end suite have each already run, so `backend/coverage.json` and `e2e/reports/e2e-junit.xml` are present; a first run in a fresh clone reports the two artifact-conditional skips the skip register above names as skips rather than passes, at the same 93.33%. Backend **1251 collected / 0 collection errors, 1248 passed, 3 skipped, exit 0, 93.33%**; frontend **21 suites passed / 3 skipped, 359 passed / 24 skipped, exit 0**, gated scopes `src/store` 100 / `src/schema` 100 / `src/services` 100 against an 80 bar, and the worst of the twelve gates 100.00%; e2e **31 passed, 0 skipped, 0 failed, 0 flaky, exit 0**. Identical counts, different durations — which is exactly the split described above. The gated backend run read `14.74 s` against `11.32 s` for the same suite without coverage, and under `pytest -n auto` it read `93.16 s` for the identical `1248 passed, 3 skipped`, which is the same point about durations |
+| Test identity | Across both artifacts every `<testcase>` is uniquely identified: 1251 of 1251 distinct `classname`+`name` pairs on the backend, 383 of 383 on the frontend, and not one `classname` or suite name containing a backslash |
 | E2E harness | All four routes served, with an error-free dev-server log, under Vite 4.5.14 on `127.0.0.1:<4173 + CLONE_INDEX>` |
 
 ### 7.2 Implementation-time acceptance steps — performed
@@ -1154,42 +1154,51 @@ re-render idempotence, console, network and Content-Security-Policy. Each figure
 the live DOM, not inferred from the source, and each was taken after the slide compression D337 records,
 so unlike the previous revision of this section it describes the deck as it ships.
 
-**One number has changed at each of the last four checkpoints, and each change was confirmed rather than
-assumed.** The headline KPI went `1,390` → `1,443` → `1,455` → `1,458` → `1,472` → the **`1,537`** the delivered
-tree measures, which is the sum of the three result streams as they now stand: **1147 backend, 359
-frontend and 31 browser**. The last move is the largest of the four and it is arithmetic, not a
-re-measurement of the same suite: the delivered backend suite carries 1150 cases where the checkpoint
-before it carried 1082, because two independently developed extensions to the result-stream guards both
-landed — the per-layer declared-versus-witness comparison and the unreasoned-skip refusal — adding 14
-cases to `tests/test_dashboard_extract.py` and `tests/test_docs_contract.py` between them, and the
-frontend gained the served-wire-shape case. So `1,537 = 1147 + 359 + 31`, and the identity is a
+**One number has changed at each of the last five checkpoints, and each change was confirmed rather than
+assumed.** The headline KPI went `1,390` → `1,443` → `1,455` → `1,458` → `1,472` → `1,537` → the **`1,638`** the
+delivered tree measures, which is the sum of the three result streams as they now stand: **1248 backend, 359
+frontend and 31 browser**. The last move is the largest of the five and it is arithmetic, not a
+re-measurement of the same suite: the delivered backend suite carries 1251 cases where the checkpoint
+before it carried 1150, because the final-acceptance remediation bound every figure it corrected instead
+of merely restating it — the security register's census and its cross-references, this log's citation
+census, the manifest pin census, the frontend result triple, the deck-and-theme declaration parity, the
+deck's accessibility contract, relative-link resolution, the thirty-two-row disposition register, the byte
+hygiene of every authored artifact and the four published per-suite case counts — adding 101 cases to
+`tests/test_docs_contract.py`. So `1,638 = 1248 + 359 + 31`, and the identity is a
 **test** rather than a claim: `test_the_deck_headline_kpi_is_the_sum_of_the_three_streams` reads the
 triple out of `TRACEABILITY-MATRIX.md`, reads the KPI out of the deck through its own
 `Tests passing now` label, and fails if they disagree, while
 `test_every_document_quoting_the_headline_kpi_quotes_the_same_one` fails if this document quotes a
-stale one. `1,458` and `1,455` appear in no on-disk byte of the deck. The browser readings recorded
+stale one. `1,537`, `1,458` and `1,455` appear in no on-disk byte of the deck. The browser readings recorded
 below were taken against the earlier value and are unaffected by it: a digit change inside one
 `.kpi-value` span alters no slide count, no diagram, no icon and no request.
 
-**Re-verified in the browser after the KPI moved**, at 1920x1080 over `file://`, so the sentence above is a
+**Re-verified in the browser after the KPI moved**, at 1920x1080 and served over `http://127.0.0.1` rather
+than `file://` so the Content-Security-Policy is enforced as it ships, which makes the sentence above a
 reading rather than an inference. `Reveal.isReady()` true, `Reveal.VERSION` `5.1.0`,
 `Reveal.getTotalSlides()` **16** agreeing with `.reveal .slides > section` **16** and with the section count
-in the file. The KPI grid's four `.kpi-value` elements read `0%`, **`1,537`**, `93%`, `42`, and the one
-holding `1,537` was paired to its `Tests passing now` label by **DOM containment** rather than by index
+in the file. The KPI grid's four `.kpi-value` elements read `0%`, **`1,638`**, `93%`, `42`, and the one
+holding `1,638` was paired to its `Tests passing now` label by **DOM containment** rather than by index
 arithmetic across the two `.kpi-grid` elements. Every superseded value is gone: a sweep for every
-`\b1,\d{3}\b` grouped number in the rendered document returns **exactly one match**, `1,537`, in both
-`innerHTML` and `textContent`. After a full sixteen-slide traversal, `pre.mermaid svg` **6 of 6** — each
-`data-processed="true"` with a non-degenerate viewBox, no Mermaid error element, and its own injected style
+`\b1,\d{3}\b` grouped number in the rendered document returns **exactly one match**, `1,638`, in both
+`innerHTML` and `textContent`, and in the 60,943 bytes the server returns. After a full sixteen-slide
+traversal, `pre.mermaid svg` **6 of 6** — each sitting inside a `pre.mermaid` marked `data-processed="true"`,
+each with a non-degenerate viewBox, no Mermaid error element, and its own injected style
 block — `svg.lucide` **19**, and `i[data-lucide]` **0** with no `<i>` element surviving anywhere. Console
 **empty at every severity** including the `issue` channel where a CSP or SRI failure would appear, and
-**9 of 9** network requests answered `200`, all four sha384 pins matching hashes recomputed independently
-before the browser was opened. Two readings that look like defects and are not: five of the six diagram
+**9 of 9** network requests answered `200` or, on a cached reload of the document, `304`, all four sha384
+pins matching hashes recomputed independently
+before the browser was opened. Three readings that look like defects and are not: five of the six diagram
 SVGs measure `0x0` because reveal keeps distant slides at `display: none`, which is the same
 position-dependent effect the `innerText` trap above describes; and an **unqualified** `[data-lucide]`
 selector returns 19 rather than 0, because Lucide preserves that attribute on the `<svg>` it generates —
-the element-qualified form is the reading that means what it says, as B7 already records.
+the element-qualified form is the reading that means what it says, as B7 already records; and
+`svg[data-processed="true"]` returns **0**, because Mermaid 11.4.0 marks the container rather than the
+graphic. A document-wide `[data-processed]` sweep returns exactly six elements and every one of them is a
+`pre`, which is also where the deck's own `isDrawn()` reads the attribute from, so the container-qualified
+form is the only one that can ever be non-zero.
 Every structural figure in the table below re-measured identically: 16 sections, 6 of 6
-diagrams each holding exactly one rendered `<svg>` marked `data-processed` and none carrying an error
+diagrams each marked `data-processed` and holding exactly one rendered `<svg>`, none carrying an error
 element, 19 distinct icons with 0 `i[data-lucide]` placeholders left unreplaced, an **empty console
 across seven queries over the two loads, including an all-severities filter**, and 18 of 18 requests answered `200` over
 the two loads, which is also what proves every sha384 integrity hash matched — the three decoded
@@ -1419,7 +1428,11 @@ findings were raised by a runtime security assessment; eleven have their only re
 pinned dependency version or an excluded infrastructure file and are written up in
 [`./SECURITY-GAPS.md`](./SECURITY-GAPS.md) rather than closed. The three that were inside the authorized
 write surface are below, each with the pre-fix reading beside the post-fix one, because "fixed" is only
-meaningful against what it replaced.
+meaningful against what it replaced. The suite totals quoted in the rows below are that checkpoint's
+own readings and are kept as history for the reason D354 gives, exactly as in §7.6: the frontend stream
+read `348 passed / 24 skipped of 372` and the backend `1093 passed / 3 skipped / 1096 collected` then,
+and both have since grown. The delivered tree's current totals are in §1.1 and §7.1, and
+`backend/tests/test_docs_contract.py` holds every document to those rather than to these.
 
 | Row | What was checked | Reading |
 |---|---|---|
@@ -1430,3 +1443,36 @@ meaningful against what it replaced.
 | C21 | The install path executes nothing (D411) | `frontend/node_modules` (467 directories) and `e2e/node_modules` deleted outright, then rebuilt with `npm install --ignore-scripts` — the exact command the workflow now runs. Both installs exit 0; on the rebuilt tree `esbuild 0.18.20` transforms TypeScript through its JS API and `msw/node` imports, which are the two packages whose postinstalls were suppressed. **Frontend `npm run test:ci`: 348 passed / 24 skipped of 372, exit 0. E2E: `browsers:require` exit 0, `test:list` 31 in 5 files, `npm test` 31 passed, exit 0.** On the Python side, `pip download --only-binary=:all:` resolved the whole 76-distribution closure as wheels for cp39 on `manylinux2014_x86_64`, `manylinux_2_17_x86_64` and `any`, so wheels-only changes nothing about what installs; `pip==26.0.1` declares `requires_python >=3.9` and is what pip's own resolver picks as latest under 3.9 |
 | C22 | The workflow changed in its install commands and nowhere else (D411) | `yaml.safe_load` of the file at HEAD and after the edit: `build` **20** steps and `e2e` **13** in both, and the two step-name lists compare **equal**. Only `run:` bodies and comments differ. The suite that reads this file is unmoved: backend **1093 passed / 3 skipped / 1096 collected**, coverage **93.33%**, exit 0 |
 
+
+### 7.8 Executive deck accessibility — re-measured in a browser after the QA-27 fixes
+
+A later, separate set of readings again, taken after the four deck changes `DECISION-LOG.md` D423 and
+D424 record. §7.4 is not wrong: it describes the deck as it stood before those changes, and D354
+keeps such a record as history. Every figure below was read out of the live DOM or out of a Chrome
+DevTools accessibility snapshot in the same session, at a 1920×1080 viewport, over a walk of all
+sixteen slides in both directions — which the walk has to be, because Mermaid renders each diagram
+only once its slide has a layout box, so a diagram slide never visited has nothing to audit. Before the
+walk, six `pre.mermaid` elements were present and **none** was rendered; after it, all six were.
+
+| Row | What was checked | Reading |
+|---|---|---|
+| C23 | Mermaid's injected stylesheet is out of the accessibility tree (D423) | Six `<style>` elements, one per rendered diagram, each a direct child of its `<svg>`. **All six carry `aria-hidden="true"`; the list of those that do not is empty.** Each is **3,581** characters, **21,486** in total, and each still contains `#mermaid`, `stroke-width`, `font-family` and `.edgePath` — the stylesheet is hidden, not removed, so it still styles the diagram. Verbose accessibility snapshots of two diagram slides contain **zero** occurrences of any of those four substrings, and zero CSS braces of any kind. An independent DOM pruning walk over the whole body found **0** exposed text nodes carrying CSS and **6** pruned ones, every one attributed specifically to `aria-hidden` on a `<style>` |
+| C24 | The diagram announces its own description and nothing else (D423) | The accessibility node for each diagram is `role="image"` with the name being character-for-character its authored `aria-label` — on slide 5, `Migration of the previous test files: three separate foundations became one foundation, on which every suite passes.` at 116 characters, against a raw `textContent` of **3,626** characters for the same element. Its only child is a `graphics-document` whose leaves are the flowchart's own node captions |
+| C25 | A content landmark exists and is named (D423) | `<div class="slides" role="main" aria-label="Executive summary slides">`, surfacing as `main "Executive summary slides"` in the accessibility tree, with exactly **one** `main` in the document. The other nodes present are reveal's own `application` wrapper and its unnamed `complementary` control aside; there is no `navigation`, `banner`, `contentinfo` or `region` |
+| C26 | Every table has an accessible name (D423) | Three tables, three non-empty accessible names, each read from the accessibility tree on the slide that carries it and each identical to its `aria-label`: `Migration outcome by number of tests`, `Each authorised production change and why it was unavoidable`, `Coverage bar enforced for each scope`. None uses a `<caption>`, `aria-labelledby` or a `role` override that could compete |
+| C27 | The navigation controls offer a large enough target (D423) | Computed `font-size` of `.reveal .controls` is **`13px`**. Both visible arrows measure **46.796875 × 46.796875** CSS pixels — `.reveal` reports `transform: none`, so these are true pixels — against a 44 × 44 minimum, and they sit 65 px apart so the targets do not overlap. One `Tab` press from `<body>` lands on `previous slide`; the focus indicator is unchanged at `outline-width: 4px`, `outline-style: solid`, `outline-color: rgb(65, 1, 219)`, `outline-offset: 4px` over a white 4 px `box-shadow`, and the button's own box is the same size focused as unfocused |
+| C28 | Nothing else about the deck moved (D423, D424) | `.reveal .slides > section` **16**, `Reveal.getTotalSlides()` **16**, `pre.mermaid` **6** with all six carrying a `viewBox` whose width and height both exceed 24 (smallest extent 75.17), `svg.lucide` **19** across 19 unique icon names with **0** `i[data-lucide]` left unreplaced, and exactly **1** `<meta http-equiv="Content-Security-Policy">` with no report-only twin. Across two full sessions, one of them instrumented by a script injected ahead of every page script and wrapping fourteen `console` methods plus the `error`, `unhandledrejection` and `securitypolicyviolation` events: **zero console messages at any severity, zero policy violations, and zero requests returning ≥ 400** of the nine the deck issues |
+
+**Screenshots.** `blitzy/screenshots/deck-slide01-title.png`, `deck-slide05-migration-table.png`,
+`deck-slide11-gates-table.png` and `deck-controls-focus.png`, each 1920 × 1080 confirmed from its
+PNG header, plus `evidence_slide03_mermaid_five_layers.png`. The accessibility snapshots are retained
+beside them as `a11y_snapshot_slide05_diagram_verbose.txt`, `..._slide11_...` and `..._slide07_table_...`.
+
+**What this section does not claim.** One browser, one engine, as §7.5 says throughout. Two findings
+were seen and deliberately not acted on, because neither is this deck's: Chrome folds
+`text-transform: uppercase` into the computed accessible name, so the six `<th>` cells announce in
+capitals where the markup is title case; and reveal.js generates its own `<aside class="controls">`,
+which is exposed as an unnamed `complementary` landmark. Neither is fixed here — the first is a
+browser behaviour rather than a property of this markup, and the second is a framework's own generated
+element — and both are carried as suggested next tasks in [`../../README.md`](../../README.md)
+rather than left only in this reading.

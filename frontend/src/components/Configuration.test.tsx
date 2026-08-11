@@ -100,15 +100,28 @@ const PENDING_ATTRIBUTES = ['disabled', 'aria-busy', 'aria-disabled', 'aria-desc
 /** Roles a pending indicator would be announced under. The subject renders none. */
 const PENDING_ROLES = ['status', 'progressbar', 'alert'] as const;
 
-/** Wrap typing in act because this dependency graph otherwise schedules state updates outside React's act scope. */
-async function fillCredentials(user: User): Promise<void> {
+/**
+ * Type all four credential values, inside a single `act` scope.
+ *
+ * The wrapping lives here and nowhere else. This dependency graph schedules a state update
+ * per keystroke outside React's act scope, so every character typed outside a scope is one
+ * `not wrapped in act` warning on stderr - and one case typing a 500-character value this way
+ * produced 510 of them, which was the whole of the suite's warning output. A case that needs
+ * values other than `CREDENTIALS` passes them in rather than issuing its own `user.type` calls.
+ *
+ * @see docs/testing/DECISION-LOG.md - row D425, for why the scope is shared rather than repeated.
+ */
+async function fillCredentials(
+  user: User,
+  credentials: typeof CREDENTIALS = CREDENTIALS,
+): Promise<void> {
   await act(async () => {
-    await user.type(screen.getByLabelText(FIELD_LABELS.apiKey), CREDENTIALS.apiKey);
-    await user.type(screen.getByLabelText(FIELD_LABELS.apiSecret), CREDENTIALS.apiSecret);
-    await user.type(screen.getByLabelText(FIELD_LABELS.accessToken), CREDENTIALS.accessToken);
+    await user.type(screen.getByLabelText(FIELD_LABELS.apiKey), credentials.apiKey);
+    await user.type(screen.getByLabelText(FIELD_LABELS.apiSecret), credentials.apiSecret);
+    await user.type(screen.getByLabelText(FIELD_LABELS.accessToken), credentials.accessToken);
     await user.type(
       screen.getByLabelText(FIELD_LABELS.accessTokenSecret),
-      CREDENTIALS.accessTokenSecret,
+      credentials.accessTokenSecret,
     );
   });
 }
@@ -406,14 +419,14 @@ describe('TwitterAPISettings (src/components/Configuration)', () => {
      * Typed rather than assigned, so the value crosses the same `onChange` path a person's input
      * does. Nothing between the keystroke and the collaborator truncates it: not the input, not
      * React's controlled-value round trip, and not the payload assembly on lines 14-19.
+     *
+     * Typed through the shared helper, so all 500 keystrokes land inside one `act` scope.
+     * Issuing them here instead cost 510 `not wrapped in act` warnings and 3.4 MB of
+     * stderr for a suite of sixteen passing cases, which is what buries a real warning.
+     * The property under test is unchanged: the value still crosses `onChange` one
+     * keystroke at a time. See docs/testing/DECISION-LOG.md row D425.
      */
-    await user.type(screen.getByLabelText(FIELD_LABELS.apiKey), OVERSIZE_CREDENTIAL);
-    await user.type(screen.getByLabelText(FIELD_LABELS.apiSecret), CREDENTIALS.apiSecret);
-    await user.type(screen.getByLabelText(FIELD_LABELS.accessToken), CREDENTIALS.accessToken);
-    await user.type(
-      screen.getByLabelText(FIELD_LABELS.accessTokenSecret),
-      CREDENTIALS.accessTokenSecret,
-    );
+    await fillCredentials(user, { ...CREDENTIALS, apiKey: OVERSIZE_CREDENTIAL });
 
     await submitForm(user);
 

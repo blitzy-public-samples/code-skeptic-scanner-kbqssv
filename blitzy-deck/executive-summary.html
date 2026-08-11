@@ -330,8 +330,16 @@
 
     /* Reveal chrome */
 
+    /* Reveal draws the arrow cluster entirely in `em` against `.reveal .controls`,
+       whose own font-size is 10px by default, which puts each arrow's hit target at
+       36x36. Declaring 13px here scales every metric of the cluster together and
+       takes the target to 46.8x46.8, above the 44x44 minimum, without overriding a
+       single one of reveal's own rules and without touching any setting Rule 4
+       constrains. See docs/testing/DECISION-LOG.md row D423. */
+
     .reveal .controls {
       color: var(--blitzy-primary);
+      font-size: 13px;
     }
 
     /* The arrows sit in a corner that straddles the stage edge: inside it a divider or
@@ -1141,7 +1149,10 @@
 </head>
 <body>
   <div class="reveal">
-    <div class="slides">
+    <!-- role="main" sits on `.slides` rather than on a wrapper because reveal.js
+         manages `aria-hidden` on this element's children, so the landmark and the
+         visibility it exposes stay on the same subtree. See DECISION-LOG.md D423. -->
+    <div class="slides" role="main" aria-label="Executive summary slides">
 
       <!-- Slide 1 - Title -->
       <section class="slide-title">
@@ -1165,7 +1176,7 @@
           </div>
           <div class="kpi-card">
             <span class="kpi-icon" aria-hidden="true"><i data-lucide="list-checks" aria-hidden="true" focusable="false"></i></span>
-            <span class="kpi-value">1,537</span>
+            <span class="kpi-value">1,638</span>
             <span class="kpi-label">Tests passing now</span>
           </div>
           <div class="kpi-card">
@@ -1219,7 +1230,7 @@
 </pre>
           </div>
           <div class="deck-col">
-            <table>
+            <table aria-label="Migration outcome by number of tests">
               <thead>
                 <tr>
                   <th scope="col">Outcome</th>
@@ -1265,7 +1276,7 @@
           <span class="kpi-icon" aria-hidden="true"><i data-lucide="git-compare" aria-hidden="true" focusable="false"></i></span>
           <h2>Change was deliberately contained</h2>
         </div>
-        <table class="deck-table-compact">
+        <table class="deck-table-compact" aria-label="Each authorised production change and why it was unavoidable">
           <thead>
             <tr>
               <th scope="col">Change</th>
@@ -1342,7 +1353,7 @@
 </pre>
           </div>
           <div class="deck-col">
-            <table>
+            <table aria-label="Coverage bar enforced for each scope">
               <thead>
                 <tr>
                   <th scope="col">Scope</th>
@@ -1648,6 +1659,21 @@
         });
       }
 
+      /* Mermaid writes its own stylesheet into every diagram it draws, as a `<style>`
+         child of the svg. Chrome exposes that text as static content, so a reader on a
+         diagram slide is read about 3,581 characters of CSS before reaching the
+         diagram's own description. The `<pre>` already carries `role="img"` and an
+         `aria-label`; hiding the injected stylesheet is what makes that label the whole
+         of the announcement. Done after every render rather than once, because each
+         diagram is drawn when its slide first becomes measurable.
+         See docs/testing/DECISION-LOG.md row D423. */
+      function hideRenderedInternals() {
+        var styles = document.querySelectorAll(DIAGRAM_SELECTOR + ' svg style');
+        Array.prototype.forEach.call(styles, function (node) {
+          node.setAttribute('aria-hidden', 'true');
+        });
+      }
+
       /* The slide on screen is served first, then every scope a faster-than-render
          navigation passed over that is still measurable. One that is not waits for the
          slide change that brings it back into view. */
@@ -1657,6 +1683,7 @@
         if (rendered) {
           discardFailedRenders(rendered);
         }
+        hideRenderedInternals();
         relayout();
         var current = renderScope();
         var queued = deferredScopes.indexOf(current);

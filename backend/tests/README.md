@@ -7,18 +7,18 @@ production code **actually does today**, including the places where that diverge
 documents, because a test that asserts an intention the code does not implement fails for the wrong
 reason and teaches nobody anything.
 
-**Current state:** 1150 tests collected, 1147 passing, 3 skipped with reasons, 93.33% line coverage on
+**Current state:** 1251 tests collected, 1248 passing, 3 skipped with reasons, 93.33% line coverage on
 the four gated packages. `pytest --collect-only -q` reports zero errors.
 
 **That is a warm reading.** A first run in a fresh clone
-reports **1145 passed and 5 skipped on a first pass**, and both figures are correct.
+reports **1246 passed and 5 skipped on a first pass**, and both figures are correct.
 Two cases read an artifact a *previous* run wrote, and both
 artifacts are gitignored, so neither exists yet: `tests/test_coverage_gate.py` reads
 `backend/coverage.json`, which §8's gated command writes, and `tests/test_docs_contract.py` reads
 `e2e/reports/e2e-junit.xml`, which the end-to-end suite writes. Each skips with a reason naming the
 artifact rather than failing on its absence, which is the honest disposition for a case whose subject
 has not been produced. Run the gated command once — and the e2e suite once, if you want the second —
-and every later run reads 1147/3. The collected total is 1150 either way and nothing fails.
+and every later run reads 1248/3. The collected total is 1251 either way and nothing fails.
 
 Those are measurements from CPython 3.9.13 with `backend/requirements-dev.txt` installed, read out of
 `backend/reports/junit.xml` and `backend/coverage.json`. Every figure in this document names the command
@@ -112,11 +112,19 @@ Changing any of these breaks the suite outright rather than shifting a number.
 
 The rest of the manifest is the test stack (`pytest-asyncio`, `pytest-cov`, `coverage`, `freezegun`,
 `pytest-xdist`) plus the runtime stack the tests exercise. `starlette==0.27.0` is a **documented
-exception** covering GHSA-f96h-pmfr-66vw / CVE-2024-47874 and GHSA-86qp-5c8j-p5mr / CVE-2026-48710,
-neither of which can be closed without replacing `fastapi==0.95.2`. The manifest itself carries no
+exception**. It sits below every one of its fixed releases and inside the affected range of **seven**
+published advisories, of which three are the ones this suite reasons about directly:
+GHSA-f96h-pmfr-66vw / CVE-2024-47874, a multipart denial of service that is unreachable here
+because no implemented endpoint accepts a request body, and the `Host`-handling **pair**
+GHSA-86qp-5c8j-p5mr / CVE-2026-48710 and GHSA-jp82-jpqv-5vv3 / CVE-2026-54282, which is
+reachable. None of the seven can be closed without replacing `fastapi==0.95.2`. The whole set is
+enumerated, beside the OSV query that reproduces it, in
+[`SECURITY-GAPS.md`](../../docs/testing/SECURITY-GAPS.md) row 14 — treat that as the register and
+this as a pointer, because a count of a third-party database is a reading on the day it was
+taken and an advisory published tomorrow makes it eight. The manifest itself carries no
 rationale — Rule 1 keeps that in one place — so read
-[`DECISION-LOG.md`](../../docs/testing/DECISION-LOG.md) rows `D102` and `D164` before proposing a bump.
-`integration/test_route_surface.py` covers the reachable half of the second advisory.
+[`DECISION-LOG.md`](../../docs/testing/DECISION-LOG.md) rows `D102`, `D164` and `D421`
+before proposing a bump. `integration/test_route_surface.py` covers the reachable half.
 
 ---
 
@@ -150,7 +158,7 @@ PytestConfigWarning: Unknown config option: rootdir
 It is a computed value, not a declarable one. So the invocation directory is the mechanism, and
 getting it wrong is not a subtle failure. Imports themselves do resolve from the repository root —
 `tests/` is a package, so pytest's prepend import mode puts `backend/` on `sys.path` — and that is what
-makes the failure quiet rather than obvious: a root-level `pytest` collects all 1150 tests and then
+makes the failure quiet rather than obvious: a root-level `pytest` collects all 1251 tests and then
 **fails 21 of them** with warnings on every marker, because `backend/pytest.ini` is not the active
 config file at that level, so `asyncio_mode = auto` is not in effect and every async test is
 mis-handled. Always:
@@ -775,18 +783,18 @@ first run after an install is slower — about nineteen seconds here — because
 
 | Command | Expected outcome |
 |---|---|
-| `pytest` | `1147 passed, 3 skipped` |
+| `pytest` | `1248 passed, 3 skipped` |
 | `pytest tests/unit -m unit` | `492 passed, 3 skipped` |
 | `pytest tests/integration -m integration` | `204 passed` |
 | `pytest tests/test_dependency_closure.py` | `73 passed` |
 | `pytest tests/test_coverage_gate.py` | `62 passed` |
 | `pytest tests/test_guard_contract.py` | `168 passed` |
 | `pytest tests/test_dashboard_extract.py` | `44 passed` |
-| `pytest tests/test_docs_contract.py` | `104 passed` |
-| `pytest --collect-only -q` | `1150 tests collected`, **zero errors** |
+| `pytest tests/test_docs_contract.py` | `205 passed` |
+| `pytest --collect-only -q` | `1251 tests collected`, **zero errors** |
 | The gate | `Required test coverage of 90% reached. Total coverage: 93.33%`, then the exact gate's `PASSED` |
 
-The counts close on the whole: 492 + 3 + 204 + 73 + 62 + 168 + 44 + 104 = 1150, the collected total above.
+The counts close on the whole: 492 + 3 + 204 + 73 + 62 + 168 + 44 + 205 = 1251, the collected total above.
 
 **Those are warm-tree readings, and a first run in a fresh clone is two passes short of them.** Two tests
 read a result artifact that `.gitignore` keeps out of version control, and each skips rather than fails
@@ -797,9 +805,9 @@ while its artifact has not been produced yet — deliberately, so that this suit
 | `tests/test_coverage_gate.py::test_counts_and_files_are_read_from_the_real_report` | `backend/coverage.json is written by the gated coverage command` | the canonical producer block above, through its `--cov-report=json` |
 | `tests/test_docs_contract.py::test_the_published_e2e_census_is_the_retained_streams_own_count` | `e2e/reports/e2e-junit.xml is gitignored and absent in a fresh clone` | `npm test` from `e2e/` |
 
-So a clean clone's first `pytest` reads `1145 passed, 5 skipped`, its
+So a clean clone's first `pytest` reads `1246 passed, 5 skipped`, its
 `pytest tests/test_coverage_gate.py` reads `61 passed, 1 skipped` and its
-`pytest tests/test_docs_contract.py` reads `103 passed, 1 skipped`; the collected total is unchanged at 1150
+`pytest tests/test_docs_contract.py` reads `204 passed, 1 skipped`; the collected total is unchanged at 1251
 and the coverage gate is unaffected, still reading 93.33%. Run the canonical producer block once and the
 end-to-end suite once, and every figure above is reproduced exactly. Note that the plain
 `--cov-fail-under=90` form on its own does **not** clear the first of the two, because it requests no JSON
@@ -863,11 +871,11 @@ the same arrangement, one step each; the root [`README.md`](../../README.md) tab
 ### On `-n auto`, and why it is not the default
 
 `pytest-xdist` is installed and works — `pytest -n auto` starts, runs to completion and reports the
-same `1147 passed, 3 skipped`, and
+same `1248 passed, 3 skipped`, and
 `-n 2` reaches it in about 9 seconds. It is **not** enabled by default, and on a many-core machine it is
-markedly *slower*: on this host `-n auto` took 108 seconds against roughly 11 seconds serial, because
+markedly *slower*: on this host `-n auto` took 93 seconds against roughly 11 seconds serial, because
 process startup dominates a suite this fast. That figure moves with how busy the host is — separate
-readings on this machine span roughly 107 to 250 seconds — so treat the order of magnitude rather than
+readings on this machine span roughly 93 to 250 seconds — so treat the order of magnitude rather than
 the number as the point. Nothing in the design depends on execution order, so
 parallelism is always safe; it is just rarely worth it. Prefer `-n 4` over `-n auto` if you want it.
 
@@ -1375,7 +1383,7 @@ Filling any of these means changing production code, which this programme is not
   or drop `pytest-xdist` from the manifest and the documented commands. Nothing is gated on it either
   way — the serial suite is the suite, and CI runs serially on Linux.
 - **No lockfile exists anywhere in the repository**, so no install is byte-reproducible, and the three
-  packages mitigate that to different degrees. The backend is fully exact-pinned: all **25** active lines of
+  packages mitigate that to different degrees. The backend is fully exact-pinned: all **26** active lines of
   `requirements-dev.txt` are `==`, and `test_dependency_closure.py` fails if any one of them is not, if the
   parsed-pin count does not equal the active-line count, or if an installed version differs. It closes the
   other direction too — every third-party module the suite actually reaches, whether by `import` or by a
@@ -1414,7 +1422,10 @@ Filling any of these means changing production code, which this programme is not
   CVE was reachable from any test here — `app/core/security.py` only encodes and decodes HS256 with an
   explicit key, so no JWE is decrypted and no OpenSSH ECDSA key is loaded — so the exposure had always
   been to *future* production use; it is now removed rather than documented.
-- `starlette==0.27.0` carries a reachable Host-header advisory that cannot be closed without replacing
-  `fastapi==0.95.2`. The behaviour is pinned by the Host census in
-  `integration/test_route_surface.py`; the production mitigation — `TrustedHostMiddleware` in
-  `app/main.py` — needs an authorization this programme does not have.
+- `starlette==0.27.0` carries a reachable Host-handling advisory **pair** — GHSA-86qp-5c8j-p5mr /
+  CVE-2026-48710 and GHSA-jp82-jpqv-5vv3 / CVE-2026-54282 — that cannot be closed without
+  replacing `fastapi==0.95.2`. They are two of the **seven** advisories the pin sits inside; the
+  whole set is enumerated in [`SECURITY-GAPS.md`](../../docs/testing/SECURITY-GAPS.md) row 14.
+  The behaviour is pinned by the Host census in `integration/test_route_surface.py`; the
+  production mitigation — `TrustedHostMiddleware` in `app/main.py` — needs an
+  authorization this programme does not have.

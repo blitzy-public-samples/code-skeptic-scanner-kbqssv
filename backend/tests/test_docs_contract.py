@@ -157,6 +157,37 @@ PASSED_PATTERNS = (
     r"\((\d{3,5}) backend, \d+ frontend",
 )
 
+#: Documents that publish the *frontend* suite's result. The count-publishing set plus
+#: ``frontend/TESTING.md``, which carries the runner's own summary line as a committed
+#: transcript and is therefore the witness the rest are held to. That matters because
+#: ``frontend/reports/jest-junit.xml`` is gitignored: a check that reads only the artifact
+#: passes vacuously in a fresh clone, which is exactly the state a reader restating these
+#: figures is least likely to be in.
+FRONTEND_RESULT_DOCUMENTS = COUNT_PUBLISHING_DOCUMENTS + (
+    os.path.join("frontend", "TESTING.md"),
+)
+
+#: Every phrasing a delivered document uses to publish that result, each with the figures its
+#: capture groups yield, in order. A phrasing states only some of them, so the readings are
+#: compared field by field and a document is never held to a number it makes no claim about.
+#: ``tests`` is the root total; ``suites`` the suite total. The first shape is the artifact
+#: summary, the second the runner's verbatim summary line, the third the reader-facing prose,
+#: the fourth the three-stream sum the deck's headline is built from.
+FRONTEND_RESULT_PATTERNS = (
+    (r"(\d+) suites passed / (\d+) skipped, (\d+) passed / (\d+) skipped, exit 0",
+     ("suites_passed", "suites_skipped", "passed", "skipped")),
+    (r"Suites: (\d+) skipped, (\d+) passed, \d+ of (\d+) total\. "
+     r"Tests: (\d+) skipped, (\d+) passed, (\d+) total",
+     ("suites_skipped", "suites_passed", "suites", "skipped", "passed", "tests")),
+    (r"\*\*(\d+) passed / (\d+) reasoned skips across (\d+) suites\*\*",
+     ("passed", "skipped", "suites")),
+    (r"\(\d{3,5} backend, (\d+) frontend", ("passed",)),
+)
+
+#: The retained frontend result stream, when a suite has been run in this working tree. The
+#: counterpart of :data:`E2E_JUNIT_PATH` for the layer whose figure QA found contradicted.
+FRONTEND_JUNIT_PATH = os.path.join(REPOSITORY_ROOT, "frontend", "reports", "jest-junit.xml")
+
 #: Review findings the log's §40 register puts to an owner, whether to ratify a deviation
 #: from the frozen plan's literal text or to record that a scope clause already allows it.
 ESCALATED_DEVIATIONS = ("F3", "F4", "F5", "F6", "F12", "F17", "F21")
@@ -187,6 +218,27 @@ ROOT_MISUSE_PATTERN = r"\*\*(\d+) failed, (\d{3,5}) passed, (\d+) skipped\*\*"
 #: The JWT pin as delivered. A backlog entry describing this change as unattempted is a
 #: document contradicting the manifest beside it, which is the failure this pair catches.
 DELIVERED_PIN = "python-jose[cryptography]==3.5.0"
+
+#: The two section headings ``backend/requirements-dev.txt`` partitions itself with, in file
+#: order. The documents describe the split as "N test-stack distributions and M of the runtime
+#: stack", so the partition has to be derived from the file rather than counted by hand: that
+#: is what let a manifest of 26 be published as 25 in three places while a fourth said 26.
+MANIFEST_SECTIONS = ("# test stack", "# runtime stack the tests exercise")
+
+#: Every phrasing a document uses to publish the manifest's pin census. The first two are the
+#: prose form in the two onboarding documents, the third the matrix's section F cell, and the
+#: fourth the matrix's section H claim - the only one of the four that was already bound, and
+#: the only one that was right.
+MANIFEST_CENSUS_PATTERNS = (
+    r"exact-pinned throughout: all \*\*(\d+)\*\* active lines are `==`",
+    r"fully exact-pinned: all \*\*(\d+)\*\* active lines of",
+    r"suite executes against: (\d+) exact pins",
+    r"`backend/requirements-dev\.txt` \((\d+) active lines",
+)
+
+#: How the root README states the split across those two sections.
+MANIFEST_SPLIT_PATTERN = (r"(\d+) test-stack distributions and (\d+) of the runtime stack "
+                          r"the tests exercise")
 
 #: Markers ``SECURITY-GAPS.md`` states the backend manifest carries, each required in it.
 MANIFEST_MARKERS = (
@@ -280,6 +332,34 @@ EXCLUDED_NAMES = frozenset((
     "node_modules", "__pycache__", ".pytest_cache", "test-results",
     "playwright-report", "reports", "coverage", "package-lock.json",
 ))
+
+#: Directory names the citation census walk never enters. The union of what ``.gitignore``
+#: suppresses, the version-control and virtual-environment directories, the browser-evidence
+#: directories, and ``documentation/`` - which the census rule excludes by name because those
+#: are the frozen design documents rather than files this branch ships. Verified against
+#: ``git ls-files`` while the binding was written: the walk this drives and the tracked tree
+#: agree on all 144 paths, in both directions. ``git`` itself is unavailable here, because the
+#: conftest guards refuse a child process while a test runs.
+CENSUS_EXCLUDED_DIRECTORIES = frozenset((
+    ".git", ".venv-backend", "venv", "env", "ENV", "htmlcov", "documentation", "blitzy",
+)) | EXCLUDED_NAMES
+
+#: File names the walk skips: the local environment file and the coverage streams, all of them
+#: gitignored, plus the ad-hoc test prefix that must never be committed.
+CENSUS_EXCLUDED_FILES = frozenset((
+    ".env", ".coverage", "coverage.xml", "coverage.json", "coverage.lcov",
+))
+CENSUS_SCRATCH_PREFIX = "blitzy_adhoc"
+
+#: The pattern the log's own census rule names for a decision-row citation.
+CENSUS_CITATION_PATTERN = r"\b[DC]\d{1,3}\b"
+
+#: The three figures the log publishes about itself, in the order they appear.
+CENSUS_PATTERNS = (
+    (r"\*\*(\d+)\*\* files outside this log carry at least one `D` or `C` id", "citing"),
+    (r"id — (\d+) counting\nthis file itself", "citing_with_log"),
+    (r"and \*\*(\d+)\*\* link to this document", "linking"),
+)
 
 #: Prefixes a bare path token in a section F cell is resolved against, in order.
 RESOLUTION_PREFIXES = ("", "backend", "frontend", "e2e", os.path.join("docs", "testing"))
@@ -449,6 +529,85 @@ def _delivered_files():
     return delivered
 
 
+def _census_files():
+    """Return every path the log's citation census counts, repository-relative.
+
+    A filesystem walk rather than ``git ls-files``, because the conftest guards refuse a child
+    process while a test runs and this module states that it never invokes ``git``. The two
+    were compared when this was written and agreed on all 144 paths in both directions; the
+    exclusion sets are what makes that true, so a new gitignored directory has to be added to
+    them or this walk starts counting artifacts.
+    """
+    found = set()
+    for directory, subdirectories, files in os.walk(REPOSITORY_ROOT):
+        subdirectories[:] = [name for name in subdirectories
+                             if name not in CENSUS_EXCLUDED_DIRECTORIES]
+        for name in files:
+            if name in CENSUS_EXCLUDED_FILES or name.endswith(".pyc"):
+                continue
+            if name.startswith(CENSUS_SCRATCH_PREFIX):
+                continue
+            absolute = os.path.join(directory, name)
+            found.add(os.path.relpath(absolute, REPOSITORY_ROOT).replace(os.sep, "/"))
+    return found
+
+
+def _census_readings():
+    """Return ``{figure name: measured value}`` for the log's three self-census figures."""
+    log_relative = os.path.join("docs", "testing", "DECISION-LOG.md").replace(os.sep, "/")
+    citing, linking, citing_with_log = 0, 0, 0
+
+    for relative in sorted(_census_files()):
+        try:
+            text = _read(os.path.join(REPOSITORY_ROOT, relative))
+        except (IOError, OSError, UnicodeDecodeError):
+            continue
+        cites = re.search(CENSUS_CITATION_PATTERN, text) is not None
+        if cites:
+            citing_with_log += 1
+            if relative != log_relative:
+                citing += 1
+        if "DECISION-LOG.md" in text:
+            linking += 1
+
+    return {"citing": citing, "citing_with_log": citing_with_log, "linking": linking}
+
+
+def test_the_logs_citation_census_is_the_trees_own():
+    """The log publishes three counts about itself; each is re-derived here.
+
+    Before this binding nothing re-derived them, and the log said so. Two of the three had
+    gone stale by one: a file gains its first citation and the paragraph does not move. The
+    log's own reproduction rule is followed exactly - walk the tree skipping ``documentation/``,
+    match ``\\b[DC]\\d{1,3}\\b`` for the first two and this file's own name for the third.
+    """
+    measured = _census_readings()
+    log = _read(DECISION_LOG_PATH)
+
+    for pattern, figure in CENSUS_PATTERNS:
+        stated = int(_stated(log, pattern))
+        assert stated == measured[figure], (
+            "the log publishes {0} for the {1!r} census; the tree measures {2}".format(
+                stated, figure, measured[figure]))
+
+
+def test_the_logs_citation_census_counts_the_log_itself_exactly_once():
+    """The two citation figures differ by one, and that one is this file.
+
+    Stated separately because the pair is the part a reader uses: a document that carries no
+    citation cannot be the difference, so any gap other than one means the walk changed
+    meaning rather than the tree changing size.
+    """
+    measured = _census_readings()
+
+    assert measured["citing_with_log"] - measured["citing"] == 1, (
+        "{0} files cite a row including this log and {1} excluding it; the difference must be "
+        "the log alone".format(measured["citing_with_log"], measured["citing"]))
+    assert measured["linking"] >= measured["citing"], (
+        "more files cite a row id ({0}) than link to the log ({1}), which would mean a "
+        "citation with nowhere to resolve".format(measured["citing"], measured["linking"]))
+
+
 def _deck_slides():
     """Return one ``(index, kind, markup)`` triple per ``<section>`` of the deck.
 
@@ -593,6 +752,65 @@ def test_manifest_pin_census_matches_the_matrix():
         matrix, r"`backend/requirements-dev\.txt` \((\d+) active lines, all (\d+) exact pins")
 
     assert (int(stated_active), int(stated_pins)) == (len(active), len(pins))
+
+
+def _manifest_sections():
+    """Return ``{section heading: [pinned lines]}`` for the manifest's own partition."""
+    sections, current = {}, None
+    for line in _read(MANIFEST_PATH).split("\n"):
+        stripped = line.strip()
+        if stripped in MANIFEST_SECTIONS:
+            current = stripped
+            sections[current] = []
+        elif stripped and not stripped.startswith("#") and "==" in stripped:
+            assert current is not None, "{0!r} precedes every section heading".format(stripped)
+            sections[current].append(stripped)
+    return sections
+
+
+def test_every_document_publishes_the_same_manifest_pin_census():
+    """Three documents published 25 while a fourth published 26 - only the fourth was bound.
+
+    Every phrasing is read, wherever it appears, and all of them are held to the manifest's own
+    active-line count. Binding one document's wording left the other three free to drift, which
+    is what happened when a pin was added.
+    """
+    active = _active_lines(MANIFEST_PATH)
+    pins = [line for line in active if "==" in line]
+    assert len(pins) == len(active), (
+        "the census tests assume every active manifest line is an exact pin; "
+        "{0} of {1} are".format(len(pins), len(active)))
+
+    stated = {}
+    for relative in FRONTEND_RESULT_DOCUMENTS:
+        path = os.path.join(REPOSITORY_ROOT, relative)
+        if not os.path.isfile(path):
+            continue
+        for number, line in enumerate(_read(path).split("\n"), 1):
+            for pattern in MANIFEST_CENSUS_PATTERNS:
+                for figure in re.findall(pattern, line):
+                    stated.setdefault(int(figure), []).append(
+                        "{0}:{1}".format(relative, number))
+
+    assert stated, "no document publishes the manifest's pin census"
+    assert set(stated) == {len(active)}, (
+        "documents publish a manifest pin census the manifest does not have "
+        "({0} active lines): {1}".format(len(active), stated))
+
+
+def test_the_published_manifest_split_is_the_manifests_own_partition():
+    """The README's "N test-stack and M runtime" split is the file's two sections, counted."""
+    sections = _manifest_sections()
+    assert sorted(sections) == sorted(MANIFEST_SECTIONS), (
+        "the manifest no longer carries both section headings: {0}".format(sorted(sections)))
+
+    stated_test, stated_runtime = _stated(
+        _read(os.path.join(REPOSITORY_ROOT, "README.md")), MANIFEST_SPLIT_PATTERN)
+
+    assert int(stated_test) == len(sections[MANIFEST_SECTIONS[0]])
+    assert int(stated_runtime) == len(sections[MANIFEST_SECTIONS[1]])
+    assert int(stated_test) + int(stated_runtime) == len(_active_lines(MANIFEST_PATH)), (
+        "the published split does not account for every active manifest line")
 
 
 def test_manifest_case_count_matches_the_matrix():
@@ -1254,6 +1472,106 @@ def test_the_collected_figure_is_not_below_the_passing_figure():
         "describe".format(collected, passing))
 
 
+def _frontend_readings():
+    """Return ``[(document, line number, {figure: value})]`` for the frontend result.
+
+    One entry per statement rather than one per document, so a document that contradicts
+    *itself* is caught as well as one that contradicts its neighbour - which is the shape the
+    defect took: two lines of the same table published a different passing figure.
+    """
+    readings = []
+    for relative in FRONTEND_RESULT_DOCUMENTS:
+        path = os.path.join(REPOSITORY_ROOT, relative)
+        if not os.path.isfile(path):
+            continue
+        for number, line in enumerate(_read(path).split("\n"), 1):
+            for pattern, fields in FRONTEND_RESULT_PATTERNS:
+                for found in re.findall(pattern, line):
+                    values = found if isinstance(found, tuple) else (found,)
+                    readings.append(
+                        (relative, number,
+                         dict(zip(fields, (int(value) for value in values)))))
+    return readings
+
+
+def test_every_document_publishes_the_same_frontend_result():
+    """Two lines of one table publishing different passing figures is the defect this catches.
+
+    Compared field by field against the runner's committed summary line, so a phrasing that
+    states only the passing figure is held to that and to nothing else.
+    """
+    readings = _frontend_readings()
+
+    assert readings, "no document states the frontend suite's result"
+
+    disagreements = []
+    for figure in ("passed", "skipped", "tests", "suites", "suites_passed", "suites_skipped"):
+        stated = {}
+        for relative, number, reading in readings:
+            if figure in reading:
+                stated.setdefault(reading[figure], []).append(
+                    "{0}:{1}".format(relative, number))
+        if len(stated) > 1:
+            disagreements.append((figure, stated))
+
+    assert disagreements == [], "documents disagree on the frontend result: {0}".format(
+        disagreements)
+
+
+def test_the_published_frontend_result_closes_arithmetically():
+    """Passes and skips have to account for the total, at both the case and the suite level."""
+    merged = {}
+    for _relative, _number, reading in _frontend_readings():
+        merged.update(reading)
+
+    for figure in ("passed", "skipped", "tests", "suites", "suites_passed", "suites_skipped"):
+        assert figure in merged, "no document states the frontend {0} figure".format(figure)
+
+    assert merged["passed"] + merged["skipped"] == merged["tests"], (
+        "{0} passed plus {1} skipped is not the {2} published as the total".format(
+            merged["passed"], merged["skipped"], merged["tests"]))
+    assert merged["suites_passed"] + merged["suites_skipped"] == merged["suites"], (
+        "{0} passing suites plus {1} skipped is not the {2} published as the suite "
+        "total".format(merged["suites_passed"], merged["suites_skipped"], merged["suites"]))
+
+
+def test_the_published_frontend_result_is_the_retained_streams_own():
+    """The published figures are the artifact's, whenever this tree has produced one.
+
+    Deliberately not a ``pytest.skip`` when the stream is absent: two skips already fire on a
+    missing artifact, both named in the documents beside the first-pass figure, and a third
+    would move that figure without adding a property. The cross-document check above always
+    runs and is anchored to a committed transcript, so nothing here is left unasserted in a
+    fresh clone - this case adds the tie to the machine-written stream when there is one.
+    """
+    if not os.path.isfile(FRONTEND_JUNIT_PATH):
+        return
+
+    stream = _read_artifact(FRONTEND_JUNIT_PATH)
+    root = re.search(r'<testsuites\b[^>]*\btests="(\d+)"', stream)
+    assert root, "the frontend result stream declares no root case count"
+
+    suites = re.findall(r"<testsuite\b[^>]*>", stream)
+    skipped = sum(int(_stated(suite, r'\bskipped="(\d+)"')) for suite in suites)
+
+    merged = {}
+    for _relative, _number, reading in _frontend_readings():
+        merged.update(reading)
+
+    assert merged["tests"] == int(root.group(1)), (
+        "documents publish {0} frontend cases; the stream declares {1}".format(
+            merged["tests"], root.group(1)))
+    assert merged["suites"] == len(suites), (
+        "documents publish {0} frontend suites; the stream carries {1}".format(
+            merged["suites"], len(suites)))
+    assert merged["skipped"] == skipped, (
+        "documents publish {0} frontend skips; the stream sums {1}".format(
+            merged["skipped"], skipped))
+    assert merged["passed"] == int(root.group(1)) - skipped, (
+        "documents publish {0} frontend passes; the stream implies {1}".format(
+            merged["passed"], int(root.group(1)) - skipped))
+
+
 @pytest.mark.parametrize("relative,reason", ARTIFACT_CONDITIONAL_SKIPS,
                          ids=[reason.split()[0] for _path, reason in
                               ARTIFACT_CONDITIONAL_SKIPS])
@@ -1501,3 +1819,777 @@ def test_the_measured_slide_word_counts_match_the_decision_log():
 
     stated = _stated(log, r"strictest reading are ([\d, ]+?) against a cap of 40")
     assert [int(number) for number in stated.split(",")] == measured
+
+
+# --------------------------------------------------------------------------- #
+# The security register's own census, and the authorities the seam pass cited  #
+# five rows early                                                             #
+# --------------------------------------------------------------------------- #
+
+#: The register groups ``README.md``'s security bullet counts together: the three whose
+#: exposures are all held out of reach by a clause of the frozen plan. Its larger figure is
+#: every group, including the two no exclusion covers - the executive deck as a served
+#: artifact, and the end-to-end harness's own development server.
+REGISTER_README_GROUPS = (1, 2, 3)
+
+#: How the register's census is published. ``README.md`` spells both figures out in one
+#: sentence; ``TRACEABILITY-MATRIX.md`` F100 states the total as a numeral. Each capture is
+#: named, so a document that contradicts *itself* is caught as well as one that contradicts
+#: another. The log is deliberately not read here: its rows state the census each earlier
+#: checkpoint measured, and D354 freezes those as history.
+REGISTER_CENSUS_PATTERNS = (
+    (u"There are ([a-z-]+) of them in those three categories \u2014 ([a-z-]+) rows in "
+     u"the register in total", ("grouped", "total")),
+    (r"(\d+) exposures in six groups", ("total",)),
+)
+
+#: Number words a register census figure may be spelled out as. Both stale values are kept
+#: in the map deliberately: a regression to either then fails on its *value* rather than
+#: falling out of the pattern and passing unnoticed.
+REGISTER_NUMBER_WORDS = {
+    "thirty": 30, "thirty-one": 31, "thirty-two": 32, "thirty-three": 33,
+    "thirty-four": 34, "thirty-five": 35, "thirty-six": 36, "thirty-seven": 37,
+    "thirty-eight": 38, "thirty-nine": 39, "forty": 40, "forty-one": 41,
+}
+
+#: The rows ``README.md``'s bullet names individually, with the group each is the whole of.
+REGISTER_NAMED_GROUPS = ((5, "rows 24 and 25"), (6, "row 33"))
+
+#: The rows the log's section 47 opened, each with the artifact its Decision cell names and
+#: the section F row that covers that artifact. Asserted in **both** directions. Every one
+#: of these was cited five rows early, and because D409 to D413 are all real rows the wrong
+#: pointer read exactly like a deliberate one - which is why the pairing is machine-checked
+#: here rather than left to a reader who would have to open the log to notice.
+SEAM_PASS_AUTHORITIES = (
+    ("F50", "D415", "tests/integration/test_http_tweets.py"),
+    ("F51", "D414", "tests/integration/test_route_surface.py"),
+    ("F52", "D417", "tests/integration/test_app_lifecycle.py"),
+    ("F55", "D418", "frontend/src/schema/tweetSchema.test.ts"),
+    ("F60", "D414", "frontend/src/services/api.test.ts"),
+    ("F63", "D416", "frontend/src/components/Dashboard.test.tsx"),
+)
+
+
+def _register_groups():
+    """Return ``{group number: (row id, ...)}``, read from the register's own headings."""
+    groups = {}
+    current = None
+    for line in _read(SECURITY_GAPS_PATH).split("\n"):
+        if line.startswith("## "):
+            heading = re.match(r"^##\s+(\d+)\.\s", line)
+            current = int(heading.group(1)) if heading else None
+            if current is not None:
+                groups.setdefault(current, [])
+            continue
+        row = re.match(r"^\|\s*(\d+)\s*\|", line)
+        if row and current is not None:
+            groups[current].append(int(row.group(1)))
+    return dict((number, tuple(rows)) for number, rows in groups.items())
+
+
+def _register_row_ids():
+    """Return every row id in the register, across every group, sorted."""
+    ids = []
+    for rows in _register_groups().values():
+        ids.extend(rows)
+    return sorted(ids)
+
+
+def _register_number(raw):
+    """Return an integer for a census figure written as a numeral or spelled out."""
+    if raw.isdigit():
+        return int(raw)
+    assert raw in REGISTER_NUMBER_WORDS, "unmapped register number word {0!r}".format(raw)
+    return REGISTER_NUMBER_WORDS[raw]
+
+
+def _register_readings():
+    """Return ``[(where, figure name, value), ...]`` for every published census figure."""
+    readings = []
+    for relative in COUNT_PUBLISHING_DOCUMENTS:
+        path = os.path.join(REPOSITORY_ROOT, relative)
+        if not os.path.isfile(path):
+            continue
+        for number, line in enumerate(_read(path).split("\n"), 1):
+            for pattern, names in REGISTER_CENSUS_PATTERNS:
+                match = re.search(pattern, line)
+                if match:
+                    where = "{0}:{1}".format(relative.replace(os.sep, "/"), number)
+                    for name, raw in zip(names, match.groups()):
+                        readings.append((where, name, _register_number(raw)))
+    return readings
+
+
+def _decision_row(row_id):
+    """Return the whole table line for one decision row, asserting it is unique."""
+    found = [line for line in _read(DECISION_LOG_PATH).split("\n")
+             if re.match(r"^\|\s*" + row_id + r"\s*\|", line)]
+    assert len(found) == 1, "expected exactly one {0} row in the log, found {1}".format(
+        row_id, len(found))
+    return found[0]
+
+
+def _decision_row_ids():
+    """Return every id the log carries as the head of one of its table rows."""
+    ids = set()
+    for line in _read(DECISION_LOG_PATH).split("\n"):
+        match = re.match(r"^\|\s*(D\d+)\s*\|", line)
+        if match:
+            ids.add(match.group(1))
+    return ids
+
+
+def test_the_register_row_ids_are_unique_and_contiguous():
+    """Ids are append-only (D401), so the set has to be 1..N with nothing missing."""
+    ids = _register_row_ids()
+
+    assert len(ids) == len(set(ids)), "the register repeats a row id: {0}".format(ids)
+    assert ids == list(range(1, len(ids) + 1)), (
+        "the register's ids are not 1..{0}: {1}".format(len(ids), ids))
+
+
+def test_every_document_publishes_the_registers_own_census():
+    """The figure a reader schedules on, re-derived from the register that carries it."""
+    groups = _register_groups()
+    expected = {
+        "total": len(_register_row_ids()),
+        "grouped": sum(len(groups[number]) for number in REGISTER_README_GROUPS),
+    }
+
+    readings = _register_readings()
+    assert readings, "no document publishes the security register's census any more"
+
+    wrong = [reading for reading in readings if reading[2] != expected[reading[1]]]
+    assert wrong == [], (
+        "the register measures {0}; these disagree: {1}".format(expected, wrong))
+
+
+def test_the_registers_grouped_and_total_figures_close_arithmetically():
+    """The two published figures differ by exactly the groups no plan clause covers."""
+    groups = _register_groups()
+    uncovered = sum(len(rows) for number, rows in groups.items()
+                    if number not in REGISTER_README_GROUPS)
+    published = dict((name, value) for _where, name, value in _register_readings())
+
+    assert published["total"] - published["grouped"] == uncovered, (
+        "published total {0} minus grouped {1} is not the {2} row(s) outside those "
+        "groups".format(published["total"], published["grouped"], uncovered))
+
+
+@pytest.mark.parametrize(
+    "group,phrase", REGISTER_NAMED_GROUPS,
+    ids=["group{0}".format(entry[0]) for entry in REGISTER_NAMED_GROUPS])
+def test_the_rows_the_readme_names_individually_are_their_whole_group(group, phrase):
+    """A row appended to either group makes the bullet's parenthetical wrong, loudly."""
+    rows = _register_groups()[group]
+    spelled = "row{0} {1}".format(
+        "s" if len(rows) > 1 else "", " and ".join(str(row) for row in rows))
+
+    assert spelled == phrase, (
+        "group {0} is now {1}, but README.md still names {2!r}".format(group, rows, phrase))
+    assert phrase in _read(os.path.join(REPOSITORY_ROOT, "README.md")), (
+        "README.md no longer names {0!r}".format(phrase))
+
+
+@pytest.mark.parametrize("row,decision,artifact", SEAM_PASS_AUTHORITIES,
+                         ids=[entry[0] for entry in SEAM_PASS_AUTHORITIES])
+def test_each_seam_pass_row_cites_the_decision_that_decided_it(row, decision, artifact):
+    """Both directions, because a pointer at a real but unrelated row is invisible."""
+    artifact_cell, covers_cell = _matrix_rows()[row]
+
+    assert decision in _cited_rows(covers_cell), (
+        "{0} does not cite {1}; it cites {2}".format(
+            row, decision, sorted(_cited_rows(covers_cell))))
+    assert artifact in artifact_cell + covers_cell, (
+        "{0} is not the section F row about {1}".format(row, artifact))
+
+    log_row = _decision_row(decision)
+    assert artifact in log_row, (
+        "{0} does not name {1}, so it cannot be {2}'s authority".format(
+            decision, artifact, row))
+
+
+@pytest.mark.parametrize("relative", CITING_DOCUMENTS, ids=CITING_DOCUMENT_IDS)
+def test_every_decision_row_a_document_cites_exists(relative):
+    """A citation of an id the log does not carry reads exactly like one that it does."""
+    path = os.path.join(REPOSITORY_ROOT, relative)
+    if not os.path.isfile(path):
+        pytest.skip("{0} is not present".format(relative))
+
+    present = _decision_row_ids()
+    missing = sorted((row for row in _cited_rows(_read(path)) if row not in present),
+                     key=lambda row: int(row[1:]))
+
+    assert missing == [], "{0} cites decision rows the log does not carry: {1}".format(
+        relative, missing)
+
+
+#: Cross-references that name a security-register row **by number**, as a pattern that
+#: captures the number, paired with a phrase the register row itself carries. The number is
+#: never written here: it is looked up in the register by subject, so moving a subject to
+#: another row moves every citation of it with a red test. This is the half
+#: :data:`SEAM_PASS_AUTHORITIES` cannot see, and a negative validation found it missing -
+#: reverting F63's "row 38" to "row 33" left every other binding green, because row 33 is a
+#: real row about the harness dev server and only its *subject* distinguishes it.
+REGISTER_CROSS_REFERENCES = (
+    (r"unhandled-rejection leak whose measurement lives in `SECURITY-GAPS\.md` row (\d+)",
+     "26 unhandled rejections", os.path.join("docs", "testing", "TRACEABILITY-MATRIX.md")),
+    (r"submitted with every character intact \(`SECURITY-GAPS\.md` row (\d+)",
+     "40,068-byte request", os.path.join("docs", "testing", "TRACEABILITY-MATRIX.md")),
+    (r"`--require-hashes` \u2014 is `SECURITY-GAPS\.md` row (\d+)",
+     "--only-binary=:all:", os.path.join("docs", "testing", "TRACEABILITY-MATRIX.md")),
+    (r"\| `D416`, `SECURITY-GAPS\.md` row (\d+) \|",
+     "26 unhandled rejections", os.path.join("frontend", "TESTING.md")),
+    (r"recorded in \u00a723, `SECURITY-GAPS\.md` row (\d+) and `frontend/TESTING\.md`",
+     "26 unhandled rejections", os.path.join("docs", "testing", "DECISION-LOG.md")),
+    (r"records\. Also `SECURITY-GAPS\.md` row (\d+)\.",
+     "26 unhandled rejections", os.path.join("docs", "testing", "DECISION-LOG.md")),
+)
+
+#: Parametrisation ids for the cross-references: the document and the row's subject, because
+#: three of them are in one file and a filename id would collide.
+REGISTER_CROSS_REFERENCE_IDS = [
+    "{0}-{1}".format(os.path.basename(entry[2]), entry[1].split()[0].strip("-"))
+    for entry in REGISTER_CROSS_REFERENCES
+]
+
+
+def _register_row_about(subject):
+    """Return the register row id whose own text carries ``subject``, asserting uniqueness."""
+    found = []
+    for line in _read(SECURITY_GAPS_PATH).split("\n"):
+        row = re.match(r"^\|\s*(\d+)\s*\|", line)
+        if row and subject in line:
+            found.append(int(row.group(1)))
+    assert len(found) == 1, "expected one register row carrying {0!r}, found {1}".format(
+        subject, found)
+    return found[0]
+
+
+@pytest.mark.parametrize("pattern,subject,relative", REGISTER_CROSS_REFERENCES,
+                         ids=REGISTER_CROSS_REFERENCE_IDS)
+def test_every_register_cross_reference_names_the_row_its_subject_is_on(
+        pattern, subject, relative):
+    """Derive the row number from the register; never let a document type it by hand."""
+    expected = _register_row_about(subject)
+    document = _read(os.path.join(REPOSITORY_ROOT, relative))
+    found = [int(number) for number in re.findall(pattern, document)]
+
+    assert found, "{0} no longer carries the cross-reference {1!r}".format(relative, pattern)
+    assert set(found) == set([expected]), (
+        "{0} points at row(s) {1}, but the register puts {2!r} on row {3}".format(
+            relative, sorted(set(found)), subject, expected))
+
+
+# --------------------------------------------------------------------------- #
+# Declaration-level parity between the deck's inline <style> and the canonical  #
+# theme Rule 4 names                                                          #
+# --------------------------------------------------------------------------- #
+
+#: The reusable reference copy at the path Rule 4 names. It is never loaded: the deck is a
+#: single self-contained file and carries the same declarations inline, because Rule 4 wants
+#: both a canonical stylesheet and one self-contained file and the two pull against each
+#: other. That is exactly why the parity needs a check - F70 claimed it was exact while
+#: `.deck-diagram-sm` read `margin: 20px auto 0` against the deck's `20px 0 0`.
+DECK_THEME_PATH = os.path.join(
+    REPOSITORY_ROOT, "blitzy-deck", "references", "blitzy-reveal-theme.css")
+
+#: How ``TRACEABILITY-MATRIX.md`` F70 publishes the parity census: custom properties, then
+#: rule blocks, then the selector groups they resolve to. Derived from the stylesheets.
+DECK_PARITY_CENSUS_PATTERN = (
+    r"the same (\d+) `:root` custom\s+properties with identical values, the same (\d+) rule "
+    r"blocks resolving to the same (\d+)\s+selector groups")
+
+
+def _deck_inline_style():
+    """Return the deck's single inline stylesheet, asserting that it is single."""
+    blocks = re.findall(r"<style[^>]*>(.*?)</style>", _read(DECK_PATH), re.S)
+    assert len(blocks) == 1, (
+        "Rule 4 wants one self-contained file; the deck carries {0} <style> blocks".format(
+            len(blocks)))
+    return blocks[0]
+
+
+def _css_rules(css):
+    """Return ``[(at-rule context, selector group, (declaration, ...)), ...]``.
+
+    Comments are stripped and whitespace collapsed before comparing, which is what lets the
+    reference copy keep the longer explanatory blocks F70 describes while still being held to
+    the same declarations. Declarations are sorted, so ordering inside a block is not a
+    difference. One level of at-rule nesting is enough: neither file nests one inside another.
+    """
+    css = re.sub(r"/\*.*?\*/", " ", css, flags=re.S)
+    found = []
+    index, context, depth = 0, "", 0
+    while index < len(css):
+        brace = css.find("{", index)
+        if brace == -1:
+            break
+        prelude = css[index:brace].strip()
+        body_end = css.find("}", brace)
+        limit = body_end if body_end != -1 else len(css)
+        if prelude.startswith("@") and "{" in css[brace + 1:limit]:
+            context = re.sub(r"\s+", " ", prelude)
+            index, depth = brace + 1, 1
+            continue
+        if not prelude and context and depth:
+            index = brace + 1
+            continue
+        declarations = tuple(sorted(
+            re.sub(r"\s+", " ", part).strip()
+            for part in css[brace + 1:body_end].split(";") if part.strip()))
+        found.append((context, re.sub(r"\s+", " ", prelude), declarations))
+        index = body_end + 1
+        if depth:
+            closing = css.find("}", index)
+            end = closing if closing != -1 else len(css)
+            if css[index:end].strip() == "":
+                index, context, depth = end + 1, "", 0
+    return found
+
+
+def _css_rule_map(css):
+    """Return ``{(context, selector group): [declaration tuple, ...]}``."""
+    grouped = {}
+    for context, selector, declarations in _css_rules(css):
+        grouped.setdefault((context, selector), []).append(declarations)
+    return grouped
+
+
+def _css_custom_properties(css):
+    """Return ``{--name: value}`` for every custom property declared on ``:root``."""
+    values = {}
+    for _context, selector, declarations in _css_rules(css):
+        if ":root" not in selector:
+            continue
+        for declaration in declarations:
+            if declaration.startswith("--"):
+                name, _sep, value = declaration.partition(":")
+                values[name.strip()] = value.strip()
+    return values
+
+
+def test_the_deck_and_the_canonical_theme_declare_the_same_custom_properties():
+    """A token that differs repaints the whole deck for a consumer of the reference copy."""
+    deck = _css_custom_properties(_deck_inline_style())
+    theme = _css_custom_properties(_read(DECK_THEME_PATH))
+
+    assert sorted(deck) == sorted(theme), (
+        "only in the deck: {0}; only in the theme: {1}".format(
+            sorted(set(deck) - set(theme)), sorted(set(theme) - set(deck))))
+    differing = dict((name, (deck[name], theme[name]))
+                     for name in deck if deck[name] != theme[name])
+    assert differing == {}, "custom properties whose values differ: {0}".format(differing)
+
+
+def test_the_deck_and_the_canonical_theme_declare_the_same_selectors():
+    """A selector present in one file and absent from the other is a degraded render."""
+    deck = _css_rule_map(_deck_inline_style())
+    theme = _css_rule_map(_read(DECK_THEME_PATH))
+
+    assert sorted(set(deck) - set(theme)) == [], (
+        "selectors only in the deck: {0}".format(sorted(set(deck) - set(theme))))
+    assert sorted(set(theme) - set(deck)) == [], (
+        "selectors only in the theme: {0}".format(sorted(set(theme) - set(deck))))
+
+
+def test_every_selector_the_two_stylesheets_share_carries_the_same_declarations():
+    """The defect QA found: one declaration differing, with nothing to notice it."""
+    deck = _css_rule_map(_deck_inline_style())
+    theme = _css_rule_map(_read(DECK_THEME_PATH))
+
+    differing = [(key, deck[key], theme[key])
+                 for key in sorted(set(deck) & set(theme)) if deck[key] != theme[key]]
+
+    assert differing == [], (
+        "selectors whose declarations differ between the deck and the canonical theme: "
+        "{0}".format(differing))
+
+
+def test_the_parity_census_the_matrix_publishes_is_the_stylesheets_own():
+    """F70's 23 / 119 / 118 figures, re-derived rather than trusted."""
+    deck_style = _deck_inline_style()
+    stated = _stated(_read(MATRIX_PATH), DECK_PARITY_CENSUS_PATTERN)
+    properties, blocks, groups = (int(number) for number in stated)
+
+    assert properties == len(_css_custom_properties(deck_style))
+    assert blocks == len(_css_rules(deck_style))
+    assert groups == len(_css_rule_map(deck_style))
+
+
+def test_the_deck_hides_the_stylesheet_mermaid_injects_from_the_accessibility_tree():
+    """Without this the diagram slides announce the injected CSS ahead of their label."""
+    deck = _read(DECK_PATH)
+
+    assert "function hideRenderedInternals()" in deck
+    assert "DIAGRAM_SELECTOR + ' svg style'" in deck
+    assert "node.setAttribute('aria-hidden', 'true')" in deck
+    assert "hideRenderedInternals();" in deck.split("function settleRender()")[1], (
+        "settleRender does not hide the injected stylesheet, so a render leaves it exposed")
+
+
+def test_the_deck_carries_a_content_landmark_and_names_every_table():
+    """A landmark to jump to, and no table announced only as 'table'."""
+    deck = _read(DECK_PATH)
+
+    assert 'class="slides" role="main" aria-label=' in deck, (
+        "the deck declares no content landmark")
+    tables = re.findall(r"<table\b[^>]*>", deck)
+    unnamed = [tag for tag in tables if "aria-label=" not in tag and "aria-labelledby=" not in tag]
+    assert unnamed == [], "tables with no accessible name: {0}".format(unnamed)
+
+
+def test_the_deck_controls_offer_a_large_enough_hit_target():
+    """Reveal draws the cluster in `em`, so one font-size governs every control metric."""
+    for css in (_deck_inline_style(), _read(DECK_THEME_PATH)):
+        controls = _css_rule_map(css)[("", ".reveal .controls")]
+        declared = [declaration for block in controls for declaration in block
+                    if declaration.startswith("font-size:")]
+        assert len(declared) == 1, (
+            ".reveal .controls declares {0} font sizes".format(len(declared)))
+        pixels = float(declared[0].split(":")[1].strip().rstrip("px"))
+        assert pixels * 3.6 >= 44, (
+            "an arrow at {0}em of {1}px is {2}px, below the 44px minimum".format(
+                3.6, pixels, pixels * 3.6))
+
+
+# --------------------------------------------------------------------------- #
+# Link integrity of the documents this delivery authored, and the backlog      #
+# entries that stand in for the links it may not repair                        #
+# --------------------------------------------------------------------------- #
+
+#: The four onboarding documents and the four Rule 1 and Rule 2 documents. Every relative link
+#: in them has to resolve on disk, with the exception of the two the baseline README already
+#: carried, declared below.
+LINKED_DOCUMENTS = (
+    "README.md",
+    os.path.join("backend", "tests", "README.md"),
+    os.path.join("frontend", "TESTING.md"),
+    os.path.join("e2e", "README.md"),
+    os.path.join("docs", "testing", "DECISION-LOG.md"),
+    os.path.join("docs", "testing", "TRACEABILITY-MATRIX.md"),
+    os.path.join("docs", "testing", "DASHBOARD-TEMPLATE.md"),
+    os.path.join("docs", "testing", "SECURITY-GAPS.md"),
+)
+
+#: Parametrisation ids, because three of the eight are named ``README.md``.
+LINKED_DOCUMENT_IDS = [path.replace(os.sep, "/") for path in LINKED_DOCUMENTS]
+
+#: Relative link targets that legitimately do not resolve. Both are in the baseline README's
+#: first hundred lines, which AAP 0.10.5 C3 makes additive-only, so this work records them
+#: rather than repairing them. Each is paired with the phrase the suggested-next-tasks backlog
+#: uses, and each is held to being genuinely absent - so the day either file appears, the
+#: "still absent" leg fails and forces the backlog entry out with it.
+BASELINE_DANGLING_LINKS = (
+    ("README.md", "CONTRIBUTING.md", "links to a `CONTRIBUTING.md`"),
+    ("README.md", "LICENSE", "line 93 to a `LICENSE`"),
+)
+
+#: Files the baseline README's setup and usage commands name and the repository does not
+#: contain, each with the phrase the backlog uses. Same two-legged assertion as above.
+BACKLOG_ABSENT_FILES = (
+    ("requirements.txt", "pip install -r requirements.txt"),
+    (".env.example", "cp .env.example .env"),
+)
+
+#: The placeholder origin the baseline README names in its clone command and its support
+#: section. The backlog quotes it verbatim, so a corrected body and an uncorrected backlog
+#: disagree and fail. The 404 itself is deliberately not asserted here: a test that reached
+#: the network would be refused by the egress guard in ``tests/conftest.py``, by design.
+README_PLACEHOLDER_ORIGIN = "https://github.com/your-org/code-skeptic-scanner"
+
+#: The two findings about the deck rather than the application that section 7.8 of the
+#: dashboard says are carried in the README's backlog. Asserted in both directions, so neither
+#: document can claim the other records something it does not.
+DECK_BACKLOG_ITEMS = ("text-transform: uppercase", "`complementary` landmark")
+
+#: A markdown inline link, and the two spans a target may not be read out of: a backticked
+#: code span and a fenced block. This tree's prose quotes regular expressions whose bracket
+#: groups are indistinguishable from link syntax, so both exclusions are load-bearing rather
+#: than tidy - without the fence exclusion, a Jest ``transform`` key reads as a broken link.
+MARKDOWN_LINK = re.compile(r"\[[^\]\n]*\]\(([^)\s]+)\)")
+MARKDOWN_CODE_SPAN = re.compile(r"`[^`\n]*`")
+MARKDOWN_FENCE = re.compile(r"^\s*```")
+
+
+def _relative_link_targets(relative):
+    """Return ``[(line number, target), ...]`` for every resolvable-by-path link."""
+    document = _read(os.path.join(REPOSITORY_ROOT, relative))
+    targets, fenced = [], False
+    for number, line in enumerate(document.split("\n"), 1):
+        if MARKDOWN_FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        spans = [(match.start(), match.end())
+                 for match in MARKDOWN_CODE_SPAN.finditer(line)]
+        for match in MARKDOWN_LINK.finditer(line):
+            if any(start <= match.start() < end for start, end in spans):
+                continue
+            target = match.group(1)
+            if target.startswith(("http://", "https://", "mailto:", "#")):
+                continue
+            targets.append((number, target))
+    return targets
+
+
+def _unresolved_link_targets(relative):
+    """Return the targets of ``relative`` that name nothing on disk."""
+    base = os.path.dirname(os.path.join(REPOSITORY_ROOT, relative))
+    unresolved = []
+    for number, target in _relative_link_targets(relative):
+        path = os.path.normpath(
+            os.path.join(base, target.split("#")[0].split("?")[0]))
+        if not os.path.exists(path):
+            unresolved.append((number, target))
+    return unresolved
+
+
+@pytest.mark.parametrize("relative", LINKED_DOCUMENTS, ids=LINKED_DOCUMENT_IDS)
+def test_every_relative_link_this_delivery_authored_resolves(relative):
+    """A pointer to a file that is not there is the onboarding defect, not a typo."""
+    declared = set(target for document, target, _phrase in BASELINE_DANGLING_LINKS
+                   if document == relative)
+    unresolved = _unresolved_link_targets(relative)
+    undeclared = [entry for entry in unresolved if entry[1] not in declared]
+
+    assert undeclared == [], (
+        "{0} points at targets that do not exist and are not declared: {1}".format(
+            relative, undeclared))
+
+
+@pytest.mark.parametrize("document,target,phrase", BASELINE_DANGLING_LINKS,
+                         ids=[entry[1] for entry in BASELINE_DANGLING_LINKS])
+def test_every_declared_dangling_link_is_still_absent_and_still_recorded(
+        document, target, phrase):
+    """The exception is only legitimate while the file is absent and the backlog says so."""
+    assert not os.path.exists(os.path.join(REPOSITORY_ROOT, target)), (
+        "{0} now exists, so {1}'s link resolves and the backlog entry naming it is "
+        "wrong".format(target, document))
+    assert phrase in _read(os.path.join(REPOSITORY_ROOT, "README.md")), (
+        "the backlog no longer records the absent {0}".format(target))
+
+
+@pytest.mark.parametrize("target,phrase", BACKLOG_ABSENT_FILES,
+                         ids=[entry[0] for entry in BACKLOG_ABSENT_FILES])
+def test_the_backlog_records_every_absent_file_the_setup_commands_name(target, phrase):
+    """A documented first step that cannot run is worth more as a backlog line than a note."""
+    readme = _read(os.path.join(REPOSITORY_ROOT, "README.md"))
+    present = [candidate for candidate in (target, os.path.join("backend", target))
+               if os.path.exists(os.path.join(REPOSITORY_ROOT, candidate))]
+
+    assert present == [], "{0} now exists at {1}; the backlog entry is stale".format(
+        target, present)
+    assert phrase in readme, "the README no longer quotes {0!r}".format(phrase)
+
+
+def test_the_backlog_quotes_the_placeholder_origin_the_readme_still_carries():
+    """If the body is ever corrected, the backlog entry has to go with it."""
+    readme = _read(os.path.join(REPOSITORY_ROOT, "README.md"))
+    lines = readme.split("\n")
+    body = "\n".join(lines[:100])
+    backlog = "\n".join(lines[100:])
+
+    assert (README_PLACEHOLDER_ORIGIN in body) == (README_PLACEHOLDER_ORIGIN in backlog), (
+        "the README body and its backlog disagree about the placeholder origin: body={0}, "
+        "backlog={1}".format(
+            README_PLACEHOLDER_ORIGIN in body, README_PLACEHOLDER_ORIGIN in backlog))
+
+
+@pytest.mark.parametrize("item", DECK_BACKLOG_ITEMS)
+def test_the_deck_findings_the_dashboard_defers_are_in_the_readme_backlog(item):
+    """Section 7.8 says these are carried in the backlog; both directions are asserted."""
+    assert item in _read(DASHBOARD_PATH), (
+        "the dashboard no longer states the deck finding {0!r}".format(item))
+    assert item in _read(os.path.join(REPOSITORY_ROOT, "README.md")), (
+        "the dashboard defers {0!r} to the README backlog, which does not carry it".format(
+            item))
+
+
+# --------------------------------------------------------------------------- #
+# The QA-finding disposition register, and this module's own published size    #
+# --------------------------------------------------------------------------- #
+
+#: Every finding id the final-acceptance pass raised. The register has to carry all of them:
+#: a decline recorded only in aggregate is indistinguishable, later, from one nobody read.
+QA_FINDING_IDS = tuple("QA-{0:02d}".format(number) for number in range(1, 33))
+
+#: The three dispositions a register row may carry, each with the phrasing the register's own
+#: prose publishes its tally as. The tallies are re-derived from the rows, never trusted.
+QA_DISPOSITION_PATTERNS = (
+    ("Declined", r"\*\*(\d+) declined\*\*"),
+    ("Resolved", r"\*\*(\d+) resolved\*\*"),
+    ("Documented", r"\*\*(\d+)\*\* not defects of"),
+)
+
+#: How ``TRACEABILITY-MATRIX.md`` publishes the size of an infrastructure suite, and which row
+#: publishes which. Both figures this checkpoint looked at were wrong: F102's went stale the
+#: moment a case was added to the module it describes, and F101's had been contradicted by
+#: ``backend/tests/README.md`` for a whole checkpoint. That is the same defect class as every
+#: other figure corrected here, so all four are bound rather than restated. Each figure is
+#: looked up inside its own row rather than anchored to a phrase, so extending a row's prose
+#: cannot silently unbind it - which is exactly what the first attempt at this check did.
+MATRIX_SUITE_CASE_COUNTS = (
+    ("F76", os.path.join("backend", "tests", "test_dependency_closure.py")),
+    ("F91", os.path.join("backend", "tests", "test_coverage_gate.py")),
+    ("F101", os.path.join("backend", "tests", "test_dashboard_extract.py")),
+    ("F102", os.path.join("backend", "tests", "test_docs_contract.py")),
+)
+
+#: The one phrasing every such figure uses, asserted unique within the row that carries it.
+CASE_COUNT_PATTERN = r"(\d+) cases"
+
+
+def _qa_disposition_register():
+    """Return ``{finding: (severity, reported, disposition, clause, carried)}`` from the log."""
+    pattern = (r"^\|\s*(QA-\d{2})\s*\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|\s*$")
+    rows = {}
+    for line in _read(DECISION_LOG_PATH).split("\n"):
+        match = re.match(pattern, line)
+        if match:
+            assert match.group(1) not in rows, (
+                "the register repeats {0}".format(match.group(1)))
+            rows[match.group(1)] = tuple(cell.strip() for cell in match.groups()[1:])
+    return rows
+
+
+def test_the_disposition_register_carries_every_finding_exactly_once():
+    """All 32, or the register is a selection rather than a register."""
+    rows = _qa_disposition_register()
+
+    assert sorted(rows) == sorted(QA_FINDING_IDS), (
+        "missing: {0}; unexpected: {1}".format(
+            sorted(set(QA_FINDING_IDS) - set(rows)), sorted(set(rows) - set(QA_FINDING_IDS))))
+
+
+@pytest.mark.parametrize("finding", QA_FINDING_IDS)
+def test_every_disposition_row_states_a_clause_and_a_pointer(finding):
+    """A disposition with no reason and nowhere to follow is what D324 refused to allow."""
+    rows = _qa_disposition_register()
+    assert finding in rows, "the register has no row for {0}".format(finding)
+    _severity, reported, disposition, clause, carried = rows[finding]
+
+    assert reported, "{0} states no finding".format(finding)
+    assert disposition in [name for name, _pattern in QA_DISPOSITION_PATTERNS], (
+        "{0} carries an unknown disposition {1!r}".format(finding, disposition))
+    assert clause, "{0} states no clause".format(finding)
+    assert carried, "{0} points nowhere".format(finding)
+
+    if disposition == "Declined":
+        assert "\u00a7" in clause, (
+            "{0} is declined without citing a clause of the plan: {1!r}".format(
+                finding, clause))
+    else:
+        assert _cited_rows(clause + " " + carried), (
+            "{0} is {1} without citing the decision row that says so".format(
+                finding, disposition.lower()))
+
+
+def test_the_disposition_counts_the_register_publishes_are_its_own():
+    """The three tallies, re-derived from the rows rather than read from the prose."""
+    dispositions = [row[2] for row in _qa_disposition_register().values()]
+    log = _read(DECISION_LOG_PATH)
+
+    for name, pattern in QA_DISPOSITION_PATTERNS:
+        stated = int(_stated(log, pattern))
+        assert stated == dispositions.count(name), (
+            "the register publishes {0} {1} rows and carries {2}".format(
+                stated, name.lower(), dispositions.count(name)))
+    assert len(dispositions) == len(QA_FINDING_IDS)
+
+
+@pytest.mark.parametrize("row,relative", MATRIX_SUITE_CASE_COUNTS)
+def test_the_case_count_the_matrix_states_for_a_suite_is_the_sessions_own(request, row,
+                                                                         relative):
+    """The matrix says how many cases a suite has; the running session is asked, not the prose.
+
+    A run that deselects within a file cannot answer the question, so the three ways of doing
+    that - ``-k``, ``-m`` and an explicit node id - stand the check down rather than fail it,
+    and a run that never collected the file in question stands that row down on its own. A full
+    run of the suite therefore answers all four rows, and a run of this file alone answers F102.
+    Under ``-n auto`` each worker performs the whole collection before running its slice, so
+    the count a worker sees is the same one a serial run sees.
+    """
+    filtered = (bool(request.config.option.keyword)
+                or bool(request.config.option.markexpr)
+                or any("::" in argument for argument in request.config.args))
+    if filtered:
+        return
+
+    target = os.path.join(REPOSITORY_ROOT, relative)
+    collected = [item for item in request.session.items if str(item.path) == target]
+    if not collected:
+        return
+
+    _artifact, covers = _matrix_rows()[row]
+    found = re.findall(CASE_COUNT_PATTERN, covers)
+    assert len(found) == 1, "{0} states {1} case counts, not one".format(row, len(found))
+
+    assert int(found[0]) == len(collected), (
+        "{0} states {1} cases for {2}; the session collects {3}".format(
+            row, found[0], relative.replace(os.sep, "/"), len(collected)))
+
+
+# --------------------------------------------------------------------------- #
+# Byte hygiene of the artifacts this delivery authored                         #
+# --------------------------------------------------------------------------- #
+
+#: Every prose or markup artifact this delivery authored, plus the canonical stylesheet the
+#: deck is kept in parity with. These are the files a reader reads, so a byte-level defect in
+#: one of them is a defect in the deliverable rather than in a working copy.
+BYTE_HYGIENE_ARTIFACTS = CITING_DOCUMENTS + (
+    os.path.join("blitzy-deck", "references", "blitzy-reveal-theme.css"),
+)
+
+#: What a UTF-8 em-dash becomes when an editor reads the file as a single-byte codepage and
+#: writes it back as UTF-8. A single occurrence means a tool round-tripped the file wrongly -
+#: which happened to two of these documents during this delivery and had to be reverted.
+MOJIBAKE_EM_DASH = b"\xc3\xa2\xe2\x82\xac\xe2\x80\x9d"
+
+#: Control bytes none of these artifacts has any reason to carry. Tab, line feed and carriage
+#: return are excluded, because those are the file's own structure rather than content.
+FORBIDDEN_CONTROL_BYTES = tuple(
+    list(range(0, 9)) + [11, 12] + list(range(14, 32)))
+
+
+@pytest.mark.parametrize("relative", BYTE_HYGIENE_ARTIFACTS)
+def test_every_authored_artifact_is_clean_utf8_with_uniform_line_endings(relative):
+    """No mojibake, no control byte, no stray carriage return, no mixed line endings.
+
+    Every defect this asserts against was met for real while these documents were written. An
+    editor that read two of them as a single-byte codepage rewrote every pre-existing em-dash
+    as its double-encoded form, and a section appender left 51 doubled carriage returns in
+    ``DECISION-LOG.md`` - invisible to a reader, but enough for git to classify the file as
+    binary and render a one-line change as a 1,575-line rewrite, which is how a review stops
+    being able to see what changed. A stray 0x08 in the same file had eaten a letter outright.
+
+    Line endings are asserted uniform rather than fixed to one convention, because the same
+    tree is checked out with CRLF on Windows and LF elsewhere; mixing the two within one file
+    is the defect, not either choice.
+    """
+    with io.open(os.path.join(REPOSITORY_ROOT, relative), "rb") as handle:
+        raw = handle.read()
+
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise AssertionError("{0} is not valid UTF-8: {1}".format(relative, error))
+
+    assert raw.count(MOJIBAKE_EM_DASH) == 0, (
+        "{0} carries {1} double-encoded em-dash(es): an editor round-tripped it through a "
+        "single-byte codepage".format(relative, raw.count(MOJIBAKE_EM_DASH)))
+
+    present = sorted(value for value in FORBIDDEN_CONTROL_BYTES if value in bytearray(raw))
+    assert present == [], "{0} carries control byte(s) {1}".format(
+        relative, ["0x{0:02x}".format(value) for value in present])
+
+    stray = raw.replace(b"\r\n", b"").count(b"\r")
+    assert stray == 0, (
+        "{0} carries {1} carriage return(s) that do not end a line".format(relative, stray))
+
+    lines = raw.split(b"\n")[:-1]
+    with_cr = sum(1 for line in lines if line.endswith(b"\r"))
+    assert with_cr in (0, len(lines)), (
+        "{0} mixes line endings: {1} of {2} lines end CRLF".format(
+            relative, with_cr, len(lines)))
