@@ -162,6 +162,23 @@ const REJECTION_REASON_IN_LOG = /Response body: \{"error":"config-write-refused"
  */
 const REDACTED_CREDENTIAL_IN_LOG = /\[redacted credential\]/;
 
+/**
+ * A placeholder with something other than the closing quote of a JSON string after it.
+ *
+ * Every value the rejecting response echoes sits inside JSON quotes, so a *whole* replacement
+ * always reads `"[redacted credential]"`. A placeholder followed by anything else is the signature
+ * of a partial one: one submitted value is a prefix of another - `test-access-token` of
+ * `test-access-token-secret` - and a redaction that consumes the shorter one first leaves the
+ * remainder, `-secret`, on the console beside the placeholder. Asserted as an absence, because the
+ * fragment is a fragment of a credential and no reader would notice it in a long line.
+ *
+ * @see docs/testing/DECISION-LOG.md - row D409.
+ */
+const PARTIALLY_REDACTED_CREDENTIAL_IN_LOG = /\[redacted credential\](?!")/;
+
+/** The suffix the excerpt carries only when redaction pushed it past its own length cap. */
+const TRUNCATED_EXCERPT_IN_LOG = /characters in total/;
+
 /** Kind of dialog `alert` opens. */
 const ALERT_DIALOG = 'alert';
 
@@ -618,6 +635,18 @@ test.describe('harness route /configuration - TwitterAPISettings (frontend/src/c
       for (const field of CREDENTIAL_FIELDS) {
         expect(everythingTheBrowserSaid).not.toContain(field.typedValue);
       }
+
+      /*
+       * Two properties of *how* it was redacted, which the two assertions above cannot see. The
+       * first is completeness at the fragment level: no placeholder may be followed by leftover
+       * credential text, which is what a redaction taking one value at a time produces when one
+       * value is a prefix of another. The second is that redacting this echo costs the excerpt
+       * nothing - the reason above survives whole rather than being cut off by placeholders that
+       * grew the body past the cap, which is what a redaction that re-reads its own replacements
+       * does. Both hold for any values a spec types, so neither depends on these four.
+       */
+      expect(reported).not.toMatch(PARTIALLY_REDACTED_CREDENTIAL_IN_LOG);
+      expect(reported).not.toMatch(TRUNCATED_EXCERPT_IN_LOG);
 
       // Caught rather than propagated: nothing escaped to the page and the route stays mounted.
       expect(browserDiagnostics.pageErrorText()).toBe('');

@@ -84,6 +84,14 @@ const CLEAR_TEXT_FIELDS = [FIELD_LABELS.apiKey, FIELD_LABELS.accessToken] as con
 const MASKED_FIELDS = [FIELD_LABELS.apiSecret, FIELD_LABELS.accessTokenSecret] as const;
 
 /**
+ * A credential far longer than any Twitter API key, used to show the absent bound is absent in
+ * effect rather than only in markup. Kept modest in size so the typed input stays fast; the property
+ * under test is that nothing truncates, and one character past a limit would prove that as well as a
+ * thousand would.
+ */
+const OVERSIZE_CREDENTIAL = 'K'.repeat(500);
+
+/**
  * Every attribute that would express an in-flight submit to a user or to assistive technology. The
  * subject sets none of them on the button or the form. See ceiling 1 in the module docstring.
  */
@@ -364,5 +372,57 @@ describe('TwitterAPISettings (src/components/Configuration)', () => {
     for (const label of Object.values(FIELD_LABELS)) {
       expect(screen.getByLabelText(label)).not.toHaveAttribute('autocomplete');
     }
+  });
+
+  it('declares no length bound on any credential field, so an oversize value is accepted whole', () => {
+    renderWithProviders(<TwitterAPISettings />);
+
+    /*
+     * The attribute's absence is asserted rather than the `maxLength` property's value, because the
+     * IDL default for an absent attribute is not portable: Chrome reflects `-1` and jsdom reflects
+     * `524288`. Neither is a bound the markup declared, and the effect - that nothing truncates - is
+     * measured by the case below rather than inferred from either number.
+     *
+     * `size`, `minlength` and `pattern` are checked too: any of them would have constrained the
+     * value or at least signalled an expected shape, and none is declared.
+     */
+    for (const label of Object.values(FIELD_LABELS)) {
+      const input = screen.getByLabelText(label) as HTMLInputElement;
+
+      expect(input).not.toHaveAttribute('maxlength');
+      expect(input).not.toHaveAttribute('minlength');
+      expect(input).not.toHaveAttribute('pattern');
+      expect(input).not.toHaveAttribute('size');
+      /* Nor a `name`, so the field is absent from any native form serialization as well. */
+      expect(input).not.toHaveAttribute('name');
+    }
+  });
+
+  it('submits an oversize credential payload with every character intact', async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<TwitterAPISettings />);
+
+    /*
+     * Typed rather than assigned, so the value crosses the same `onChange` path a person's input
+     * does. Nothing between the keystroke and the collaborator truncates it: not the input, not
+     * React's controlled-value round trip, and not the payload assembly on lines 14-19.
+     */
+    await user.type(screen.getByLabelText(FIELD_LABELS.apiKey), OVERSIZE_CREDENTIAL);
+    await user.type(screen.getByLabelText(FIELD_LABELS.apiSecret), CREDENTIALS.apiSecret);
+    await user.type(screen.getByLabelText(FIELD_LABELS.accessToken), CREDENTIALS.accessToken);
+    await user.type(
+      screen.getByLabelText(FIELD_LABELS.accessTokenSecret),
+      CREDENTIALS.accessTokenSecret,
+    );
+
+    await submitForm(user);
+
+    await waitFor(() => expect(updateTwitterAPIConfigMock).toHaveBeenCalledTimes(1));
+
+    const submitted = updateTwitterAPIConfigMock.mock.calls[0][0] as Record<string, string>;
+
+    expect(submitted.apiKey).toHaveLength(OVERSIZE_CREDENTIAL.length);
+    expect(submitted.apiKey).toBe(OVERSIZE_CREDENTIAL);
+    expect(screen.getByLabelText(FIELD_LABELS.apiKey)).toHaveValue(OVERSIZE_CREDENTIAL);
   });
 });

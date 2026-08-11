@@ -64,6 +64,13 @@ cd frontend
 npm install
 ```
 
+**The CI workflow installs this tree as `npm install --ignore-scripts`.** Three lifecycle scripts would
+otherwise run — `esbuild`'s postinstall here and in `e2e/`, and `msw`'s — and none of them is needed: the
+suites were re-run in full on a tree deleted and rebuilt with that flag, and esbuild's JS API and CLI and
+`msw/node` all work on it (`D411`). Locally either form is fine; the flag is what stops a floating
+transitive resolution executing code in the pipeline. The pip side of the same step is pinned and
+wheels-only for the same reason.
+
 **`npm ci` will not work here, and that is deliberate.** No `package-lock.json` is committed (`D93`,
 `D159`), and `npm ci` refuses to run without a lockfile, so the CI workflow uses `npm install` too. The
 lockfile that `npm install` writes is **ignored**, at the anchored path `frontend/package-lock.json`
@@ -727,10 +734,10 @@ before quoting any of it — a number that outlives the tree it was taken on is 
 | Command | `npm run test:ci` from `frontend/`, which is `jest --ci --coverage --watchAll=false` |
 | Runner | `jest` 29.7.0 with `ts-jest` 29.4.12 and `jest-environment-jsdom` 29.5.0, installed from [`package.json`](./package.json) |
 | Runtime | Node v22.23.1 / npm 10.9.8, Windows |
-| Artifacts | `frontend/reports/jest-junit.xml` for the counts (root `tests="372" failures="0" errors="0"`, 24 `<testsuite>` children) and `frontend/coverage/coverage-summary.json` for every percentage in the table |
+| Artifacts | `frontend/reports/jest-junit.xml` for the counts (root `tests="383" failures="0" errors="0"`, 24 `<testsuite>` children) and `frontend/coverage/coverage-summary.json` for every percentage in the table |
 | Commit | Recorded by the tooling, not written here: `python ../docs/testing/dashboard-extract.py` prints the branch and commit of the tree it read in its §1.0 block, so re-run it beside the suite and quote that rather than a hash copied into prose |
 
-Suites: 3 skipped, 21 passed, 21 of 24 total. Tests: 24 skipped, 348 passed, 372 total. 0 snapshots.
+Suites: 3 skipped, 21 passed, 21 of 24 total. Tests: 24 skipped, 359 passed, 383 total. 0 snapshots.
 
 The 24 skips are the three page suites that cannot mount, and every one of them carries its own
 blocker reason — the skip is per test, not a blanket `describe.skip`, so a skipped identity still
@@ -979,9 +986,9 @@ jest --ci --watchAll=false --runInBand --reporters=default -t "__readiness_probe
 
 Jest can only know a test's name after it has transformed the file, executed it at module scope and run
 its `describe` callbacks, so this transforms and loads all **24** files, evaluates every module in their
-import graphs, registers all **372** test identities, then runs zero test bodies. On this run it exits
+import graphs, registers all **383** test identities, then runs zero test bodies. On this run it exits
 **0** in about 13 seconds reporting `Test Suites: 24 skipped, 0 of 24 total` and
-`Tests: 372 skipped, 372 total`, retained at `frontend/reports/load-tests.txt`, which the dashboard
+`Tests: 383 skipped, 383 total`, retained at `frontend/reports/load-tests.txt`, which the dashboard
 extractor reads and requires.
 
 Two flags earn their place. `--runInBand` states the single-process run on the command line rather than
@@ -991,7 +998,7 @@ raised — a worker pool would otherwise add a teardown warning to the retained 
 with readiness.
 `--reporters=default` **replaces** the configured reporter list, and without it this probe is a real Jest
 run whose `jest-junit` reporter overwrites `reports/jest-junit.xml` with its own all-skipped stream: a file
-declaring `tests="372" failures="0"` in which every case is skipped, which no consumer can distinguish
+declaring `tests="383" failures="0"` in which every case is skipped, which no consumer can distinguish
 from a run in which nothing executed — the same zero-information stub `pytest --collect-only` and
 `playwright test --list` each write. Measured both ways: with the flag, that file's SHA-256 is unchanged
 either side of a probe; without it, it changed.
@@ -1046,6 +1053,9 @@ cited handle, or its noted-but-not-fixed register.
 | 19 | Make the loading indicator and the polled feed announce themselves — `role="status"` on the indicator, `aria-live` on `div.real-time-feed`. | A non-sighted user is told neither that a fetch is in flight nor that the feed replaced itself, which it does every 30 000 ms. | `D217`, `G10` |
 | 20 | Hold pending state across the credential save: `disabled` plus `aria-busy` on the button while the write is open. | A second activation mid-flight issues a second identical credential write and a second dialog; nothing in the UI indicates the first is still running. | `D217`, `G11` |
 | 21 | Render `API Key` and `Access Token` as `type="password"` and declare an `autocomplete` policy on all four fields. | Two of four credentials are shown in clear text and are offered to the browser's generic autofill; masking currently follows the field's name, not its sensitivity. | `D217`, `G12` |
+| 22 | Attach a rejection handler to the polled feed, render an error state with `role="alert"`, and add backoff with a failure ceiling. | Measured in real Chrome against a failing endpoint over a 757-second session: **26 failed requests, 26 unhandled promise rejections, a strict 1:1, and `rejectionhandled` 0** — none was ever handled. `src/components/Dashboard` calls its async fetch as a bare statement and hands the same function to `setInterval`, so both call sites discard the promise; `twitterService.getLatestTweets` does catch, but it logs and re-throws, so it suppresses nothing. The interval never lengthens (13 periods averaging 30000.238 ms, 4.2 ms spread) and never stops, and the page shows the heading and nothing else throughout — every one of ten failure words absent from the document, `[role=alert]`/`[role=status]`/`[aria-live]`/`[aria-busy]` all absent, zero DOM mutations after mount, byte-identical screenshots nine minutes apart. A total outage is therefore indistinguishable from an empty feed, to a user and to browser-side monitoring alike. The suite asserts the schedule's invariance; the leak itself is browser evidence rather than a test, because jest-circus attributes a real unhandled rejection to the running test. | `D411`, `SECURITY-GAPS.md` row 33 |
+| 23 | Bound the four credential fields' length, in the markup and again on the server. | None of them declares `maxlength`, `minlength`, `pattern`, `size` or `name`, and Chrome reflects `maxLength === -1` accordingly. A 5000-character value entered by a **real paste** survives intact — proven against a control paste into `<input maxlength="10">` that truncated to 10 — and is submitted whole at `content-length: 5109`, answered without any length complaint. React also mirrors every controlled value into the DOM `value` **content attribute**, so `document.body.outerHTML` carries the full 5000 characters and both `type="password"` values in clear text. | `SECURITY-GAPS.md` rows 26 and 28 |
+| 24 | Coerce `timestamp` at the API boundary rather than leaving `tweetSchema` unable to parse a server record. | `safeParse` of the record the backend genuinely emits fails on **exactly one** field — `invalid_type`, expected `date`, received `string`, path `["timestamp"]` — and coercing that one field makes the whole record parse with all ten keys unchanged, so the schema's field names already agree with the server's exactly and the mismatch is one of type alone. Worse than a rejection: the emitted string carries **no timezone designator**, so `new Date()` parses it as *local* time and the instant reconstructed depends on the reader's zone. The offset-bearing form the server emits for an aware value behaves the same way, which is why the fix belongs at the boundary and not in a per-field special case. | `D413` |
 
 ## 11. Where "why" lives
 

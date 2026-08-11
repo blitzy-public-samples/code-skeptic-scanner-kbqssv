@@ -320,6 +320,11 @@ const MAX_DECODE_PASSES = 4;
  * issued, so an installed interception is answered without reaching this server at
  * all.
  *
+ * The refusal extends to every **path** named here under every method, not only to the exact
+ * method/path pairs - see {@link HARNESS_API_METHODS_BY_PATH}. The keys stay method-qualified
+ * because the remedy is: only these methods are reachable from a mounted component, so only these
+ * have an interception worth naming.
+ *
  * Add an entry to extend. Every remedy below is spelled with a `${HARNESS_ORIGIN}`
  * prefix and no leading `**`, so a pattern claims only requests addressed to the harness
  * origin; a leading `**` would also claim a request addressed to a foreign host that
@@ -346,6 +351,44 @@ const HARNESS_API_SURFACE: Record<string, string> = {
     'page.route(`${HARNESS_ORIGIN}/api/config/twitter`, route => route.fulfill({ json: {} }))',
 };
 
+/**
+ * Every pathname {@link HARNESS_API_SURFACE} declares, mapped to the methods it declares for it.
+ *
+ * Derived from that map's own keys, so the two cannot drift: adding an entry there adds its path
+ * here. It is what makes the fail-closed responder **path**-scoped while the remedies stay
+ * method-specific - a request to a declared path is refused whichever method it carries, and the
+ * remedy names either the interception for that exact method/path pair or, for a method the path
+ * does not declare, the methods it does.
+ *
+ * Path-scoped is the correct granularity because the property being protected is "no flow is
+ * satisfied by a server default". A method-scoped refusal left a declared path answerable by the
+ * SPA fallback: `GET /api/config/twitter` was answered `200 text/html` with the harness document,
+ * which a `fetch` reports as `response.ok`, and `HEAD` on all three paths likewise. The browser-side
+ * ledger in `e2e/tests/harness-fixtures.ts` has always been path-scoped, so the two layers
+ * disagreed - it recorded such a request as un-intercepted while the server had already answered it
+ * successfully.
+ *
+ * @see docs/testing/DECISION-LOG.md - row D410, which refines D126.
+ */
+const HARNESS_API_METHODS_BY_PATH: ReadonlyMap<string, readonly string[]> = (() => {
+  const byPath = new Map<string, string[]>();
+
+  for (const key of Object.keys(HARNESS_API_SURFACE)) {
+    const separator = key.indexOf(' ');
+    const method = key.slice(0, separator);
+    const pathname = key.slice(separator + 1);
+    const declared = byPath.get(pathname);
+
+    if (declared === undefined) {
+      byPath.set(pathname, [method]);
+    } else if (!declared.includes(method)) {
+      declared.push(method);
+    }
+  }
+
+  return byPath;
+})();
+
 /** Status the harness answers an un-intercepted {@link HARNESS_API_SURFACE} request with. */
 const API_NOT_INTERCEPTED_STATUS = 503;
 
@@ -357,7 +400,7 @@ const API_NOT_INTERCEPTED_ERROR = 'harness-api-not-intercepted';
  * `204 No Content` with no body.
  *
  * The harness ships no icon and `e2e/harness/index.html` declares none, so no document
- * references this path. Matched exactly, as the keys of {@link HARNESS_API_SURFACE} are:
+ * references this path. Matched exactly, as the paths of {@link HARNESS_API_METHODS_BY_PATH} are:
  * any other unknown dotted path still 404s.
  *
  * @see docs/testing/DECISION-LOG.md - row D147.
@@ -948,7 +991,34 @@ function harnessFilesystemGuard(): Plugin {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Answers every {@link HARNESS_API_SURFACE} request that reached this server with
+ * Remedy named for a request to a declared API path under a method that path does not declare.
+ *
+ * Such a request is not a flow this harness can satisfy - no mounted component issues it - so the
+ * remedy states that first and then gives both ways forward: correct the request, or declare the
+ * pair and intercept it. The `page.route` call is spelled with a literal `${HARNESS_ORIGIN}`, as
+ * every entry of {@link HARNESS_API_SURFACE} is, so a remedy copied out of an error message stays
+ * anchored to the harness origin rather than claiming the path on any host.
+ *
+ * @param method - Method the request carried.
+ * @param pathname - Declared API path it addressed.
+ * @param declared - Methods {@link HARNESS_API_SURFACE} declares for that path.
+ */
+function undeclaredMethodRemedy(
+  method: string,
+  pathname: string,
+  declared: readonly string[],
+): string {
+  return (
+    `no mounted component issues ${method} ${pathname}: this path is declared for ` +
+    `${declared.join(', ')} only. Either correct the request, or add "${method} ${pathname}" to ` +
+    'HARNESS_API_SURFACE and intercept it with ' +
+    'page.route(`${HARNESS_ORIGIN}' +
+    `${pathname}\`, route => route.fulfill({ json: {} }))`
+  );
+}
+
+/**
+ * Answers every request to a {@link HARNESS_API_METHODS_BY_PATH} path that reached this server with
  * {@link API_NOT_INTERCEPTED_STATUS}, answers {@link FAVICON_PATH} with
  * {@link FAVICON_STATUS}, and passes every other request through.
  *
@@ -957,11 +1027,20 @@ function harnessFilesystemGuard(): Plugin {
  * spec is missing, and the same line is written to the dev-server log, which
  * `e2e/playwright.config.ts` pipes into the run output.
  *
+ * The refusal is keyed by **path** and the remedy by method: a declared path is refused whichever
+ * method it carries, so no method can be answered by a server default, while the remedy is the
+ * exact `page.route` snippet for a declared method/path pair and
+ * {@link undeclaredMethodRemedy} otherwise. Measured before that widening: `GET
+ * /api/config/twitter` was answered `200 text/html` with the harness document - `response.ok`, and
+ * a credential-write endpoint at that - and `HEAD` on all three declared paths answered `200` too.
+ *
  * Runs ahead of Vite's own middleware, so these paths never reach the SPA fallback:
  * `connect-history-api-fallback` answers `index.html` to a `fetch`, whose `Accept`
  * header is a bare wildcard, and `response.ok` is then true for an HTML body.
  *
  * `Cache-Control: no-store`, so a reload re-issues the request and a spec sees it.
+ *
+ * @see docs/testing/DECISION-LOG.md - row D126, refined by row D410.
  */
 function harnessApiFailClosed(): Plugin {
   return {
@@ -980,16 +1059,27 @@ function harnessApiFailClosed(): Plugin {
           return;
         }
 
-        const remedy = HARNESS_API_SURFACE[`${method} ${pathname}`];
-        if (remedy === undefined) {
+        const declaredMethods = HARNESS_API_METHODS_BY_PATH.get(pathname);
+        if (declaredMethods === undefined) {
           next();
           return;
         }
 
+        const declaredRemedy: string | undefined = HARNESS_API_SURFACE[`${method} ${pathname}`];
+        const remedy =
+          declaredRemedy ?? undeclaredMethodRemedy(method, pathname, declaredMethods);
+
         const request = `${method} ${req.url ?? pathname}`;
+
+        /*
+         * "install <snippet>" for a declared method/path pair, whose remedy *is* the call to
+         * install; the undeclared-method remedy is a sentence of its own and is logged as written.
+         */
+        const guidance = declaredRemedy === undefined ? remedy : `install ${remedy}`;
+
         server.config.logger.warn(
           `[${API_NOT_INTERCEPTED_ERROR}] ${request} was answered ` +
-            `${API_NOT_INTERCEPTED_STATUS}; install ${remedy}`,
+            `${API_NOT_INTERCEPTED_STATUS}; ${guidance}`,
         );
 
         res.statusCode = API_NOT_INTERCEPTED_STATUS;
@@ -1038,22 +1128,29 @@ function fallbackRefusesAccept(accept: string | undefined): boolean {
  * asset, a control endpoint or an API path.
  *
  * Four exclusions, narrowest first. A module URL is refused by prefix. A control endpoint is
- * refused by prefix. Every {@link HARNESS_API_SURFACE} key is refused by exact match, so an
- * API path is never mistaken for a route even though none of them carries an extension. What
- * remains is refused unless its last segment is extension-less, which is what separates
- * `/tweets` from `/main.tsx`, `/index.html` and every asset request.
+ * refused by prefix. Every path {@link HARNESS_API_METHODS_BY_PATH} declares is refused by exact
+ * match **whatever method the request carries**, so an API path is never mistaken for a route even
+ * though none of them carries an extension - and cannot be promoted into one by the method it was
+ * asked with. What remains is refused unless its last segment is extension-less, which is what
+ * separates `/tweets` from `/main.tsx`, `/index.html` and every asset request.
  *
- * @param method - Request method, already narrowed to `GET` or `HEAD` by the caller.
+ * The API exclusion is belt and braces: {@link harnessApiFailClosed} is registered ahead of the
+ * normaliser and answers those paths itself, so nothing reaches here to be promoted. It is stated
+ * anyway, so that reordering the two plugins could not quietly turn a declared API path back into
+ * a client route.
+ *
  * @param pathname - Request path with query and fragment removed.
+ *
+ * @see docs/testing/DECISION-LOG.md - rows D378 and D410.
  */
-function isClientRoutePath(method: string, pathname: string): boolean {
+function isClientRoutePath(pathname: string): boolean {
   if (pathname.startsWith(MODULE_URL_PREFIX) || pathname.startsWith(CONTROL_PATH_PREFIX)) {
     return false;
   }
   if (pathname === FAVICON_PATH) {
     return false;
   }
-  if (HARNESS_API_SURFACE[`${method} ${pathname}`] !== undefined) {
+  if (HARNESS_API_METHODS_BY_PATH.has(pathname)) {
     return false;
   }
   return path.posix.extname(pathname) === '';
@@ -1096,7 +1193,7 @@ function harnessRouteAcceptNormaliser(): Plugin {
         }
 
         const pathname = withoutQuery(req.url ?? '').split('#')[0];
-        if (!isClientRoutePath(method, pathname) || !fallbackRefusesAccept(req.headers.accept)) {
+        if (!isClientRoutePath(pathname) || !fallbackRefusesAccept(req.headers.accept)) {
           next();
           return;
         }

@@ -1,6 +1,7 @@
 import pytest
 from fastapi.routing import APIRoute
 import app.core.config as config_module
+from tests.factories import make_tweet
 pytestmark = pytest.mark.integration
 
 
@@ -46,6 +47,36 @@ EXPECTED_ALLOW_HEADER = "GET"
 TWEET_DETAIL_REQUEST_PATH = "/tweets/1"
 TWEETS_COLLECTION_TRAILING_SLASH_PATH = "/tweets/"
 UNROUTED_SAMPLE_PATH = "/users/1"
+
+# Every request path that an *empty* ``tweet_id`` produces.  Both normalise to
+# the collection path rather than to the detail route: starlette's router
+# rejects them, `redirect_slashes` retries with the empty segment removed, and
+# `/tweets` matches.  `//` is the shape a caller reaches by interpolating an
+# empty identifier into a URL that already ends in a slash.
+COLLAPSING_DETAIL_PATHS = (
+    pytest.param(TWEETS_COLLECTION_TRAILING_SLASH_PATH, id="empty-identifier"),
+    pytest.param("/tweets//", id="empty-identifier-after-a-slash"),
+)
+
+# An identifier that survives normalisation, so the detail route matches and its
+# handler runs.  ``%20`` and ``+`` are the two encodings a caller reaches by
+# sending a single space; both are a one-character segment rather than an empty
+# one, which is what distinguishes them from the paths above.
+NON_COLLAPSING_DETAIL_PATHS = (
+    pytest.param("/tweets/%20", id="percent-encoded-space"),
+    pytest.param("/tweets/+", id="plus-encoded-space"),
+)
+
+INTERNAL_SERVER_ERROR_STATUS = 500
+INTERNAL_SERVER_ERROR_BODY = "Internal Server Error"
+
+# Headers a response would carry if the surface offered or demanded any identity.
+AUTHENTICATION_RESPONSE_HEADERS = ("www-authenticate", "set-cookie")
+
+# A token no verifier could accept, since ``app/core/security.py`` defines no
+# verifier at all.
+BOGUS_BEARER_HEADER = {"Authorization": "Bearer totally-bogus"}
+
 SWAGGER_UI_PATH = "/docs"
 BARE_ROUTER_MODULE_NAMES = ("users", "analytics", "config")
 TWEETS_ROUTER_ROUTE_COUNT = 3
@@ -161,6 +192,18 @@ def _absolute_url(client, path):
     )
 
 
+def _program_collection_rows(mock_db, rows):
+    """Program the ``query().offset().limit().all()`` chain ``get_tweets`` drives.
+
+    The same chain ``test_http_tweets.py`` programs, restated here rather than
+    imported, because a test module importing a helper out of a sibling test
+    module couples the two files' collection order.
+    """
+    chain = mock_db.query.return_value.offset.return_value.limit.return_value
+    chain.all.return_value = rows
+    return mock_db
+
+
 @pytest.fixture
 def route_modules(main_module):
     """Import route modules only after main_module installs the missing-symbol
@@ -215,6 +258,137 @@ def test_trailing_slash_on_tweets_collection_redirects(client):
     followed = client.request("POST", TWEETS_COLLECTION_TRAILING_SLASH_PATH)
 
     assert followed.status_code == METHOD_NOT_ALLOWED_STATUS
+
+
+# --------------------------------------------------------------------------- #
+# An empty identifier collapses the single-record read onto the collection read #
+# --------------------------------------------------------------------------- #
+# `GET /tweets/{tweet_id}` cannot be reached with an empty identifier, because
+# `/tweets/` does not match the detail route: starlette strips the empty trailing
+# segment and retries, and `/tweets` matches.  So a caller asking for ONE record
+# by an empty id receives EVERY record, with `200`, and the two bodies are the
+# same bytes.  `frontend/src/services/api.ts` line 15 interpolates the id into
+# the path with no validation and casts the result to a single `Tweet`, so the
+# collapse is reachable from the client as written.
+#
+# Three properties are asserted separately because they are three different
+# facts: the redirect itself, the identity of the two bodies, and the complete
+# absence of any authentication on the disclosed read.  The redirect's absolute
+# `Location` is the subject of `test_slash_redirect_reflects_request_host`; here
+# it matters only as the reason the follow succeeds.
+
+
+@pytest.mark.parametrize("path", COLLAPSING_DETAIL_PATHS)
+def test_empty_identifier_redirects_to_the_collection(client, path):
+    """An empty identifier answers ``307`` toward the collection, not the detail route.
+
+    The detail route is never entered, so nothing here depends on an injected
+    database: the redirect is decided by the router.  `Location` is the absolute
+    form starlette builds from the request's own `Host`, which is why a client
+    that follows redirects reaches a *different route* than the one it addressed.
+    """
+    response = client.get(path, follow_redirects=False)
+
+    assert response.status_code == TEMPORARY_REDIRECT_STATUS
+    assert response.headers["location"] == _absolute_url(
+        client, TWEETS_COLLECTION_PATH
+    )
+
+
+@pytest.mark.parametrize("path", COLLAPSING_DETAIL_PATHS)
+def test_empty_identifier_discloses_the_whole_collection(
+    client, mock_db, override_get_db, path
+):
+    """Following the redirect returns every record, byte-identical to the collection.
+
+    A caller that asked for one record receives a JSON **array** of all of them,
+    which is the type confusion half: `fetchTweetById` declares
+    ``Promise<Tweet>``, so every field read on the result is silently
+    ``undefined`` rather than raising.  The bodies are compared as bytes rather
+    than as parsed JSON, because "the same records" and "the same response" are
+    different claims and only the second one rules out any per-route shaping.
+    """
+    override_get_db(mock_db)
+    rows = [make_tweet(tweet_id="row-1"), make_tweet(tweet_id="row-2")]
+    _program_collection_rows(mock_db, rows)
+
+    collection = client.get(TWEETS_COLLECTION_PATH)
+    collapsed = client.get(path)
+
+    assert collection.status_code == OK_STATUS
+    assert collapsed.status_code == OK_STATUS
+    assert collapsed.content == collection.content
+    assert [record["tweet_id"] for record in collapsed.json()] == [
+        "row-1",
+        "row-2",
+    ]
+
+
+def test_empty_identifier_disclosure_requires_no_authentication(
+    client, mock_db, override_get_db
+):
+    """The disclosed read neither demands nor offers an identity.
+
+    Nothing on this surface authenticates -- `app/api/dependencies.py` defines
+    ``get_current_user`` and no route depends on it -- so the check is that the
+    response carries no challenge and no session, and that a token no verifier
+    could accept changes neither the status nor the bytes.
+    """
+    override_get_db(mock_db)
+    _program_collection_rows(mock_db, [make_tweet()])
+
+    anonymous = client.get(TWEETS_COLLECTION_TRAILING_SLASH_PATH)
+    with_bogus_token = client.get(
+        TWEETS_COLLECTION_TRAILING_SLASH_PATH, headers=BOGUS_BEARER_HEADER
+    )
+
+    assert anonymous.status_code == OK_STATUS
+    assert with_bogus_token.status_code == OK_STATUS
+    assert with_bogus_token.content == anonymous.content
+    for header_name in AUTHENTICATION_RESPONSE_HEADERS:
+        assert header_name not in anonymous.headers
+
+
+@pytest.mark.parametrize("path", NON_COLLAPSING_DETAIL_PATHS)
+def test_encoded_space_identifier_reaches_the_handler_instead(
+    client_no_raise, mock_db, override_get_db, path
+):
+    """A one-character identifier does not collapse -- it reaches the handler and 500s.
+
+    This is the control that identifies the mechanism.  The collapse above is
+    caused by an *empty* path segment, not by a blank identifier: an explicitly
+    encoded space is one character long, so the detail route matches, the handler
+    runs, and ``Tweet.id`` raises the ``AttributeError`` that
+    ``test_http_tweets.py`` pins.  A browser reaches the collapse with a literal
+    trailing space anyway, because the WHATWG URL parser strips it before the
+    request is sent -- a client-side normalisation rather than a server-side one.
+    """
+    override_get_db(mock_db)
+    _program_collection_rows(mock_db, [make_tweet()])
+
+    response = client_no_raise.get(path)
+
+    assert response.status_code == INTERNAL_SERVER_ERROR_STATUS
+    assert response.text == INTERNAL_SERVER_ERROR_BODY
+
+
+def test_detail_route_constrains_its_path_parameter_in_no_way(integration_app):
+    """The declared parameter carries no length, pattern or format constraint.
+
+    ``app/api/routes/tweets.py`` line 17 declares ``tweet_id: str`` bare, so the
+    generated schema is ``{"type": "string"}`` with nothing else -- no
+    ``minLength`` that would have refused the empty identifier before routing,
+    and no ``pattern``.  Asserted against the document rather than the signature,
+    because the document is the contract a client generator reads.
+    """
+    schema = integration_app.openapi()
+    parameters = schema["paths"][TWEET_DETAIL_PATH]["get"]["parameters"]
+
+    assert len(parameters) == 1
+    declared = parameters[0]
+    assert declared["in"] == "path"
+    assert declared["required"] is True
+    assert declared["schema"] == {"title": "Tweet Id", "type": "string"}
 
 
 def test_tweets_routes_declare_expected_methods(integration_app):

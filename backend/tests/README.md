@@ -7,18 +7,18 @@ production code **actually does today**, including the places where that diverge
 documents, because a test that asserts an intention the code does not implement fails for the wrong
 reason and teaches nobody anything.
 
-**Current state:** 1096 tests collected, 1093 passing, 3 skipped with reasons, 93.33% line coverage on
+**Current state:** 1150 tests collected, 1147 passing, 3 skipped with reasons, 93.33% line coverage on
 the four gated packages. `pytest --collect-only -q` reports zero errors.
 
 **That is a warm reading.** A first run in a fresh clone
-reports **1091 passed and 5 skipped on a first pass**, and both figures are correct.
+reports **1145 passed and 5 skipped on a first pass**, and both figures are correct.
 Two cases read an artifact a *previous* run wrote, and both
 artifacts are gitignored, so neither exists yet: `tests/test_coverage_gate.py` reads
 `backend/coverage.json`, which §8's gated command writes, and `tests/test_docs_contract.py` reads
 `e2e/reports/e2e-junit.xml`, which the end-to-end suite writes. Each skips with a reason naming the
 artifact rather than failing on its absence, which is the honest disposition for a case whose subject
 has not been produced. Run the gated command once — and the e2e suite once, if you want the second —
-and every later run reads 1093/3. The collected total is 1096 either way and nothing fails.
+and every later run reads 1147/3. The collected total is 1150 either way and nothing fails.
 
 Those are measurements from CPython 3.9.13 with `backend/requirements-dev.txt` installed, read out of
 `backend/reports/junit.xml` and `backend/coverage.json`. Every figure in this document names the command
@@ -82,7 +82,17 @@ Every entry is an exact `==` pin, and the way to hold an environment to them is 
 this file rather than to patch it in place. `pip check` is not that gate: it verifies that installed
 distributions satisfy one another's declared ranges, and stays silent when an installed version
 merely differs from a manifest pin. `pip install -r backend/requirements-dev.txt` — the command
-`ci.yml` runs and the one the install section above gives — is what makes the two agree.
+the install section above gives — is what makes the two agree.
+
+`ci.yml` runs that same command with two additions, and only for the reason a pipeline needs them:
+`--only-binary=:all:` on both pip invocations, so no source distribution is built and therefore no
+`setup.py` runs in the job — every one of the 76 distributions in this closure publishes a wheel for
+cp39 on manylinux and for `any`, so nothing about what installs changes — and a pinned
+`pip==26.0.1` bootstrap, which is the newest release declaring `requires_python >=3.9`. Adding either
+locally is harmless and neither is required to reproduce the pins. What is still absent is
+`--require-hashes`: it needs a digest for every *transitive* distribution, which is a lockfile by
+another name, and this manifest is exact pins of the direct set. `D411`, and
+[`SECURITY-GAPS.md`](../../docs/testing/SECURITY-GAPS.md) row 32 for what that leaves open.
 
 ### Pins that are hard constraints, not preferences
 
@@ -140,7 +150,7 @@ PytestConfigWarning: Unknown config option: rootdir
 It is a computed value, not a declarable one. So the invocation directory is the mechanism, and
 getting it wrong is not a subtle failure. Imports themselves do resolve from the repository root —
 `tests/` is a package, so pytest's prepend import mode puts `backend/` on `sys.path` — and that is what
-makes the failure quiet rather than obvious: a root-level `pytest` collects all 1096 tests and then
+makes the failure quiet rather than obvious: a root-level `pytest` collects all 1150 tests and then
 **fails 21 of them** with warnings on every marker, because `backend/pytest.ini` is not the active
 config file at that level, so `asyncio_mode = auto` is not in effect and every async test is
 mis-handled. Always:
@@ -765,18 +775,18 @@ first run after an install is slower — about nineteen seconds here — because
 
 | Command | Expected outcome |
 |---|---|
-| `pytest` | `1093 passed, 3 skipped` |
+| `pytest` | `1147 passed, 3 skipped` |
 | `pytest tests/unit -m unit` | `492 passed, 3 skipped` |
-| `pytest tests/integration -m integration` | `150 passed` |
+| `pytest tests/integration -m integration` | `204 passed` |
 | `pytest tests/test_dependency_closure.py` | `73 passed` |
 | `pytest tests/test_coverage_gate.py` | `62 passed` |
 | `pytest tests/test_guard_contract.py` | `168 passed` |
 | `pytest tests/test_dashboard_extract.py` | `44 passed` |
 | `pytest tests/test_docs_contract.py` | `104 passed` |
-| `pytest --collect-only -q` | `1096 tests collected`, **zero errors** |
+| `pytest --collect-only -q` | `1150 tests collected`, **zero errors** |
 | The gate | `Required test coverage of 90% reached. Total coverage: 93.33%`, then the exact gate's `PASSED` |
 
-The counts close on the whole: 492 + 3 + 150 + 73 + 62 + 168 + 44 + 104 = 1096, the collected total above.
+The counts close on the whole: 492 + 3 + 204 + 73 + 62 + 168 + 44 + 104 = 1150, the collected total above.
 
 **Those are warm-tree readings, and a first run in a fresh clone is two passes short of them.** Two tests
 read a result artifact that `.gitignore` keeps out of version control, and each skips rather than fails
@@ -787,9 +797,9 @@ while its artifact has not been produced yet — deliberately, so that this suit
 | `tests/test_coverage_gate.py::test_counts_and_files_are_read_from_the_real_report` | `backend/coverage.json is written by the gated coverage command` | the canonical producer block above, through its `--cov-report=json` |
 | `tests/test_docs_contract.py::test_the_published_e2e_census_is_the_retained_streams_own_count` | `e2e/reports/e2e-junit.xml is gitignored and absent in a fresh clone` | `npm test` from `e2e/` |
 
-So a clean clone's first `pytest` reads `1063 passed, 5 skipped`, its
+So a clean clone's first `pytest` reads `1145 passed, 5 skipped`, its
 `pytest tests/test_coverage_gate.py` reads `61 passed, 1 skipped` and its
-`pytest tests/test_docs_contract.py` reads `89 passed, 1 skipped`; the collected total is unchanged at 1068
+`pytest tests/test_docs_contract.py` reads `103 passed, 1 skipped`; the collected total is unchanged at 1150
 and the coverage gate is unaffected, still reading 93.33%. Run the canonical producer block once and the
 end-to-end suite once, and every figure above is reproduced exactly. Note that the plain
 `--cov-fail-under=90` form on its own does **not** clear the first of the two, because it requests no JSON
@@ -853,7 +863,7 @@ the same arrangement, one step each; the root [`README.md`](../../README.md) tab
 ### On `-n auto`, and why it is not the default
 
 `pytest-xdist` is installed and works — `pytest -n auto` starts, runs to completion and reports the
-same `1093 passed, 3 skipped`, and
+same `1147 passed, 3 skipped`, and
 `-n 2` reaches it in about 9 seconds. It is **not** enabled by default, and on a many-core machine it is
 markedly *slower*: on this host `-n auto` took 108 seconds against roughly 11 seconds serial, because
 process startup dominates a suite this fast. That figure moves with how busy the host is — separate
@@ -1283,6 +1293,41 @@ that forces the change to be made consciously.
   the ingestion path: no tweet can currently be stored.
 - `GET /tweets/{tweet_id}` filters on `Tweet.id`, which the pydantic model does not have, so it returns
   HTTP 500 and its 404 branch is unreachable.
+- **An empty tweet identifier discloses the whole collection.** `GET /tweets/` never reaches the detail
+  route: starlette strips the empty trailing segment, retries, and `/tweets` matches — so the response is
+  `307` toward the collection and following it returns `200` with every stored record, **byte-identical**
+  to a collection read, with no authentication anywhere on the path. `/tweets//` collapses the same way; an
+  explicitly encoded `%20` does not, because a one-character segment matches the detail route and `500`s,
+  which is what makes the empty segment the mechanism rather than a blank identifier. The declared
+  parameter is a bare `str` with no `minLength` and no `pattern`.
+  Pinned by `tests/integration/test_route_surface.py`.
+- **One malformed stored row makes the whole collection read unavailable.** `List[Tweet]` is validated as
+  one value, so a single row missing a required field fails every row with it: the caller receives a bare
+  `500` and both valid rows become unreachable, retrievable only by someone who already knows the bad row's
+  index. There is no partial result and no per-record error envelope.
+  Pinned by `tests/integration/test_http_tweets.py`.
+- **Serialization changes stored values silently, and no field declares a range.** `"777"` → `777`,
+  `12.9` → **`12`** with the fraction discarded, `True` → `1`, an undeclared key dropped from the emitted
+  body, and `doubt_rating` emitting `42.5` and `-1.0` unchanged. Nothing is logged.
+- **The response model strips the two names the frontend declares.** `id` and `text` are removed even when
+  the stored row carries them, so they can never reach the browser whatever is stored.
+- **The emitted `timestamp` names no zone when the stored value is naive** (`2024-01-01T00:00:00`), while an
+  aware value keeps its offset. A designator-free date-time string is parsed by `new Date()` as *local*
+  time, so the instant a browser reconstructs depends on the reader's zone.
+- **No security response header is set on any status.** `app/main.py` installs `CORSMiddleware` and nothing
+  else, so a `200`, a `404`, a `405` and a `422` carry only what the payload needs. The JSON content type is
+  therefore the only control keeping a payload-bearing response inert when navigated to directly — and
+  stored markup does cross the wire unescaped.
+  Pinned by `tests/integration/test_app_lifecycle.py`.
+- **No cross-origin browser client can call the API, and the refusal advertises the method surface.** With
+  `ALLOWED_ORIGINS = []`, a simple request from an origin gets `access-control-allow-credentials` and no
+  `access-control-allow-origin`; a true preflight gets `400 Disallowed CORS origin` while still emitting
+  all seven methods and `max-age: 600`; and `OPTIONS` without an `Origin` is not a preflight at all — it
+  falls through to the router as `405 allow: GET`.
+- `skip` and `limit` are bare `int`s with no bound of any kind, so a negative offset, a zero page and a
+  magnitude above a signed 32-bit maximum all reach the query unchanged.
+- `media_urls` is `List[str]` with no scheme validation, so a `javascript:` URL is emitted exactly as
+  stored — inert only for as long as no consumer binds it to an `href` or a `src`.
 - SQLAlchemy `Session` type hints and `db.query(...)` calls are issued against a Firestore-backed
   dependency in `app/api/routes/tweets.py`.
 - Analytics SQL is assembled by f-string interpolation of caller-supplied date strings — an injection

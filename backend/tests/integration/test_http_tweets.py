@@ -70,6 +70,9 @@ the real module.
    ``docs/testing/TRACEABILITY-MATRIX.md`` section G for the unreachable ``404``.
 """
 import importlib
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
+
 import pytest
 from pydantic import ValidationError
 from app.schema.tweet import Tweet
@@ -188,10 +191,133 @@ UNCONSTRAINED_QUERY_VALUES = (
     pytest.param({"limit": 0}, DEFAULT_SKIP, 0, id="limit-zero"),
 )
 
+#: ``limit`` values of an unbounded magnitude, with the integer each reaches the
+#: query as. Line 12 declares ``limit: int`` with no ``le``, so the ceiling is
+#: the machine's rather than the endpoint's; the largest here is one above a
+#: signed 32-bit maximum, which is the value an operator would expect a store to
+#: refuse.
+UNBOUNDED_MAGNITUDE_LIMITS = (
+    pytest.param({"limit": 1000000000}, 1000000000, id="one-billion"),
+    pytest.param({"limit": 2147483647}, 2147483647, id="signed-32-bit-maximum"),
+    pytest.param({"limit": 2147483648}, 2147483648, id="above-signed-32-bit"),
+)
+
+#: Identifiers for the three-row mixed-validity result set. Only the middle row
+#: violates the response model, and it is the ``content`` key that is missing --
+#: the same omission :data:`OMITTED_REQUIRED_FIELD` names for the single-row case.
+FIRST_VALID_ROW_ID = "good-1"
+MALFORMED_ROW_ID = "bad-2"
+LAST_VALID_ROW_ID = "good-3"
+
+#: Where the response model reports the failure when the malformed row is second.
+#: The index is the row's position in the emitted list, which is what makes the
+#: *cause* locatable from the exception even though the response never is.
+MALFORMED_ROW_VALIDATION_LOCATION = ("response", 1, OMITTED_REQUIRED_FIELD)
+
+#: Every slice of the mixed-validity result set, with the status it answers and
+#: the row identifiers it emits. A slice succeeds exactly when it excludes index
+#: 1, so the valid rows are reachable only by a caller who already knows which
+#: index is bad.
+MALFORMED_ROW_SLICES = (
+    pytest.param(
+        {"skip": 0, "limit": 1}, OK_STATUS, [FIRST_VALID_ROW_ID], id="first-row-only"
+    ),
+    pytest.param({"skip": 1, "limit": 1}, SERVER_ERROR_STATUS, None, id="bad-row-only"),
+    pytest.param(
+        {"skip": 2, "limit": 1}, OK_STATUS, [LAST_VALID_ROW_ID], id="last-row-only"
+    ),
+    pytest.param(
+        {"skip": 0, "limit": 2}, SERVER_ERROR_STATUS, None, id="spans-the-bad-row"
+    ),
+    pytest.param(
+        {"skip": 0, "limit": 3},
+        SERVER_ERROR_STATUS,
+        None,
+        id="spans-every-row",
+    ),
+)
+
+#: Stored values the response model silently changes on the way out, with what it
+#: emits. The first is a widening coercion and the second is destructive: pydantic
+#: v1 builds an ``int`` from a ``float`` by truncation, so ``12.9`` becomes ``12``
+#: and the fractional part is discarded rather than refused.
+SILENTLY_ADJUSTED_VALUES = (
+    pytest.param("likes_count", "777", 777, id="string-count-coerced"),
+    pytest.param("retweets_count", 12.9, 12, id="float-count-truncated"),
+    pytest.param("likes_count", True, 1, id="boolean-count-coerced"),
+)
+
+#: ``doubt_rating`` values outside the 0-1 range the design documents describe.
+#: The field is declared ``float`` with no ``ge``/``le``, so each is emitted as
+#: stored.
+UNBOUNDED_DOUBT_RATINGS = (
+    pytest.param(42.5, id="far-above-maximum"),
+    pytest.param(-1.0, id="below-minimum"),
+)
+
+#: A key ``app/schema/tweet.py`` does not declare, and a value distinctive enough
+#: to sweep the whole response body for.
+UNDECLARED_ROW_KEY = "sentiment_score"
+UNDECLARED_ROW_VALUE = "UNDECLARED_KEY_SENTINEL"
+
+#: The two field names ``frontend/src/services/twitterService.ts`` declares and
+#: the schema does not, with values distinctive enough to sweep for.
+ID_SENTINEL_VALUE = "ID_FIELD_SENTINEL"
+TEXT_SENTINEL_VALUE = "TEXT_FIELD_SENTINEL"
+
+#: Length of the ``YYYY-MM-DD`` prefix of a serialized timestamp. Used to search
+#: only the time portion for a ``-``, so the date's own separators are not
+#: mistaken for a negative UTC offset.
+TIMESTAMP_DATE_LENGTH = 10
+
+#: A timestamp that carries an offset, and the string the model emits for it.
+AWARE_TIMESTAMP_VALUE = datetime(
+    2024, 2, 2, 0, 0, 0, tzinfo=timezone(timedelta(hours=2))
+)
+AWARE_SERIALIZED_TIMESTAMP = "2024-02-02T00:00:00+02:00"
+
+#: Stored text and a stored URL that a naive consumer would treat as trusted.
+#: Both cross the wire exactly as stored.
+MARKUP_CONTENT = "<script>alert('xss')</script> <b>bold</b>"
+SCRIPT_SCHEME_URL = "javascript:alert(1)"
+HTTPS_MEDIA_URL = "https://example.invalid/media.png"
+
+#: The content type every successful response on this surface carries. It is the
+#: only control that keeps :data:`MARKUP_CONTENT` inert when the response is
+#: navigated to directly, since no ``X-Content-Type-Options`` accompanies it --
+#: see ``test_app_lifecycle.py``.
+JSON_CONTENT_TYPE = "application/json"
+
 
 def _program_collection_rows(mock_db, rows):
     chain = mock_db.query.return_value.offset.return_value.limit.return_value
     chain.all.return_value = rows
+    return mock_db
+
+
+def _program_sliced_collection(mock_db, rows):
+    """Answer ``offset(skip).limit(limit).all()`` with the corresponding slice.
+
+    :func:`_program_collection_rows` returns one fixed result whatever the
+    pagination, which is what every other case here wants.  The malformed-row
+    slice matrix needs the opposite: the pagination has to select, because the
+    fact under test is *which* rows a given slice spans.
+    """
+
+    def _offset(skip):
+        def _limit(limit):
+            selected = mock_db.query.return_value.offset.return_value.limit
+            page = MagicMock(name="page")
+            start = skip if skip and skip > 0 else 0
+            page.all.return_value = rows[start:start + limit]
+            selected.return_value = page
+            return page
+
+        paged = MagicMock(name="paged")
+        paged.limit.side_effect = _limit
+        return paged
+
+    mock_db.query.return_value.offset.side_effect = _offset
     return mock_db
 
 
@@ -1005,3 +1131,324 @@ def test_get_tweets_refuses_an_integer_lookalike(
         ["query", "limit"]
     ]
     mock_db.query.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# One malformed row makes the WHOLE collection unavailable                     #
+# --------------------------------------------------------------------------- #
+# ``test_get_tweets_response_validation_raises_for_incomplete_row`` above pins
+# the cause for a single-row result.  These cases pin the *blast radius*, which
+# is a different fact: the handler returns a ``list`` and the response model is
+# ``List[Tweet]``, so fastapi validates the whole list as one value.  One row
+# that fails therefore takes every valid row with it -- there is no partial
+# result, no skip-bad-record and no per-record error envelope, and the caller
+# receives an opaque ``500`` that cannot be distinguished from a broken server.
+
+
+@pytest.fixture
+def mixed_validity_rows():
+    """Three rows of which only the middle one violates the response model.
+
+    The valid rows are named, so an assertion can show *which* rows were
+    reachable rather than only how many.
+    """
+    malformed = make_tweet(tweet_id=MALFORMED_ROW_ID)
+    del malformed[OMITTED_REQUIRED_FIELD]
+    return [
+        make_tweet(tweet_id=FIRST_VALID_ROW_ID),
+        malformed,
+        make_tweet(tweet_id=LAST_VALID_ROW_ID),
+    ]
+
+
+def test_get_tweets_one_malformed_row_fails_the_whole_collection(
+    client, mock_db, override_get_db, mixed_validity_rows
+):
+    """The response model rejects the list, naming the offending row's index.
+
+    ``loc`` carries the index, so the *cause* is precisely locatable from the
+    exception -- and only from the exception, because nothing in the HTTP
+    response says which row it was.
+    """
+    override_get_db(mock_db)
+    _program_collection_rows(mock_db, mixed_validity_rows)
+
+    with pytest.raises(ValidationError) as excinfo:
+        client.get(TWEETS_PATH)
+
+    assert excinfo.value.model.__name__ == RESPONSE_MODEL_NAME
+    assert [error["loc"] for error in excinfo.value.errors()] == [
+        MALFORMED_ROW_VALIDATION_LOCATION
+    ]
+    assert [error["type"] for error in excinfo.value.errors()] == [
+        MISSING_FIELD_VALIDATION_TYPE
+    ]
+
+
+def test_get_tweets_one_malformed_row_returns_500_with_no_partial_body(
+    client_no_raise, mock_db, override_get_db, mixed_validity_rows
+):
+    """What the caller receives carries neither the valid rows nor the reason.
+
+    The body is the bare ``text/plain`` ``Internal Server Error`` -- so a client
+    cannot tell "the server is broken" from "one stored record is malformed",
+    and neither valid row is reachable through this request at all.
+    """
+    override_get_db(mock_db)
+    _program_collection_rows(mock_db, mixed_validity_rows)
+
+    response = client_no_raise.get(TWEETS_PATH)
+
+    assert response.status_code == SERVER_ERROR_STATUS
+    assert response.text == SERVER_ERROR_BODY
+    assert response.headers["content-type"].startswith(SERVER_ERROR_CONTENT_TYPE)
+    for row_id in (FIRST_VALID_ROW_ID, LAST_VALID_ROW_ID, MALFORMED_ROW_ID):
+        assert row_id not in response.text
+
+
+@pytest.mark.parametrize(
+    "params, expected_status, expected_ids", MALFORMED_ROW_SLICES
+)
+def test_get_tweets_slice_outcome_depends_on_whether_it_spans_the_bad_row(
+    client_no_raise,
+    mock_db,
+    override_get_db,
+    mixed_validity_rows,
+    params,
+    expected_status,
+    expected_ids,
+):
+    """A slice succeeds exactly when it excludes the malformed row.
+
+    This is the operational consequence: the valid rows are still *retrievable*,
+    but only by a caller who already knows the bad row's index -- which is the
+    one thing the ``500`` does not tell them.  The pagination arguments are the
+    same unconstrained ``skip``/``limit`` pair every other case here uses; no
+    per-record handling exists to make the difference.
+    """
+    override_get_db(mock_db)
+    _program_sliced_collection(mock_db, mixed_validity_rows)
+
+    response = client_no_raise.get(TWEETS_PATH, params=params)
+
+    assert response.status_code == expected_status
+    if expected_status == OK_STATUS:
+        assert [record["tweet_id"] for record in response.json()] == expected_ids
+    else:
+        assert response.text == SERVER_ERROR_BODY
+
+
+# --------------------------------------------------------------------------- #
+# What the response model does to a row's values on the way out                #
+# --------------------------------------------------------------------------- #
+# Serialization is not a pass-through.  ``List[Tweet]`` is a validating model, so
+# every emitted row is the result of pydantic v1 coercion against
+# ``app/schema/tweet.py`` rather than the stored row itself.  Three classes of
+# change happen silently and none is logged: a value is COERCED, a value is
+# TRUNCATED, and an undeclared key is DROPPED.  A fourth is an absence: no field
+# declares a range, so a ``doubt_rating`` far outside 0-1 is emitted unchanged.
+
+
+@pytest.mark.parametrize(
+    "field_name, stored, emitted", SILENTLY_ADJUSTED_VALUES
+)
+def test_get_tweets_adjusts_a_stored_value_without_saying_so(
+    client, mock_db, override_get_db, field_name, stored, emitted
+):
+    """A stored value is coerced or truncated on the way out, with no warning.
+
+    ``retweets_count`` is the destructive case: ``int(12.9)`` is ``12``, so a
+    real value is discarded rather than refused.  Asserted through the emitted
+    JSON rather than the model, because the emitted JSON is what a client reads.
+    """
+    override_get_db(mock_db)
+    _program_collection_rows(mock_db, [make_tweet(**{field_name: stored})])
+
+    response = client.get(TWEETS_PATH)
+
+    assert response.status_code == OK_STATUS
+    record = response.json()[0]
+    assert record[field_name] == emitted
+    assert isinstance(record[field_name], type(emitted))
+
+
+@pytest.mark.parametrize("doubt_rating", UNBOUNDED_DOUBT_RATINGS)
+def test_get_tweets_emits_a_doubt_rating_outside_its_nominal_range(
+    client, mock_db, override_get_db, doubt_rating
+):
+    """``doubt_rating`` is a bare ``float`` -- nothing constrains it to 0-1.
+
+    The design documents describe a rating and ``DOUBT_RATING_THRESHOLD`` is
+    ``0.7``, but the schema declares no bound and no production code compares
+    against that threshold, so a negative or many-times-maximum rating travels
+    to the client intact.
+    """
+    override_get_db(mock_db)
+    _program_collection_rows(mock_db, [make_tweet(doubt_rating=doubt_rating)])
+
+    response = client.get(TWEETS_PATH)
+
+    assert response.status_code == OK_STATUS
+    assert response.json()[0]["doubt_rating"] == doubt_rating
+
+
+def test_get_tweets_drops_an_undeclared_key_from_the_emitted_row(
+    client, mock_db, override_get_db
+):
+    """A key the schema does not declare is discarded, not rejected and not echoed."""
+    override_get_db(mock_db)
+    _program_collection_rows(
+        mock_db, [make_tweet(**{UNDECLARED_ROW_KEY: UNDECLARED_ROW_VALUE})]
+    )
+
+    response = client.get(TWEETS_PATH)
+
+    assert response.status_code == OK_STATUS
+    assert UNDECLARED_ROW_KEY not in response.json()[0]
+    assert UNDECLARED_ROW_VALUE not in response.text
+
+
+def test_get_tweets_strips_the_field_names_the_client_expects(
+    client, mock_db, override_get_db
+):
+    """``id`` and ``text`` are removed even when the stored row carries them.
+
+    ``frontend/src/services/twitterService.ts`` declares a tweet with ``id`` and
+    ``text``.  Neither is declared by ``app/schema/tweet.py``, and the response
+    model emits only declared fields -- so those two names can never reach the
+    browser, whatever is stored.  The sentinel *values* are swept for as well as
+    the key names, because a value surviving under a different key would be a
+    different outcome.
+    """
+    override_get_db(mock_db)
+    _program_collection_rows(
+        mock_db,
+        [make_tweet(id=ID_SENTINEL_VALUE, text=TEXT_SENTINEL_VALUE)],
+    )
+
+    response = client.get(TWEETS_PATH)
+
+    assert response.status_code == OK_STATUS
+    assert tuple(response.json()[0]) == TWEET_FIELD_NAMES
+    for absent in (
+        ID_SENTINEL_VALUE,
+        TEXT_SENTINEL_VALUE,
+        '"id"',
+        '"text"',
+    ):
+        assert absent not in response.text
+
+
+# --------------------------------------------------------------------------- #
+# How the one datetime field crosses the wire                                  #
+# --------------------------------------------------------------------------- #
+
+
+def test_get_tweets_emits_a_naive_timestamp_with_no_timezone_designator(
+    client, mock_db, override_get_db
+):
+    """The emitted timestamp names no zone, so a client must assume one.
+
+    ``timestamp`` is ``datetime`` and the fixture's value is naive, so pydantic's
+    ISO-8601 rendering carries neither ``Z`` nor an offset.  Per ES2015 a
+    date-time string without a designator is parsed by ``new Date()`` as *local*
+    time, so the instant a browser reconstructs depends on the reader's zone --
+    which is the latent half of the ``z.date()`` mismatch that
+    ``frontend/src/schema/tweetSchema.test.ts`` pins from the client side.
+    """
+    override_get_db(mock_db)
+    _program_collection_rows(mock_db, [make_tweet()])
+
+    response = client.get(TWEETS_PATH)
+
+    emitted = response.json()[0]["timestamp"]
+
+    assert emitted == SERIALIZED_TIMESTAMP
+    assert not emitted.endswith("Z")
+    assert "+" not in emitted
+    assert emitted[TIMESTAMP_DATE_LENGTH:].count("-") == 0
+
+
+def test_get_tweets_preserves_the_offset_of_an_aware_timestamp(
+    client, mock_db, override_get_db
+):
+    """An aware value keeps its offset, so the absence above is the value's, not the model's.
+
+    The same field emits ``+02:00`` when the stored value carries it.  So a
+    deployment cannot rely on the emitted form being zone-free either: the two
+    renderings differ by what was stored, and nothing normalises them.
+    """
+    override_get_db(mock_db)
+    _program_collection_rows(
+        mock_db, [make_tweet(timestamp=AWARE_TIMESTAMP_VALUE)]
+    )
+
+    response = client.get(TWEETS_PATH)
+
+    assert response.json()[0]["timestamp"] == AWARE_SERIALIZED_TIMESTAMP
+
+
+# --------------------------------------------------------------------------- #
+# Stored text crosses the wire verbatim                                        #
+# --------------------------------------------------------------------------- #
+
+
+def test_get_tweets_emits_stored_markup_without_escaping_it(
+    client, mock_db, override_get_db
+):
+    """Markup in ``content`` is emitted as the characters that were stored.
+
+    Correct for a JSON API -- JSON escaping is not HTML escaping -- and recorded
+    because it makes every downstream consumer responsible for escaping on
+    output.  The count of ``&lt;`` is asserted rather than merely the presence of
+    ``<``, so "unescaped" is measured rather than assumed.
+    """
+    override_get_db(mock_db)
+    _program_collection_rows(mock_db, [make_tweet(content=MARKUP_CONTENT)])
+
+    response = client.get(TWEETS_PATH)
+
+    assert response.json()[0]["content"] == MARKUP_CONTENT
+    assert response.text.count("&lt;") == 0
+    assert response.headers["content-type"] == JSON_CONTENT_TYPE
+
+
+def test_get_tweets_emits_a_javascript_url_with_no_scheme_validation(
+    client, mock_db, override_get_db
+):
+    """``media_urls`` is ``List[str]`` -- any scheme at all is emitted intact.
+
+    Nothing here validates a URL, so a ``javascript:`` entry reaches the client
+    exactly as stored.  Inert as long as no consumer binds it to an ``href`` or
+    ``src``; recorded because the schema offers no defence if one ever does.
+    """
+    override_get_db(mock_db)
+    _program_collection_rows(
+        mock_db, [make_tweet(media_urls=[SCRIPT_SCHEME_URL, HTTPS_MEDIA_URL])]
+    )
+
+    response = client.get(TWEETS_PATH)
+
+    assert response.json()[0]["media_urls"] == [SCRIPT_SCHEME_URL, HTTPS_MEDIA_URL]
+    assert SCRIPT_SCHEME_URL in response.text
+
+
+@pytest.mark.parametrize("params, expected_limit", UNBOUNDED_MAGNITUDE_LIMITS)
+def test_get_tweets_accepts_a_limit_of_any_magnitude(
+    client, mock_db, override_get_db, params, expected_limit
+):
+    """No maximum is declared, so a caller may ask for an unbounded page.
+
+    The companion to ``test_get_tweets_accepts_an_unconstrained_pagination_value``
+    above, which covers sign and zero: this covers magnitude, up to and beyond a
+    signed 32-bit maximum.  Every value reaches the query unchanged, so the only
+    thing standing between a caller and a whole-collection read is the store.
+    """
+    override_get_db(mock_db)
+    _program_collection_rows(mock_db, [])
+
+    response = client.get(TWEETS_PATH, params=params)
+
+    assert response.status_code == OK_STATUS
+    offset = mock_db.query.return_value.offset
+    offset.return_value.limit.assert_called_once_with(expected_limit)

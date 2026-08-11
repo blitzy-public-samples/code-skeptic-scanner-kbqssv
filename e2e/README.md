@@ -612,6 +612,17 @@ The remedy it prints is anchored, for the reason above: a remedy copied out of a
 most likely pattern to end up in a new spec, so `vite.harness.config.ts` spells every one of them with
 `${HARNESS_ORIGIN}`.
 
+**The refusal is keyed by path, not by method.** `HARNESS_API_SURFACE` names a method with each path,
+because the remedy differs per method, but a request to one of those three paths is refused whichever
+method it carries. A request under a method the path does not declare gets the same `503` and a remedy
+that says so — `no mounted component issues GET /api/config/twitter: this path is declared for POST
+only` — followed by both ways forward. Before that widening, `GET /api/config/twitter` and `HEAD` on
+all three paths fell through to the SPA fallback and were answered `200 text/html` with the harness
+document, which `fetch` reports as `response.ok`; the browser-side ledger in
+[`tests/harness-fixtures.ts`](./tests/harness-fixtures.ts) was already path-keyed, so it recorded such a
+request as un-intercepted while the server had already answered it. `tests/isolation.spec.ts` asserts
+the refusal for each declared path under a method it does not declare.
+
 It also logs the same line to the dev-server output under a `[harness-api-not-intercepted]` prefix. On
 top of that, the `noEgress` fixture in [`tests/harness-fixtures.ts`](./tests/harness-fixtures.ts) keeps a
 ledger and **fails any spec that forgot an intercept**, so a missing handler is a named failure rather
@@ -718,7 +729,7 @@ request straight on to a 404 unless its `Accept` header is present, does not lea
 qualifies; a client asking for JSON, asking for a script, or sending no `Accept` at all does not, so
 `/tweets` used to answer 404 to one caller and the harness entry to another. The normaliser substitutes
 `text/html` on a GET or HEAD request for an extension-less path that is not a module URL, a control
-path, `/favicon.ico` or one of the three `HARNESS_API_SURFACE` keys, so the route table now answers the
+path, `/favicon.ico` or one of the three declared API **paths**, so the route table now answers the
 same way to every client. It rewrites one header and never responds, and it is ordered after both
 guards, so a path either of them refuses is never reconsidered — the 403s and 503s in section 5 are
 unaffected. A 404 from `/tweets` is now worth investigating rather than dismissing.

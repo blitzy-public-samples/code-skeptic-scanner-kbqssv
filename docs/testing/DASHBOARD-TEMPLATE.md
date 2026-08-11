@@ -943,8 +943,8 @@ Each item below was produced and inspected. The delivered-suite rows supersede t
 demonstration figures that this section previously carried; the demonstration numbers survive only in
 §1.2, labelled as the floors they were.
 
-Read the two kinds of number in these rows differently. The **counts** — 1096 backend cases with 3 skips,
-372 frontend cases with 24 skips, 31 E2E tests with no skip, and zero failures anywhere — are properties of the
+Read the two kinds of number in these rows differently. The **counts** — 1150 backend cases with 3 skips,
+383 frontend cases with 24 skips, 31 E2E tests with no skip, and zero failures anywhere — are properties of the
 suite, and a re-run reproduces them exactly; the reproduction below is the evidence for that. Every
 **`time` attribute** is a property of the one invocation that wrote the file, so a later run overwrites it
 with its own figure. Quote the counts as facts about the suite; quote a duration only as what that run took
@@ -965,11 +965,11 @@ are what they reproduce.
 
 | Evidence | What was observed |
 |---|---|
-| Backend artifacts | `backend/reports/junit.xml` (`<testsuite name="pytest" errors="0" failures="0" skipped="3" tests="1096">`, that run's `time="12.545"`) plus the Cobertura and JSON coverage files — the two the canonical gated command requests; `backend/coverage.lcov` is the local measurement command's, as §2.1 records — from the gated run on CPython 3.9.13: **1093 passed, 3 skipped, exit 0, 93.33% (182/195)** over `app/core` 100.00% (47/47), `app/db` 100.00% (45/45), `app/services` 94.12% (48/51) and `app/tasks` 80.77% (42/52). The exact gate's own reading is retained beside them as `backend/reports/coverage-gate.txt`: `182 of 195 statements covered = 93.3333% exact, threshold 90%` / `9 file(s) measured` / `coverage gate PASSED` |
-| Frontend artifacts | `frontend/reports/jest-junit.xml` (`<testsuites tests="372" failures="0" errors="0">`, that run's `time="13.52"`, 24 `<testsuite>` children, `skipped` summing to 24 across them) and all five configured coverage reporters, from `jest --ci --coverage`: **21 suites passed / 3 skipped, 348 passed / 24 skipped, exit 0** |
+| Backend artifacts | `backend/reports/junit.xml` (`<testsuite name="pytest" errors="0" failures="0" skipped="3" tests="1150">`, that run's `time="12.545"`) plus the Cobertura and JSON coverage files — the two the canonical gated command requests; `backend/coverage.lcov` is the local measurement command's, as §2.1 records — from the gated run on CPython 3.9.13: **1147 passed, 3 skipped, exit 0, 93.33% (182/195)** over `app/core` 100.00% (47/47), `app/db` 100.00% (45/45), `app/services` 94.12% (48/51) and `app/tasks` 80.77% (42/52). The exact gate's own reading is retained beside them as `backend/reports/coverage-gate.txt`: `182 of 195 statements covered = 93.3333% exact, threshold 90%` / `9 file(s) measured` / `coverage gate PASSED` |
+| Frontend artifacts | `frontend/reports/jest-junit.xml` (`<testsuites tests="383" failures="0" errors="0">`, that run's `time="13.52"`, 24 `<testsuite>` children, `skipped` summing to 24 across them) and all five configured coverage reporters, from `jest --ci --coverage`: **21 suites passed / 3 skipped, 348 passed / 24 skipped, exit 0** |
 | E2E artifacts | `e2e/reports/e2e-junit.xml` (`tests="31" failures="0" skipped="0" errors="0"`, that run's `time="23.895578"`; per spec `analytics` 4, `configuration` 6, `dashboard` 3, `isolation` 15, `tweets` 3), `e2e/playwright-report/index.html` (about 456 KB; its exact size moves with the run) and `e2e/test-results/.last-run.json` = `{"status":"passed","failedTests":[]}` |
-| Reproduction | All three suites were re-run end to end after the last change in this checkpoint, on the same host, against a **warm** tree — one where the gated coverage command and the end-to-end suite have each already run, so `backend/coverage.json` and `e2e/reports/e2e-junit.xml` are present; a first run in a fresh clone reports the two artifact-conditional skips the skip register above names as skips rather than passes, at the same 93.33%. Backend **1096 collected / 0 collection errors, 1093 passed, 3 skipped, exit 0, 93.33%**; frontend **21 suites passed / 3 skipped, 348 passed / 24 skipped, exit 0**, gated scopes `src/store` 100 / `src/schema` 100 / `src/services` 100 against an 80 bar, and the worst of the twelve gates 100.00%; e2e **31 passed, 0 skipped, 0 failed, 0 flaky, exit 0**. Identical counts, different durations — which is exactly the split described above. The gated backend run read `12.55 s` against `11.05 s` for the same suite without coverage, and under `pytest -n auto` it read `107.87 s` for the identical `1093 passed, 3 skipped`, which is the same point about durations |
-| Test identity | Across both artifacts every `<testcase>` is uniquely identified: 1096 of 1096 distinct `classname`+`name` pairs on the backend, 372 of 372 on the frontend, and not one `classname` or suite name containing a backslash |
+| Reproduction | All three suites were re-run end to end after the last change in this checkpoint, on the same host, against a **warm** tree — one where the gated coverage command and the end-to-end suite have each already run, so `backend/coverage.json` and `e2e/reports/e2e-junit.xml` are present; a first run in a fresh clone reports the two artifact-conditional skips the skip register above names as skips rather than passes, at the same 93.33%. Backend **1150 collected / 0 collection errors, 1147 passed, 3 skipped, exit 0, 93.33%**; frontend **21 suites passed / 3 skipped, 359 passed / 24 skipped, exit 0**, gated scopes `src/store` 100 / `src/schema` 100 / `src/services` 100 against an 80 bar, and the worst of the twelve gates 100.00%; e2e **31 passed, 0 skipped, 0 failed, 0 flaky, exit 0**. Identical counts, different durations — which is exactly the split described above. The gated backend run read `12.55 s` against `11.05 s` for the same suite without coverage, and under `pytest -n auto` it read `107.87 s` for the identical `1147 passed, 3 skipped`, which is the same point about durations |
+| Test identity | Across both artifacts every `<testcase>` is uniquely identified: 1150 of 1150 distinct `classname`+`name` pairs on the backend, 383 of 383 on the frontend, and not one `classname` or suite name containing a backslash |
 | E2E harness | All four routes served, with an error-free dev-server log, under Vite 4.5.14 on `127.0.0.1:<4173 + CLONE_INDEX>` |
 
 ### 7.2 Implementation-time acceptance steps — performed
@@ -1155,14 +1155,14 @@ the live DOM, not inferred from the source, and each was taken after the slide c
 so unlike the previous revision of this section it describes the deck as it ships.
 
 **One number has changed at each of the last four checkpoints, and each change was confirmed rather than
-assumed.** The headline KPI went `1,390` → `1,443` → `1,455` → `1,458` → the **`1,472`** the delivered
-tree measures, which is the sum of the three result streams as they now stand: **1093 backend, 348
+assumed.** The headline KPI went `1,390` → `1,443` → `1,455` → `1,458` → `1,472` → the **`1,537`** the delivered
+tree measures, which is the sum of the three result streams as they now stand: **1147 backend, 359
 frontend and 31 browser**. The last move is the largest of the four and it is arithmetic, not a
-re-measurement of the same suite: the delivered backend suite carries 1096 cases where the checkpoint
+re-measurement of the same suite: the delivered backend suite carries 1150 cases where the checkpoint
 before it carried 1082, because two independently developed extensions to the result-stream guards both
 landed — the per-layer declared-versus-witness comparison and the unreasoned-skip refusal — adding 14
 cases to `tests/test_dashboard_extract.py` and `tests/test_docs_contract.py` between them, and the
-frontend gained the served-wire-shape case. So `1,472 = 1093 + 348 + 31`, and the identity is a
+frontend gained the served-wire-shape case. So `1,537 = 1147 + 359 + 31`, and the identity is a
 **test** rather than a claim: `test_the_deck_headline_kpi_is_the_sum_of_the_three_streams` reads the
 triple out of `TRACEABILITY-MATRIX.md`, reads the KPI out of the deck through its own
 `Tests passing now` label, and fails if they disagree, while
@@ -1174,10 +1174,10 @@ below were taken against the earlier value and are unaffected by it: a digit cha
 **Re-verified in the browser after the KPI moved**, at 1920x1080 over `file://`, so the sentence above is a
 reading rather than an inference. `Reveal.isReady()` true, `Reveal.VERSION` `5.1.0`,
 `Reveal.getTotalSlides()` **16** agreeing with `.reveal .slides > section` **16** and with the section count
-in the file. The KPI grid's four `.kpi-value` elements read `0%`, **`1,472`**, `93%`, `42`, and the one
-holding `1,472` was paired to its `Tests passing now` label by **DOM containment** rather than by index
+in the file. The KPI grid's four `.kpi-value` elements read `0%`, **`1,537`**, `93%`, `42`, and the one
+holding `1,537` was paired to its `Tests passing now` label by **DOM containment** rather than by index
 arithmetic across the two `.kpi-grid` elements. Every superseded value is gone: a sweep for every
-`\b1,\d{3}\b` grouped number in the rendered document returns **exactly one match**, `1,472`, in both
+`\b1,\d{3}\b` grouped number in the rendered document returns **exactly one match**, `1,537`, in both
 `innerHTML` and `textContent`. After a full sixteen-slide traversal, `pre.mermaid svg` **6 of 6** — each
 `data-processed="true"` with a non-degenerate viewBox, no Mermaid error element, and its own injected style
 block — `svg.lucide` **19**, and `i[data-lucide]` **0** with no `<i>` element surviving anywhere. Console
@@ -1410,4 +1410,23 @@ and §0.11.2 place out of scope, so none is closed. Twenty-three of those were a
 suggested-next-tasks register in [`../../README.md`](../../README.md) or by
 [`./SECURITY-GAPS.md`](./SECURITY-GAPS.md); the one that was not — that no stylesheet is loaded on any
 screen, so every screen renders as unstyled default HTML — has been added to that register.
+
+
+### 7.7 Security-QA remediation — the three closable findings, measured before and after
+
+A later, separate set of readings again, taken at the checkpoint `DECISION-LOG.md` §46 records. Fourteen
+findings were raised by a runtime security assessment; eleven have their only repair in production code, a
+pinned dependency version or an excluded infrastructure file and are written up in
+[`./SECURITY-GAPS.md`](./SECURITY-GAPS.md) rather than closed. The three that were inside the authorized
+write surface are below, each with the pre-fix reading beside the post-fix one, because "fixed" is only
+meaningful against what it replaced.
+
+| Row | What was checked | Reading |
+|---|---|---|
+| C17 | Credential-redaction growth in the harness config stub (D409) | Driven in a real browser with four one-character credential values and a responder echoing the payload back at `500`. **Before:** a 116-character body produced an excerpt stating **34,116 characters in total** — 294× — of which the console received 331 characters of nested `[redacted credential]` placeholders with none of the responder's own words left. **After:** the same request produces a **120-character** excerpt, `(body withheld: 20 occurrence(s) of the submitted values in its 116 characters left no readable excerpt after redaction)`, not truncated and carrying no body text. On the values `configuration.spec.ts` actually types the excerpt is 196 characters and the responder's `config-write-refused` reason survives whole |
+| C18 | Fragment-level completeness of that redaction (D409) | One submitted value is a prefix of another (`test-access-token` of `test-access-token-secret`). **Before:** the console line carried `[redacted credential]-secret` — a credential suffix — which the pre-existing whole-value assertion passed over. **After:** absent. Held by a new absence assertion inside the existing rejection test, and **negatively validated**: with the stub reverted, `configuration.spec.ts -g "reports failure in an alert"` fails on `Expected pattern: not /\[redacted credential\](?!")/` |
+| C19 | The harness API refusal is keyed by path, not by method (D410) | A 40-cell method × path matrix over raw request lines. **Before:** `GET /api/config/twitter` **200 `text/html`**, 640 bytes of SPA document — `response.ok` for a `fetch`, on the credential-write path — and `HEAD` on all three declared paths 200 as well, `POST`/`PUT` 404. **After:** all twelve method/path combinations answer **503 `application/json`** `harness-api-not-intercepted`, the remedy for an undeclared method naming the methods the path does declare. 13 `[harness-api-not-intercepted]` lines were written to the dev-server log during the probe, so the log half of the contract still holds |
+| C20 | Nothing else the harness serves moved with it (D410) | Same matrix, unchanged rows: `/`, `/tweets`, `/analytics` and `/configuration` answer 200 `text/html` on GET and HEAD and 404 on POST and PUT; `/favicon.ico` 204 on all four; `/__open-in-editor?file=…` and `/../../package.json` 403 `403 Forbidden`. **Negatively validated**: with the config reverted, `isolation.spec.ts` fails `Expected: 503 / Received: 404` |
+| C21 | The install path executes nothing (D411) | `frontend/node_modules` (467 directories) and `e2e/node_modules` deleted outright, then rebuilt with `npm install --ignore-scripts` — the exact command the workflow now runs. Both installs exit 0; on the rebuilt tree `esbuild 0.18.20` transforms TypeScript through its JS API and `msw/node` imports, which are the two packages whose postinstalls were suppressed. **Frontend `npm run test:ci`: 348 passed / 24 skipped of 372, exit 0. E2E: `browsers:require` exit 0, `test:list` 31 in 5 files, `npm test` 31 passed, exit 0.** On the Python side, `pip download --only-binary=:all:` resolved the whole 76-distribution closure as wheels for cp39 on `manylinux2014_x86_64`, `manylinux_2_17_x86_64` and `any`, so wheels-only changes nothing about what installs; `pip==26.0.1` declares `requires_python >=3.9` and is what pip's own resolver picks as latest under 3.9 |
+| C22 | The workflow changed in its install commands and nowhere else (D411) | `yaml.safe_load` of the file at HEAD and after the edit: `build` **20** steps and `e2e` **13** in both, and the two step-name lists compare **equal**. Only `run:` bodies and comments differ. The suite that reads this file is unmoved: backend **1093 passed / 3 skipped / 1096 collected**, coverage **93.33%**, exit 0 |
 

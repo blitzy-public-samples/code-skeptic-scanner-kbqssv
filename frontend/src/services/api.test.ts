@@ -203,6 +203,32 @@ describe('fetchTweetById', () => {
     });
   });
 
+  it('emits the collection path itself when the tweet id is empty', async () => {
+    const get = jest.spyOn(axios, 'get').mockResolvedValue({ data: makeTweet() });
+
+    await fetchTweetById('');
+
+    // Line 15 interpolates with no validation, so an empty id leaves a bare trailing slash and the
+    // single-record request becomes a request for the collection path. Server-side that path answers
+    // `307` toward `/tweets` and the redirect returns EVERY record with `200`, byte-identical to the
+    // collection read -- asserted in `backend/tests/integration/test_route_surface.py`. So a caller
+    // that asked for one record receives an array, and because the declared return type is
+    // `Promise<Tweet>` every field read on it is silently `undefined` rather than an error.
+    expect(get).toHaveBeenCalledWith('undefined/tweets/');
+  });
+
+  it('emits a one-character path segment for a whitespace tweet id, not an empty one', async () => {
+    const get = jest.spyOn(axios, 'get').mockResolvedValue({ data: makeTweet() });
+
+    await fetchTweetById(' ');
+
+    // Neither trimmed nor rejected: what `api.ts` builds still carries the space. The URL parser is
+    // what strips it in a browser, which is why a single space reaches the same collapse as an empty
+    // id while an explicitly encoded `%20` does not -- the server distinguishes an empty segment from
+    // a one-character one, and answers `500` for the latter.
+    expect(get).toHaveBeenCalledWith('undefined/tweets/ ');
+  });
+
   it('resolves with the response body itself, neither copied nor transformed', async () => {
     const body = makeTweet({ tweet_id: '42' });
     jest.spyOn(axios, 'get').mockResolvedValue({ data: body });

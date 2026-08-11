@@ -101,6 +101,11 @@ export { HARNESS_ORIGIN };
  *
  * A spec drives one of these by installing its own route for it; reaching the dev server means it
  * did not. Keep in step with `HARNESS_API_SURFACE` in that config.
+ *
+ * This ledger is keyed by path and always was, so a request to one of these paths is recorded
+ * whatever method it carries. The dev server's refusal is now keyed the same way (D410); before
+ * that, a declared path under an undeclared method was recorded here as un-intercepted while the
+ * SPA fallback had already answered it `200 text/html`.
  */
 const HARNESS_API_PATHS: readonly string[] = Object.freeze([
   '/undefined/tweets',

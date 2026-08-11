@@ -22,10 +22,15 @@
  * |------|---------|----------------------|
  * | 1 | {@link HARNESS_ORIGIN} + the path | claimed by this spec's own route, recorded by it, answered `200` |
  * | 2 | {@link FOREIGN_ORIGIN} + the same path | not claimed; aborted by the fixture and entered in its ledger |
+ * | 3 | {@link HARNESS_ORIGIN} + the declared API path, under a method it does not declare | refused by the dev server `503 harness-api-not-intercepted`, not answered from a server default |
  *
  * Step 2 provokes the breach the fixture exists to detect, so each test acknowledges it with
  * {@link consumeAbortedRequestUrls} - after asserting the exact URL - which is what lets the test
  * that proved the property reach teardown green.
+ *
+ * Step 3 is the server-side half, driven through `request.fetch` so no browser-side rule can stand
+ * in for the middleware's own answer. It is skipped for the one shape whose path is a client route
+ * rather than an API path.
  *
  * Both requests are issued from the `/configuration` route. `frontend/src/components/Configuration`
  * declares no mount effect, so that page issues no request of its own and every entry in either
@@ -152,6 +157,11 @@ const OUT_OF_GRAPH_PATHS = [
  * `pattern` is the path portion appended to an origin to build a Playwright glob; `probe` is the
  * path portion of the URL each step requests. Keeping the two separate is what lets one test drive
  * the same pattern against two origins.
+ *
+ * `declaredPath` and `undeclaredMethod` are for the third step: the pathname
+ * `../vite.harness.config.ts` declares in `HARNESS_API_SURFACE`, and a method it does not declare
+ * for it. `null` on the shape whose path is a **client route** rather than an API path -
+ * `/tweets` is served by the SPA fallback and must stay served.
  */
 const INTERCEPTED_SHAPES = [
   {
@@ -159,26 +169,43 @@ const INTERCEPTED_SHAPES = [
     pattern: '/undefined/tweets*',
     probe: '/undefined/tweets?page=undefined&limit=undefined',
     method: 'GET',
+    declaredPath: '/undefined/tweets',
+    undeclaredMethod: 'POST',
   },
   {
     what: 'the tweet collection under a configured base URL',
     pattern: '/tweets*',
     probe: '/tweets?page=2&limit=10',
     method: 'GET',
+    declaredPath: null,
+    undeclaredMethod: null,
   },
   {
     what: 'the trend series the analytics flow intercepts',
     pattern: '/api/trends*',
     probe: '/api/trends?start=2024-01-01&end=2024-01-31',
     method: 'GET',
+    declaredPath: '/api/trends',
+    undeclaredMethod: 'POST',
   },
   {
     what: 'the credential write the configuration flow intercepts',
     pattern: '/api/config/twitter',
     probe: '/api/config/twitter',
     method: 'POST',
+    declaredPath: '/api/config/twitter',
+    undeclaredMethod: 'GET',
   },
 ] as const;
+
+/** Status the dev server refuses an un-intercepted declared API path with. */
+const NOT_INTERCEPTED_STATUS = 503;
+
+/** `error` member of that refusal's body, which is what distinguishes it from any other 503. */
+const NOT_INTERCEPTED_ERROR = 'harness-api-not-intercepted';
+
+/** Media type it refuses with, asserted because the defect it replaced answered `text/html`. */
+const NOT_INTERCEPTED_CONTENT_TYPE = 'application/json';
 
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
@@ -255,6 +282,7 @@ test.describe('harness isolation - an anchored spec route claims only the harnes
   for (const shape of INTERCEPTED_SHAPES) {
     test(`does not let a foreign origin borrow the route for ${shape.what}`, async ({
       page,
+      request,
       browserDiagnostics,
     }) => {
       const claimed: string[] = [];
@@ -298,6 +326,36 @@ test.describe('harness isolation - an anchored spec route claims only the harnes
         // ...it reached the fixture instead, which aborted it and recorded it. Asserted first,
         // then consumed, so teardown does not fail the test that proved the property.
         expect(consumeAbortedRequestUrls()).toEqual([foreignUrl]);
+
+        /*
+         * Step 3 - the same path on the harness origin, under a method the harness does not
+         * declare for it, is refused by the dev server rather than answered.
+         *
+         * This is the server-side half of the same containment, and it is asserted here because
+         * this is the only place the intercepted API shapes are enumerated. `request.fetch` uses
+         * Playwright's APIRequestContext, which neither `page.route` nor the `noEgress` fixture
+         * routes, so what answers is the middleware in `../vite.harness.config.ts` and the
+         * fixture's ledger stays empty.
+         *
+         * Measured before the refusal was widened from the method/path pair to the path: `GET
+         * /api/config/twitter` - a credential-write endpoint - answered `200 text/html` with the
+         * harness document, which a `fetch` reports as `response.ok`, and `HEAD` on all three
+         * declared paths did the same. The shape with no `declaredPath` is a client route and is
+         * skipped: it must keep answering the SPA document, which the tests below cover.
+         */
+        if (shape.declaredPath !== null && shape.undeclaredMethod !== null) {
+          const refused = await request.fetch(`${HARNESS_ORIGIN}${shape.declaredPath}`, {
+            method: shape.undeclaredMethod,
+            failOnStatusCode: false,
+          });
+
+          expect(refused.status()).toBe(NOT_INTERCEPTED_STATUS);
+          expect(refused.headers()['content-type']).toContain(NOT_INTERCEPTED_CONTENT_TYPE);
+          expect(await refused.json()).toMatchObject({
+            error: NOT_INTERCEPTED_ERROR,
+            request: `${shape.undeclaredMethod} ${shape.declaredPath}`,
+          });
+        }
       } finally {
         await test.info().attach('claimed-by-this-spec', {
           body: claimed.join('\n') || '(no request claimed)',

@@ -72,6 +72,13 @@ async function advanceTimers(milliseconds: number): Promise<void> {
 const FETCH_FAILURE = new Error('the tweet feed could not be fetched');
 
 /**
+ * Consecutive failing attempts driven by the no-backoff case. Four is enough to distinguish "fetches
+ * every period regardless" from any retry policy: a doubling backoff would already have lengthened
+ * the interval by the second, and a two-failure ceiling would already have stopped by the third.
+ */
+const SUSTAINED_FAILURE_PERIODS = 4;
+
+/**
  * A promise that never settles, for the mount fetch of the rejection cases.
  *
  * The mount call at line 14 discards its promise, so a mount fetch that rejected would leave an
@@ -332,6 +339,55 @@ describe('RealTimeFeed (src/components/Dashboard)', () => {
       await advanceTimers(POLL_INTERVAL_MS * 2);
 
       expect(latestTweets().mock.calls).toHaveLength(1);
+    });
+
+    it('never backs off: a run of failures changes neither the schedule nor the fetch count', async () => {
+      const { poll } = mountWithArmedRejection();
+
+      latestTweets().mockReset().mockRejectedValue(FETCH_FAILURE);
+
+      /* One registration only, at the declared period: nothing re-arms it, so it cannot change. */
+      expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+      expect(setIntervalSpy.mock.calls[0][1]).toBe(POLL_INTERVAL_MS);
+
+      /*
+       * Every period does its fetch despite the previous one having failed: no backoff, no circuit
+       * breaker and no failure ceiling, because the subject holds no state a failure could set and
+       * its effect declares an empty dependency array, so nothing re-runs it. The counts are exact
+       * rather than lower bounds, so a retry policy that lengthened the interval or stopped after N
+       * failures would fail this case by design.
+       *
+       * The registered callback is driven directly and its promise awaited, which is what the poll
+       * itself never does: line 16 hands the function to `setInterval`, whose call discards the
+       * returned promise, so in a browser each failing period leaks an unhandled rejection. That
+       * consequence is a runtime observation rather than a harness one, and it is measured in the
+       * browser and recorded in `frontend/TESTING.md` and `docs/testing/SECURITY-GAPS.md`; a test
+       * that let the leak actually happen would be reported against the test rather than the subject.
+       */
+      for (let attempt = 1; attempt <= SUSTAINED_FAILURE_PERIODS; attempt += 1) {
+        await expect(poll()).rejects.toBe(FETCH_FAILURE);
+
+        expect(latestTweets()).toHaveBeenCalledTimes(attempt);
+        expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+      }
+
+      /* And the clock was never cancelled and re-armed with a longer one. */
+      expect(clearIntervalSpy).not.toHaveBeenCalled();
+    });
+
+    it('registers the interval before its first fetch settles, so a failure cannot prevent scheduling', async () => {
+      /*
+       * Order matters for the finding above: lines 14-16 run in sequence within one effect, so the
+       * interval is armed while the mount fetch is still in flight. A mount failure therefore cannot
+       * stop the poll from being scheduled - there is no path on which the subject declines to poll.
+       */
+      latestTweets().mockReset().mockReturnValue(neverSettles());
+
+      renderWithProviders(<RealTimeFeed />);
+
+      expect(latestTweets()).toHaveBeenCalledTimes(1);
+      expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+      expect(setIntervalSpy.mock.calls[0][1]).toBe(POLL_INTERVAL_MS);
     });
   });
 });
