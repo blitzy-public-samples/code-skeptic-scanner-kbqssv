@@ -1,0 +1,1108 @@
+/* ==========================================================================
+   Blitzy reveal.js theme - canonical reference stylesheet
+
+   Block 1  Design tokens
+   Block 1b Derived tokens
+   Block 2  Base reveal.js typography and layout
+   Block 3  Slide types
+   Block 4  Components
+   Block 5  Mermaid container
+   Block 6  Tables
+   Block 7  Deck layout helpers
+
+   Stage: 1920 x 1080
+   Families: Inter, Space Grotesk, Fira Code
+
+   This file and the inline <style> block of blitzy-deck/executive-summary.html
+   carry the same declarations. The deck is a single self-contained file, so it
+   does not load this one; keeping them in step is manual, and a change to one
+   has to be mirrored in the other. Rule 4's canonical-theme obligation is what
+   this file answers, and Block 7 is what makes it able to render the deck
+   rather than merely resemble it.
+   ========================================================================== */
+
+
+/* --------------------------------------------------------------------------
+   Block 1 - Design tokens
+   -------------------------------------------------------------------------- */
+
+:root {
+  --blitzy-primary: #5B39F3;
+  --blitzy-primary-dark: #2D1C77;
+  --blitzy-primary-navy: #1A105F;
+  --blitzy-primary-light: #7A6DEC;
+  --blitzy-primary-deep: #4101DB;
+  --blitzy-accent-teal: #94FAD5;
+  --blitzy-surface-0: #FFFFFF;
+  --blitzy-surface-1: #F4EFF6;
+  --blitzy-surface-2: #F2F0FE;
+  --blitzy-surface-3: #F5F5F5;
+  --blitzy-border: #D9D9D9;
+  --blitzy-border-soft: rgba(91, 57, 243, 0.18);
+  --blitzy-text: #333333;
+  --blitzy-text-muted: #999999;
+  --blitzy-text-invert: #FFFFFF;
+  --ff-body: 'Inter', system-ui, sans-serif;
+  --ff-display: 'Space Grotesk', 'Inter', sans-serif;
+  --ff-mono: 'Fira Code', 'Courier New', monospace;
+  --gradient-hero: linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%);
+  --gradient-divider: linear-gradient(135deg, #2D1C77 0%, #5B39F3 100%);
+  --gradient-accent-bar: linear-gradient(90deg, #5B39F3 0%, #94FAD5 100%);
+}
+
+
+/* --------------------------------------------------------------------------
+   Block 1b - Derived tokens
+
+   Further properties used by Blocks 2-6. The Block 1 set above is unchanged.
+
+   --blitzy-text-muted-accessible  readable secondary text: eyebrow, KPI label
+                                   and table caption. Measures 6.39:1 on
+                                   --blitzy-surface-0 and 5.68:1 on
+                                   --blitzy-surface-2, against the WCAG 2.1 AA
+                                   minimum of 4.5:1 for normal text.
+   --blitzy-text-muted             Block 1, decorative and non-text use.
+   --blitzy-shadow-card            elevation of .kpi-card.
+   -------------------------------------------------------------------------- */
+
+:root {
+  --blitzy-text-muted-accessible: #5F5F5F;
+  --blitzy-shadow-card: 0 12px 30px rgba(0, 0, 0, 0.06);
+}
+
+
+/* --------------------------------------------------------------------------
+   Block 2 - Base reveal.js typography and layout
+   -------------------------------------------------------------------------- */
+
+/* Stage surface */
+
+.reveal-viewport {
+  background: var(--blitzy-surface-0);
+}
+
+.reveal {
+  font-family: var(--ff-body);
+  font-size: 34px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--blitzy-text);
+  background: var(--blitzy-surface-0);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-variant-ligatures: none;
+}
+
+.reveal .slides {
+  text-align: left;
+}
+
+.reveal .slides section {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 72px 112px;
+  font-family: var(--ff-body);
+  font-size: 34px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--blitzy-text);
+  text-align: left;
+}
+
+.reveal .slides section > *:first-child {
+  margin-top: 0;
+}
+
+.reveal .slides section > *:last-child {
+  margin-bottom: 0;
+}
+
+/* Headings */
+
+.reveal .slides section h1,
+.reveal .slides section h2,
+.reveal .slides section h3,
+.reveal .slides section h4 {
+  font-family: var(--ff-display);
+  color: var(--blitzy-text);
+  text-transform: none;
+  text-shadow: none;
+  word-wrap: normal;
+  margin: 0 0 28px;
+}
+
+.reveal .slides section h1 {
+  font-size: 76px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.reveal .slides section h2 {
+  font-size: 58px;
+  font-weight: 700;
+  line-height: 1.16;
+  letter-spacing: -0.015em;
+}
+
+.reveal .slides section h3 {
+  font-size: 42px;
+  font-weight: 600;
+  line-height: 1.24;
+  letter-spacing: -0.01em;
+}
+
+.reveal .slides section h4 {
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0;
+}
+
+/* Body copy */
+
+.reveal .slides section p {
+  font-size: 34px;
+  font-weight: 400;
+  line-height: 1.5;
+  margin: 0 0 24px;
+  max-width: 1480px;
+}
+
+.reveal .slides section strong,
+.reveal .slides section b {
+  font-weight: 600;
+}
+
+.reveal .slides section em,
+.reveal .slides section i:not([data-lucide]) {
+  font-style: italic;
+}
+
+.reveal .slides section a {
+  color: var(--blitzy-primary);
+  text-decoration: none;
+  border-bottom: 2px solid var(--blitzy-border-soft);
+}
+
+.reveal .slides section a:hover,
+.reveal .slides section a:focus-visible {
+  color: var(--blitzy-primary-light);
+  border-bottom-color: var(--blitzy-primary-light);
+}
+
+.reveal .slides section blockquote {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1480px;
+  margin: 0 0 28px;
+  padding: 24px 36px;
+  font-size: 32px;
+  font-style: normal;
+  line-height: 1.45;
+  background: var(--blitzy-surface-1);
+  border-left: 8px solid var(--blitzy-primary);
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+/* Lists */
+
+.reveal .slides section ul,
+.reveal .slides section ol {
+  display: block;
+  margin: 0 0 24px;
+  padding-left: 0;
+  max-width: 1480px;
+}
+
+.reveal .slides section ul {
+  list-style: none;
+}
+
+.reveal .slides section ol {
+  list-style: decimal;
+  padding-left: 52px;
+}
+
+.reveal .slides section li {
+  font-size: 34px;
+  font-weight: 400;
+  line-height: 1.42;
+  margin: 0 0 26px;
+}
+
+.reveal .slides section li:last-child {
+  margin-bottom: 0;
+}
+
+.reveal .slides section ul > li {
+  position: relative;
+  padding-left: 48px;
+}
+
+.reveal .slides section ul > li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.5em;
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  background: var(--gradient-accent-bar);
+}
+
+.reveal .slides section ol > li::marker {
+  font-family: var(--ff-display);
+  font-weight: 600;
+  color: var(--blitzy-primary);
+}
+
+.reveal .slides section li > ul,
+.reveal .slides section li > ol {
+  margin: 20px 0 0;
+}
+
+/* Inline expressions */
+
+.reveal .slides section code {
+  font-family: var(--ff-mono);
+  font-size: 0.84em;
+  font-weight: 500;
+  line-height: inherit;
+  padding: 0.1em 0.36em;
+  border-radius: 6px;
+  background: var(--blitzy-surface-2);
+  border: 1px solid var(--blitzy-border-soft);
+  color: var(--blitzy-primary-deep);
+  white-space: nowrap;
+}
+
+/* Reveal chrome */
+
+/* Reveal draws the arrow cluster entirely in `em` against `.reveal .controls`, whose
+   own font-size is 10px by default, which puts each arrow's hit target at 36x36 - below
+   the 44x44 minimum a pointer target is expected to offer. Declaring 13px here scales
+   every metric of the cluster together, taking the target to 46.8x46.8, without
+   overriding a single one of reveal's own rules and without touching any setting Rule 4
+   constrains. The deck's inline block carries the identical declaration.
+   See docs/testing/DECISION-LOG.md row D423. */
+
+.reveal .controls {
+  color: var(--blitzy-primary);
+  font-size: 13px;
+}
+
+/* The arrows sit in a corner that straddles the stage edge: inside it a divider or
+   the closing slide reaches the same violet they are painted in, outside it is the
+   white page margin. The surface-coloured halo separates them from both.
+   See docs/testing/DECISION-LOG.md row D370. */
+
+.reveal .controls .controls-arrow {
+  filter: drop-shadow(0 0 4px var(--blitzy-surface-0))
+    drop-shadow(0 0 2px var(--blitzy-surface-0));
+}
+
+/* Keyboard focus indicator for the navigation arrows, which reveal.js renders
+   with `outline: 0`. */
+
+.reveal .controls button:focus-visible {
+  outline: 4px solid var(--blitzy-primary-deep);
+  outline-offset: 4px;
+  border-radius: 8px;
+  box-shadow: 0 0 0 4px var(--blitzy-surface-0);
+}
+
+.reveal .progress {
+  color: var(--blitzy-primary);
+  background: var(--blitzy-border);
+  height: 6px;
+}
+
+.reveal .slide-number {
+  font-family: var(--ff-mono);
+  font-size: 20px;
+  font-weight: 400;
+  color: var(--blitzy-text-invert);
+  background: var(--blitzy-primary-dark);
+  padding: 6px 12px;
+  border-radius: 6px;
+}
+
+.reveal ::selection {
+  background: var(--blitzy-border-soft);
+  color: var(--blitzy-text);
+}
+
+
+/* --------------------------------------------------------------------------
+   Block 3 - Slide types
+   Title, Section Divider and Closing. Content slides are the unclassed
+   default and inherit Block 2.
+   -------------------------------------------------------------------------- */
+
+/* Shared full-bleed frame and inverted text */
+
+/* `display` is declared only on the `.present` rule below; reveal.js controls
+   slide visibility. */
+
+.reveal .slides section.slide-title,
+.reveal .slides section.slide-divider,
+.reveal .slides section.slide-closing {
+  box-sizing: border-box;
+  flex-direction: column;
+  width: 100%;
+  min-height: 1080px;
+  padding: 96px 128px;
+  color: var(--blitzy-text-invert);
+}
+
+/* Stage fill */
+
+.reveal.center .slides section.slide-title,
+.reveal.center .slides section.slide-divider,
+.reveal.center .slides section.slide-closing {
+  min-height: 1080px !important;
+}
+
+.reveal .slides section.slide-title.present,
+.reveal .slides section.slide-divider.present,
+.reveal .slides section.slide-closing.present {
+  display: flex !important;
+}
+
+.reveal .slides section.slide-title h1,
+.reveal .slides section.slide-title h2,
+.reveal .slides section.slide-title h3,
+.reveal .slides section.slide-title h4,
+.reveal .slides section.slide-title p,
+.reveal .slides section.slide-title li,
+.reveal .slides section.slide-title strong,
+.reveal .slides section.slide-title em,
+.reveal .slides section.slide-title blockquote,
+.reveal .slides section.slide-divider h1,
+.reveal .slides section.slide-divider h2,
+.reveal .slides section.slide-divider h3,
+.reveal .slides section.slide-divider h4,
+.reveal .slides section.slide-divider p,
+.reveal .slides section.slide-divider li,
+.reveal .slides section.slide-divider strong,
+.reveal .slides section.slide-divider em,
+.reveal .slides section.slide-divider blockquote,
+.reveal .slides section.slide-closing h1,
+.reveal .slides section.slide-closing h2,
+.reveal .slides section.slide-closing h3,
+.reveal .slides section.slide-closing h4,
+.reveal .slides section.slide-closing p,
+.reveal .slides section.slide-closing li,
+.reveal .slides section.slide-closing strong,
+.reveal .slides section.slide-closing em,
+.reveal .slides section.slide-closing blockquote {
+  color: var(--blitzy-text-invert);
+}
+
+.reveal .slides section.slide-title blockquote,
+.reveal .slides section.slide-divider blockquote,
+.reveal .slides section.slide-closing blockquote {
+  background: none;
+  border-left-color: var(--blitzy-accent-teal);
+}
+
+/* A solid marker rather than the gradient the light slides use, and deliberately so:
+   the gradient begins at `--blitzy-primary`, which reaches only 2.60:1 against the
+   closing slide's navy, below the 3:1 a non-text indicator needs, while this teal
+   reaches 13.17:1. See docs/testing/DECISION-LOG.md row D375. */
+
+.reveal .slides section.slide-title ul > li::before,
+.reveal .slides section.slide-divider ul > li::before,
+.reveal .slides section.slide-closing ul > li::before {
+  background: var(--blitzy-accent-teal);
+}
+
+.reveal .slides section.slide-title a,
+.reveal .slides section.slide-divider a,
+.reveal .slides section.slide-closing a {
+  color: var(--blitzy-accent-teal);
+  border-bottom-color: var(--blitzy-accent-teal);
+}
+
+.reveal .slides section.slide-title .eyebrow,
+.reveal .slides section.slide-divider .eyebrow,
+.reveal .slides section.slide-closing .eyebrow {
+  font-family: var(--ff-mono);
+  color: var(--blitzy-accent-teal);
+}
+
+.reveal .slides section.slide-title .hero-icon,
+.reveal .slides section.slide-divider .hero-icon,
+.reveal .slides section.slide-closing .hero-icon,
+.reveal .slides section.slide-title .icon-row,
+.reveal .slides section.slide-divider .icon-row,
+.reveal .slides section.slide-closing .icon-row {
+  color: var(--blitzy-accent-teal);
+}
+
+.reveal .slides section.slide-title .kpi-card,
+.reveal .slides section.slide-divider .kpi-card,
+.reveal .slides section.slide-closing .kpi-card {
+  border-color: var(--blitzy-primary-light);
+}
+
+/* Title slide */
+
+.reveal .slides section.slide-title {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background-color: var(--blitzy-primary);
+  background-image: var(--gradient-hero);
+}
+
+.reveal .slides section.slide-title .eyebrow {
+  margin: 0 0 32px;
+}
+
+.reveal .slides section.slide-title h1 {
+  font-size: 116px;
+  font-weight: 700;
+  line-height: 1.04;
+  letter-spacing: -0.025em;
+  margin: 0 0 28px;
+  max-width: 1560px;
+}
+
+.reveal .slides section.slide-title h2 {
+  font-size: 46px;
+  font-weight: 500;
+  line-height: 1.28;
+  letter-spacing: 0;
+  margin: 0 0 36px;
+  max-width: 1420px;
+}
+
+.reveal .slides section.slide-title p {
+  font-size: 32px;
+  margin: 0 auto 24px;
+  max-width: 1320px;
+}
+
+.reveal .slides section.slide-title .accent-bar {
+  margin: 8px auto 0;
+}
+
+/* Section divider slide */
+
+.reveal .slides section.slide-divider {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background-color: var(--blitzy-primary-dark);
+  background-image: var(--gradient-divider);
+}
+
+.reveal .slides section.slide-divider .eyebrow {
+  margin: 0 0 24px;
+}
+
+.reveal .slides section.slide-divider h2 {
+  font-size: 88px;
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  margin: 0 0 24px;
+  max-width: 1560px;
+}
+
+.reveal .slides section.slide-divider p {
+  font-size: 34px;
+  margin: 0 auto;
+  max-width: 1240px;
+}
+
+.reveal .slides section.slide-divider .hero-icon {
+  margin: 0 auto 44px;
+}
+
+.reveal .slides section.slide-divider .accent-bar {
+  margin: 40px auto 0;
+}
+
+/* Closing slide */
+
+.reveal .slides section.slide-closing {
+  align-items: flex-start;
+  justify-content: center;
+  text-align: left;
+  background-color: var(--blitzy-primary-navy);
+}
+
+.reveal .slides section.slide-closing .eyebrow {
+  margin: 0 0 28px;
+}
+
+.reveal .slides section.slide-closing h2 {
+  font-size: 84px;
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  margin: 0 0 32px;
+  max-width: 1480px;
+}
+
+.reveal .slides section.slide-closing .accent-bar {
+  margin: 0 0 44px;
+}
+
+.reveal .slides section.slide-closing ul {
+  margin: 0 0 48px;
+}
+
+.reveal .slides section.slide-closing li {
+  font-size: 36px;
+  line-height: 1.4;
+}
+
+.reveal .slides section.slide-closing .brand-lockup {
+  margin-top: auto;
+}
+
+
+
+/* --------------------------------------------------------------------------
+   Block 4 - Components
+   kpi-grid, kpi-card, kpi-value, kpi-label, kpi-icon, eyebrow, accent-bar,
+   brand-lockup, hero-icon, icon-row.
+   -------------------------------------------------------------------------- */
+
+/* Eyebrow */
+
+.reveal .slides section .eyebrow {
+  display: block;
+  font-family: var(--ff-mono);
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--blitzy-text-muted-accessible);
+  margin: 0 0 20px;
+}
+
+/* KPI grid */
+
+.reveal .slides section .kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  align-items: stretch;
+  gap: 32px;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 32px 0 0;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+
+/* KPI card */
+
+.reveal .slides section .kpi-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+  box-sizing: border-box;
+  padding: 40px 40px 44px;
+  background: var(--blitzy-surface-2);
+  border: 2px solid var(--blitzy-border-soft);
+  border-radius: 20px;
+  box-shadow: var(--blitzy-shadow-card);
+}
+
+.reveal .slides section .kpi-card::before {
+  content: none;
+}
+
+.reveal .slides section .kpi-value {
+  display: block;
+  font-family: var(--ff-display);
+  font-size: 76px;
+  font-weight: 700;
+  line-height: 1.02;
+  letter-spacing: -0.03em;
+  color: var(--blitzy-primary-deep);
+  margin: 0;
+}
+
+.reveal .slides section .kpi-label {
+  display: block;
+  font-family: var(--ff-body);
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1.35;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--blitzy-text-muted-accessible);
+  margin: 0;
+}
+
+.reveal .slides section .kpi-icon {
+  color: var(--blitzy-primary);
+}
+
+.reveal .slides section .kpi-icon:not(svg) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  box-sizing: border-box;
+  width: 72px;
+  height: 72px;
+  border-radius: 18px;
+  background: var(--blitzy-surface-1);
+  border: 1px solid var(--blitzy-border-soft);
+}
+
+.reveal .slides section .kpi-icon svg,
+.reveal .slides section svg.kpi-icon {
+  display: block;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Accent bar */
+
+.reveal .slides section .accent-bar {
+  display: block;
+  box-sizing: border-box;
+  width: 240px;
+  height: 10px;
+  margin: 28px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--gradient-accent-bar);
+}
+
+/* Brand lockup */
+
+.reveal .slides section .brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  font-family: var(--ff-display);
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  color: var(--blitzy-text-invert);
+  margin: 0;
+}
+
+.reveal .slides section .brand-lockup svg {
+  display: block;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Hero icon */
+
+.reveal .slides section .hero-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  margin: 0 0 36px;
+  color: var(--blitzy-primary);
+}
+
+.reveal .slides section .hero-icon svg,
+.reveal .slides section svg.hero-icon {
+  display: block;
+  flex: none;
+  width: 148px;
+  height: 148px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Icon row */
+
+.reveal .slides section .icon-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 32px;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 32px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--blitzy-primary);
+}
+
+.reveal .slides section .icon-row svg {
+  display: block;
+  flex: none;
+  width: 52px;
+  height: 52px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.reveal .slides section .icon-row > li::before {
+  content: none;
+}
+
+.reveal .slides section .icon-row > li {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  font-size: 26px;
+  line-height: 1.3;
+}
+
+
+
+/* --------------------------------------------------------------------------
+   Block 5 - Mermaid container
+   Diagrams are authored as <pre class="mermaid">.
+   -------------------------------------------------------------------------- */
+
+.reveal .slides section .mermaid {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1560px;
+  max-height: 760px;
+  margin: 24px 0 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  font-family: var(--ff-body);
+  font-size: 24px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--blitzy-text);
+  text-align: center;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: normal;
+  tab-size: 4;
+  overflow: visible;
+}
+
+/* `max-width` carries no `!important`, so Mermaid's own inline cap - the diagram's
+   intrinsic width - wins over this one wherever it is the smaller of the two. A
+   diagram is therefore drawn at its authored size or reduced to fit, never enlarged
+   to fill the column, which is what held one label at 14.6px while another reached
+   35.5px in the same deck. `margin: 0` keeps the left edge on the content column.
+   See docs/testing/DECISION-LOG.md rows D372 and D373. */
+
+.reveal .slides section .mermaid svg {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 760px;
+  margin: 0;
+  background: none;
+}
+
+.reveal .slides section .mermaid > * {
+  text-align: left;
+}
+
+/* Generated diagram labels paint in full; the measured label box does not clip them. */
+
+.reveal .slides section .mermaid svg foreignObject {
+  overflow: visible;
+}
+
+/* Generated diagram label typography */
+
+.reveal .slides section .mermaid svg p {
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  margin: 0;
+  padding: 0;
+  max-width: none;
+}
+
+.reveal .slides section .mermaid svg code {
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  color: inherit;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  white-space: inherit;
+}
+
+.reveal .slides section .mermaid svg a {
+  color: inherit;
+  border-bottom: 0;
+}
+
+
+/* --------------------------------------------------------------------------
+   Block 6 - Tables
+   -------------------------------------------------------------------------- */
+
+.reveal .slides section table {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 28px 0 0;
+  border-collapse: collapse;
+  border-spacing: 0;
+  table-layout: auto;
+  font-family: var(--ff-body);
+  font-size: 26px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--blitzy-text);
+  background: var(--blitzy-surface-0);
+  border: 1px solid var(--blitzy-border);
+  text-align: left;
+}
+
+/* A table carries 28px above it and none below, while body copy carries none above,
+   so a paragraph that follows a table met its bottom border at a gap of zero. The
+   same 28px restores the rhythm on both sides.
+   See docs/testing/DECISION-LOG.md row D374. */
+
+.reveal .slides section table + p {
+  margin-top: 28px;
+}
+
+.reveal .slides section table caption {
+  font-family: var(--ff-mono);
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--blitzy-text-muted-accessible);
+  text-align: left;
+  padding: 0 0 14px;
+}
+
+.reveal .slides section table th {
+  font-family: var(--ff-display);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--blitzy-primary-dark);
+  background: var(--blitzy-surface-1);
+  border: 0;
+  border-bottom: 2px solid var(--blitzy-border);
+  padding: 22px 26px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.reveal .slides section table td {
+  color: var(--blitzy-text);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--blitzy-border);
+  padding: 20px 26px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.reveal .slides section table tbody tr:nth-child(even) td {
+  background: var(--blitzy-surface-3);
+}
+
+.reveal .slides section table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.reveal .slides section table th + th,
+.reveal .slides section table td + td {
+  border-left: 1px solid var(--blitzy-border);
+}
+
+.reveal .slides section table th code,
+.reveal .slides section table td code {
+  font-size: 0.8em;
+  white-space: nowrap;
+}
+
+.reveal .slides section table td .kpi-value {
+  font-size: 34px;
+  letter-spacing: -0.01em;
+}
+
+
+/* --------------------------------------------------------------------------
+   Block 7 - Deck layout helpers
+   Layout-only additions for this deck: heading rows, two-column splits,
+   diagram size modifiers, compact tables and non-list icon-row items.
+   -------------------------------------------------------------------------- */
+
+/* Heading row: icon chip beside a heading */
+
+.reveal .slides section .deck-headrow {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  margin: 0 0 24px;
+}
+
+.reveal .slides section .deck-headrow h2 {
+  margin: 0;
+}
+
+/* Two-column split */
+
+.reveal .slides section .deck-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: start;
+  gap: 48px;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 20px 0 0;
+}
+
+.reveal .slides section .deck-split-table-wide {
+  grid-template-columns: 0.8fr 1.2fr;
+}
+
+.reveal .slides section .deck-col {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.reveal .slides section .deck-col .eyebrow {
+  margin: 0 0 14px;
+}
+
+.reveal .slides section .deck-split .mermaid {
+  max-height: 470px;
+  margin: 0;
+}
+
+.reveal .slides section .deck-split .mermaid svg {
+  max-height: 470px;
+}
+
+.reveal .slides section .deck-split table {
+  margin: 0;
+  font-size: 22px;
+}
+
+.reveal .slides section .deck-split table th {
+  font-size: 20px;
+  padding: 16px 18px;
+}
+
+.reveal .slides section .deck-split table td {
+  padding: 14px 18px;
+}
+
+/* Diagram size modifiers */
+
+/* No horizontal `auto` on the small modifier. Centring inside the 1560px content
+   column pushed the two diagrams that carry it 68px right of the x=146 column every
+   other element on the slide aligns to, so the margin is top-only and the diagram
+   stays left-aligned with its heading. This copy read `20px auto 0` until the parity
+   check below was written, which is the whole reason the check exists.
+   See docs/testing/DECISION-LOG.md rows D373 and D424. */
+
+.reveal .slides section .mermaid.deck-diagram-sm {
+  max-height: 270px;
+  margin: 20px 0 0;
+}
+
+.reveal .slides section .mermaid.deck-diagram-sm svg {
+  max-height: 270px;
+}
+
+.reveal .slides section .mermaid.deck-diagram-md {
+  max-height: 620px;
+}
+
+.reveal .slides section .mermaid.deck-diagram-md svg {
+  max-height: 620px;
+}
+
+/* Compact table */
+
+.reveal .slides section table.deck-table-compact {
+  font-size: 23px;
+}
+
+.reveal .slides section table.deck-table-compact th {
+  font-size: 21px;
+  padding: 16px 20px;
+}
+
+.reveal .slides section table.deck-table-compact td {
+  padding: 15px 20px;
+}
+
+/* Icon-row items authored as inline elements */
+
+.reveal .slides section .icon-row > .icon-row-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  font-size: 26px;
+  line-height: 1.3;
+}
+
+/* Reduced motion. The reveal configuration keeps the mandated slide transition;
+   this suppresses the movement itself for a viewer whose operating system asks for
+   it, leaving every slide reachable and identical in content. Only transition and
+   animation are cleared: reveal carries the stage scale-and-centre on a transform
+   of .reveal .slides and positions each section with a transform of its own, so
+   clearing transform here would move content rather than still it. See
+   docs/testing/DECISION-LOG.md row D362. */
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal,
+  .reveal .slides,
+  .reveal .slides section,
+  .reveal .slides > section.stack,
+  .reveal .backgrounds .slide-background,
+  .reveal .progress span,
+  .reveal .controls button,
+  .reveal .controls .controls-arrow,
+  .reveal .controls .controls-arrow::before,
+  .reveal .controls .controls-arrow::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}

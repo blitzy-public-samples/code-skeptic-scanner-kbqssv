@@ -14,14 +14,14 @@ def get_tweets(db: Session = Depends(get_db), skip: int = 0, limit: int = 100) -
     return tweets
 
 @router.get('/tweets/{tweet_id}')
-def get_tweet(db: Session = Depends(get_db), tweet_id: str) -> Tweet:
+def get_tweet(tweet_id: str, db: Session = Depends(get_db)) -> Tweet:  # TESTING: param order
     tweet = db.query(Tweet).filter(Tweet.id == tweet_id).first()
     if not tweet:
         raise HTTPException(status_code=404, detail="Tweet not found")
     return tweet
 
 @router.post('/tweets/{tweet_id}/responses')
-def generate_response(db: Session = Depends(get_db), tweet_id: str) -> Dict:
+def generate_response(tweet_id: str, db: Session = Depends(get_db)) -> Dict:  # TESTING: param order
     # HUMAN ASSISTANCE NEEDED
     # This function needs more implementation details and error handling
     tweet = db.query(Tweet).filter(Tweet.id == tweet_id).first()

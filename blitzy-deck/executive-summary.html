@@ -1,0 +1,1741 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+
+  <!-- Origin allow-list for this file, delivered as exactly ONE policy element - and there
+       must not be a second: a browser enforces the intersection of every
+       Content-Security-Policy it is given, so an added tag can only contradict this one.
+
+       `default-src 'none'` blocks every destination not named here, so only this file's own
+       origin, the pinned jsDelivr origin and the Google Fonts pair may serve this file
+       anything. reveal.js and
+       Mermaid inject style elements at runtime and this deck's own style and bootstrap script
+       are inline, so those two directives admit 'unsafe-inline'. `img-src data:` covers the
+       inline favicon and `font-src data:` a font a stylesheet may inline. `connect-src` names
+       'self' plus the jsDelivr origin the scripts themselves come from, which is what
+       developer tools follow for their sourceMappingURL comments; this file issues no fetch
+       and no XHR of its own, and 'self' keeps a reader's own same-origin probe - of the
+       canonical theme copy beside this file, for instance - from being refused.
+       `form-action 'none'` blocks submission and `base-uri 'none'` blocks base-tag injection.
+
+       `frame-ancestors` is deliberately absent: a meta-delivered policy ignores it, and
+       declaring it here would only log "the directive is ignored when delivered via a <meta>
+       element" on every load. Anti-framing for this file has to come from an HTTP response
+       header, so this file cannot deliver it: a reader served this deck inside someone else's
+       frame is unprotected against UI redress. `script-src 'unsafe-inline'` likewise stays,
+       because Rule 4 requires one self-contained file - so this policy restricts *destinations*
+       and pins bytes, and does not prevent inline execution. Those two residuals, and the fact
+       that the deck cannot render without reaching its two pinned origins, are recorded in
+       docs/testing/SECURITY-GAPS.md §5 with docs/testing/DECISION-LOG.md rows D207, D251
+       and D325. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none';
+    script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
+    style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com;
+    font-src https://fonts.gstatic.com data:;
+    img-src 'self' data:;
+    connect-src 'self' https://cdn.jsdelivr.net; base-uri 'none'; form-action 'none'" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <title>Code Skeptic Scanner - Test Suite Delivery - Executive Summary</title>
+  <link rel="icon" href="data:," />
+
+  <!-- Typography (CDN)
+       The stylesheet below carries no Subresource Integrity attribute and none is possible:
+       the fonts.googleapis.com/css2 response is generated per user agent, so its bytes differ
+       between browsers and there are no fixed bytes to hash. It declares fonts only, and every
+       family degrades to the local fallbacks named in --font-* if it fails to load. The three
+       pinned runtimes and the reveal.js stylesheet, whose bytes are immutable, each carry a
+       digest. See docs/testing/DECISION-LOG.md row D222. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=Fira+Code:wght@400;500&display=swap"
+    rel="stylesheet" />
+
+  <!--
+    reveal.js 5.1.0 core stylesheet (CDN).
+
+    Every executable or style asset below carries a sha384 Subresource Integrity digest
+    and crossorigin="anonymous", so the browser refuses a byte that does not match the
+    build this deck was authored against. Each digest is over the exact bytes the pinned
+    URL served; regenerate them whenever a version changes.
+    See docs/testing/DECISION-LOG.md row D222.
+  -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css"
+    integrity="sha384-YgvgKeZJykuztG+iQPoZHNZENTFZvOcOJ/uRzmJTje6GHYN9zAw+y5rx/L8MQKA/"
+    crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+  <style>
+    /* ======================================================================
+       Blitzy reveal.js theme - shipped copy
+       Block 1  Design tokens
+       Block 1b Derived tokens
+       Block 2  Base reveal.js typography and layout
+       Block 3  Slide types
+       Block 4  Components
+       Block 5  Mermaid container
+       Block 6  Tables
+       Block 7  Deck layout helpers
+       Stage: 1920 x 1080
+       ====================================================================== */
+
+
+    /* ---------------------------------------------------------------------
+       Block 1 - Design tokens
+       --------------------------------------------------------------------- */
+
+    :root {
+      --blitzy-primary: #5B39F3;
+      --blitzy-primary-dark: #2D1C77;
+      --blitzy-primary-navy: #1A105F;
+      --blitzy-primary-light: #7A6DEC;
+      --blitzy-primary-deep: #4101DB;
+      --blitzy-accent-teal: #94FAD5;
+      --blitzy-surface-0: #FFFFFF;
+      --blitzy-surface-1: #F4EFF6;
+      --blitzy-surface-2: #F2F0FE;
+      --blitzy-surface-3: #F5F5F5;
+      --blitzy-border: #D9D9D9;
+      --blitzy-border-soft: rgba(91, 57, 243, 0.18);
+      --blitzy-text: #333333;
+      --blitzy-text-muted: #999999;
+      --blitzy-text-invert: #FFFFFF;
+      --ff-body: 'Inter', system-ui, sans-serif;
+      --ff-display: 'Space Grotesk', 'Inter', sans-serif;
+      --ff-mono: 'Fira Code', 'Courier New', monospace;
+      --gradient-hero: linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%);
+      --gradient-divider: linear-gradient(135deg, #2D1C77 0%, #5B39F3 100%);
+      --gradient-accent-bar: linear-gradient(90deg, #5B39F3 0%, #94FAD5 100%);
+    }
+
+
+    /* ---------------------------------------------------------------------
+       Block 1b - Derived tokens
+       --------------------------------------------------------------------- */
+
+    :root {
+      --blitzy-text-muted-accessible: #5F5F5F;
+      --blitzy-shadow-card: 0 12px 30px rgba(0, 0, 0, 0.06);
+    }
+
+
+    /* ---------------------------------------------------------------------
+       Block 2 - Base reveal.js typography and layout
+       --------------------------------------------------------------------- */
+
+    /* Stage surface */
+
+    .reveal-viewport {
+      background: var(--blitzy-surface-0);
+    }
+
+    .reveal {
+      font-family: var(--ff-body);
+      font-size: 34px;
+      font-weight: 400;
+      line-height: 1.5;
+      color: var(--blitzy-text);
+      background: var(--blitzy-surface-0);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      font-variant-ligatures: none;
+    }
+
+    .reveal .slides {
+      text-align: left;
+    }
+
+    .reveal .slides section {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 72px 112px;
+      font-family: var(--ff-body);
+      font-size: 34px;
+      font-weight: 400;
+      line-height: 1.5;
+      color: var(--blitzy-text);
+      text-align: left;
+    }
+
+    .reveal .slides section > *:first-child {
+      margin-top: 0;
+    }
+
+    .reveal .slides section > *:last-child {
+      margin-bottom: 0;
+    }
+
+    /* Headings */
+
+    .reveal .slides section h1,
+    .reveal .slides section h2,
+    .reveal .slides section h3,
+    .reveal .slides section h4 {
+      font-family: var(--ff-display);
+      color: var(--blitzy-text);
+      text-transform: none;
+      text-shadow: none;
+      word-wrap: normal;
+      margin: 0 0 28px;
+    }
+
+    .reveal .slides section h1 {
+      font-size: 76px;
+      font-weight: 700;
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+    }
+
+    .reveal .slides section h2 {
+      font-size: 58px;
+      font-weight: 700;
+      line-height: 1.16;
+      letter-spacing: -0.015em;
+    }
+
+    .reveal .slides section h3 {
+      font-size: 42px;
+      font-weight: 600;
+      line-height: 1.24;
+      letter-spacing: -0.01em;
+    }
+
+    .reveal .slides section h4 {
+      font-size: 34px;
+      font-weight: 600;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+
+    /* Body copy */
+
+    .reveal .slides section p {
+      font-size: 34px;
+      font-weight: 400;
+      line-height: 1.5;
+      margin: 0 0 24px;
+      max-width: 1480px;
+    }
+
+    .reveal .slides section strong,
+    .reveal .slides section b {
+      font-weight: 600;
+    }
+
+    .reveal .slides section em,
+    .reveal .slides section i:not([data-lucide]) {
+      font-style: italic;
+    }
+
+    .reveal .slides section a {
+      color: var(--blitzy-primary);
+      text-decoration: none;
+      border-bottom: 2px solid var(--blitzy-border-soft);
+    }
+
+    .reveal .slides section a:hover,
+    .reveal .slides section a:focus-visible {
+      color: var(--blitzy-primary-light);
+      border-bottom-color: var(--blitzy-primary-light);
+    }
+
+    .reveal .slides section blockquote {
+      box-sizing: border-box;
+      width: 100%;
+      max-width: 1480px;
+      margin: 0 0 28px;
+      padding: 24px 36px;
+      font-size: 32px;
+      font-style: normal;
+      line-height: 1.45;
+      background: var(--blitzy-surface-1);
+      border-left: 8px solid var(--blitzy-primary);
+      border-radius: 4px;
+      box-shadow: none;
+    }
+
+    /* Lists */
+
+    .reveal .slides section ul,
+    .reveal .slides section ol {
+      display: block;
+      margin: 0 0 24px;
+      padding-left: 0;
+      max-width: 1480px;
+    }
+
+    .reveal .slides section ul {
+      list-style: none;
+    }
+
+    .reveal .slides section ol {
+      list-style: decimal;
+      padding-left: 52px;
+    }
+
+    .reveal .slides section li {
+      font-size: 34px;
+      font-weight: 400;
+      line-height: 1.42;
+      margin: 0 0 26px;
+    }
+
+    .reveal .slides section li:last-child {
+      margin-bottom: 0;
+    }
+
+    .reveal .slides section ul > li {
+      position: relative;
+      padding-left: 48px;
+    }
+
+    .reveal .slides section ul > li::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0.5em;
+      width: 16px;
+      height: 16px;
+      border-radius: 5px;
+      background: var(--gradient-accent-bar);
+    }
+
+    .reveal .slides section ol > li::marker {
+      font-family: var(--ff-display);
+      font-weight: 600;
+      color: var(--blitzy-primary);
+    }
+
+    .reveal .slides section li > ul,
+    .reveal .slides section li > ol {
+      margin: 20px 0 0;
+    }
+
+    /* Inline expressions */
+
+    .reveal .slides section code {
+      font-family: var(--ff-mono);
+      font-size: 0.84em;
+      font-weight: 500;
+      line-height: inherit;
+      padding: 0.1em 0.36em;
+      border-radius: 6px;
+      background: var(--blitzy-surface-2);
+      border: 1px solid var(--blitzy-border-soft);
+      color: var(--blitzy-primary-deep);
+      white-space: nowrap;
+    }
+
+    /* Reveal chrome */
+
+    /* Reveal draws the arrow cluster entirely in `em` against `.reveal .controls`,
+       whose own font-size is 10px by default, which puts each arrow's hit target at
+       36x36. Declaring 13px here scales every metric of the cluster together and
+       takes the target to 46.8x46.8, above the 44x44 minimum, without overriding a
+       single one of reveal's own rules and without touching any setting Rule 4
+       constrains. See docs/testing/DECISION-LOG.md row D423. */
+
+    .reveal .controls {
+      color: var(--blitzy-primary);
+      font-size: 13px;
+    }
+
+    /* The arrows sit in a corner that straddles the stage edge: inside it a divider or
+       the closing slide reaches the same violet they are painted in, outside it is the
+       white page margin. The surface-coloured halo separates them from both.
+       See docs/testing/DECISION-LOG.md row D370. */
+
+    .reveal .controls .controls-arrow {
+      filter: drop-shadow(0 0 4px var(--blitzy-surface-0))
+        drop-shadow(0 0 2px var(--blitzy-surface-0));
+    }
+
+    .reveal .controls button:focus-visible {
+      outline: 4px solid var(--blitzy-primary-deep);
+      outline-offset: 4px;
+      border-radius: 8px;
+      box-shadow: 0 0 0 4px var(--blitzy-surface-0);
+    }
+
+    .reveal .progress {
+      color: var(--blitzy-primary);
+      background: var(--blitzy-border);
+      height: 6px;
+    }
+
+    .reveal .slide-number {
+      font-family: var(--ff-mono);
+      font-size: 20px;
+      font-weight: 400;
+      color: var(--blitzy-text-invert);
+      background: var(--blitzy-primary-dark);
+      padding: 6px 12px;
+      border-radius: 6px;
+    }
+
+    .reveal ::selection {
+      background: var(--blitzy-border-soft);
+      color: var(--blitzy-text);
+    }
+
+
+    /* ---------------------------------------------------------------------
+       Block 3 - Slide types
+       Title, Section Divider and Closing. Content slides are the unclassed
+       default and inherit Block 2.
+       --------------------------------------------------------------------- */
+
+    /* Shared full-bleed frame and inverted text */
+
+    .reveal .slides section.slide-title,
+    .reveal .slides section.slide-divider,
+    .reveal .slides section.slide-closing {
+      box-sizing: border-box;
+      flex-direction: column;
+      width: 100%;
+      min-height: 1080px;
+      padding: 96px 128px;
+      color: var(--blitzy-text-invert);
+    }
+
+    /* Stage fill */
+
+    .reveal.center .slides section.slide-title,
+    .reveal.center .slides section.slide-divider,
+    .reveal.center .slides section.slide-closing {
+      min-height: 1080px !important;
+    }
+
+    .reveal .slides section.slide-title.present,
+    .reveal .slides section.slide-divider.present,
+    .reveal .slides section.slide-closing.present {
+      display: flex !important;
+    }
+
+    .reveal .slides section.slide-title h1,
+    .reveal .slides section.slide-title h2,
+    .reveal .slides section.slide-title h3,
+    .reveal .slides section.slide-title h4,
+    .reveal .slides section.slide-title p,
+    .reveal .slides section.slide-title li,
+    .reveal .slides section.slide-title strong,
+    .reveal .slides section.slide-title em,
+    .reveal .slides section.slide-title blockquote,
+    .reveal .slides section.slide-divider h1,
+    .reveal .slides section.slide-divider h2,
+    .reveal .slides section.slide-divider h3,
+    .reveal .slides section.slide-divider h4,
+    .reveal .slides section.slide-divider p,
+    .reveal .slides section.slide-divider li,
+    .reveal .slides section.slide-divider strong,
+    .reveal .slides section.slide-divider em,
+    .reveal .slides section.slide-divider blockquote,
+    .reveal .slides section.slide-closing h1,
+    .reveal .slides section.slide-closing h2,
+    .reveal .slides section.slide-closing h3,
+    .reveal .slides section.slide-closing h4,
+    .reveal .slides section.slide-closing p,
+    .reveal .slides section.slide-closing li,
+    .reveal .slides section.slide-closing strong,
+    .reveal .slides section.slide-closing em,
+    .reveal .slides section.slide-closing blockquote {
+      color: var(--blitzy-text-invert);
+    }
+
+    .reveal .slides section.slide-title blockquote,
+    .reveal .slides section.slide-divider blockquote,
+    .reveal .slides section.slide-closing blockquote {
+      background: none;
+      border-left-color: var(--blitzy-accent-teal);
+    }
+
+    /* A solid marker rather than the gradient the light slides use, and deliberately so:
+       the gradient begins at `--blitzy-primary`, which reaches only 2.60:1 against the
+       closing slide's navy, below the 3:1 a non-text indicator needs, while this teal
+       reaches 13.17:1. See docs/testing/DECISION-LOG.md row D375. */
+
+    .reveal .slides section.slide-title ul > li::before,
+    .reveal .slides section.slide-divider ul > li::before,
+    .reveal .slides section.slide-closing ul > li::before {
+      background: var(--blitzy-accent-teal);
+    }
+
+    .reveal .slides section.slide-title a,
+    .reveal .slides section.slide-divider a,
+    .reveal .slides section.slide-closing a {
+      color: var(--blitzy-accent-teal);
+      border-bottom-color: var(--blitzy-accent-teal);
+    }
+
+    .reveal .slides section.slide-title .eyebrow,
+    .reveal .slides section.slide-divider .eyebrow,
+    .reveal .slides section.slide-closing .eyebrow {
+      font-family: var(--ff-mono);
+      color: var(--blitzy-accent-teal);
+    }
+
+    .reveal .slides section.slide-title .hero-icon,
+    .reveal .slides section.slide-divider .hero-icon,
+    .reveal .slides section.slide-closing .hero-icon,
+    .reveal .slides section.slide-title .icon-row,
+    .reveal .slides section.slide-divider .icon-row,
+    .reveal .slides section.slide-closing .icon-row {
+      color: var(--blitzy-accent-teal);
+    }
+
+    .reveal .slides section.slide-title .kpi-card,
+    .reveal .slides section.slide-divider .kpi-card,
+    .reveal .slides section.slide-closing .kpi-card {
+      border-color: var(--blitzy-primary-light);
+    }
+
+    /* Title slide */
+
+    .reveal .slides section.slide-title {
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      background-color: var(--blitzy-primary);
+      background-image: var(--gradient-hero);
+    }
+
+    .reveal .slides section.slide-title .eyebrow {
+      margin: 0 0 32px;
+    }
+
+    .reveal .slides section.slide-title h1 {
+      font-size: 116px;
+      font-weight: 700;
+      line-height: 1.04;
+      letter-spacing: -0.025em;
+      margin: 0 0 28px;
+      max-width: 1560px;
+    }
+
+    .reveal .slides section.slide-title h2 {
+      font-size: 46px;
+      font-weight: 500;
+      line-height: 1.28;
+      letter-spacing: 0;
+      margin: 0 0 36px;
+      max-width: 1420px;
+    }
+
+    .reveal .slides section.slide-title p {
+      font-size: 32px;
+      margin: 0 auto 24px;
+      max-width: 1320px;
+    }
+
+    .reveal .slides section.slide-title .accent-bar {
+      margin: 8px auto 0;
+    }
+
+    /* Section divider slide */
+
+    .reveal .slides section.slide-divider {
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      background-color: var(--blitzy-primary-dark);
+      background-image: var(--gradient-divider);
+    }
+
+    .reveal .slides section.slide-divider .eyebrow {
+      margin: 0 0 24px;
+    }
+
+    .reveal .slides section.slide-divider h2 {
+      font-size: 88px;
+      font-weight: 700;
+      line-height: 1.08;
+      letter-spacing: -0.02em;
+      margin: 0 0 24px;
+      max-width: 1560px;
+    }
+
+    .reveal .slides section.slide-divider p {
+      font-size: 34px;
+      margin: 0 auto;
+      max-width: 1240px;
+    }
+
+    .reveal .slides section.slide-divider .hero-icon {
+      margin: 0 auto 44px;
+    }
+
+    .reveal .slides section.slide-divider .accent-bar {
+      margin: 40px auto 0;
+    }
+
+    /* Closing slide */
+
+    .reveal .slides section.slide-closing {
+      align-items: flex-start;
+      justify-content: center;
+      text-align: left;
+      background-color: var(--blitzy-primary-navy);
+    }
+
+    .reveal .slides section.slide-closing .eyebrow {
+      margin: 0 0 28px;
+    }
+
+    .reveal .slides section.slide-closing h2 {
+      font-size: 84px;
+      font-weight: 700;
+      line-height: 1.08;
+      letter-spacing: -0.02em;
+      margin: 0 0 32px;
+      max-width: 1480px;
+    }
+
+    .reveal .slides section.slide-closing .accent-bar {
+      margin: 0 0 44px;
+    }
+
+    .reveal .slides section.slide-closing ul {
+      margin: 0 0 48px;
+    }
+
+    .reveal .slides section.slide-closing li {
+      font-size: 36px;
+      line-height: 1.4;
+    }
+
+    .reveal .slides section.slide-closing .brand-lockup {
+      margin-top: auto;
+    }
+
+
+    /* ---------------------------------------------------------------------
+       Block 4 - Components
+       kpi-grid, kpi-card, kpi-value, kpi-label, kpi-icon, eyebrow,
+       accent-bar, brand-lockup, hero-icon, icon-row.
+       --------------------------------------------------------------------- */
+
+    /* Eyebrow */
+
+    .reveal .slides section .eyebrow {
+      display: block;
+      font-family: var(--ff-mono);
+      font-size: 24px;
+      font-weight: 500;
+      line-height: 1.3;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--blitzy-text-muted-accessible);
+      margin: 0 0 20px;
+    }
+
+    /* KPI grid */
+
+    .reveal .slides section .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      align-items: stretch;
+      gap: 32px;
+      box-sizing: border-box;
+      width: 100%;
+      margin: 32px 0 0;
+      padding: 0;
+      list-style: none;
+      text-align: left;
+    }
+
+    /* KPI card */
+
+    .reveal .slides section .kpi-card {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 16px;
+      box-sizing: border-box;
+      padding: 40px 40px 44px;
+      background: var(--blitzy-surface-2);
+      border: 2px solid var(--blitzy-border-soft);
+      border-radius: 20px;
+      box-shadow: var(--blitzy-shadow-card);
+    }
+
+    .reveal .slides section .kpi-card::before {
+      content: none;
+    }
+
+    .reveal .slides section .kpi-value {
+      display: block;
+      font-family: var(--ff-display);
+      font-size: 76px;
+      font-weight: 700;
+      line-height: 1.02;
+      letter-spacing: -0.03em;
+      color: var(--blitzy-primary-deep);
+      margin: 0;
+    }
+
+    .reveal .slides section .kpi-label {
+      display: block;
+      font-family: var(--ff-body);
+      font-size: 24px;
+      font-weight: 500;
+      line-height: 1.35;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--blitzy-text-muted-accessible);
+      margin: 0;
+    }
+
+    .reveal .slides section .kpi-icon {
+      color: var(--blitzy-primary);
+    }
+
+    .reveal .slides section .kpi-icon:not(svg) {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: none;
+      box-sizing: border-box;
+      width: 72px;
+      height: 72px;
+      border-radius: 18px;
+      background: var(--blitzy-surface-1);
+      border: 1px solid var(--blitzy-border-soft);
+    }
+
+    .reveal .slides section .kpi-icon svg,
+    .reveal .slides section svg.kpi-icon {
+      display: block;
+      flex: none;
+      width: 40px;
+      height: 40px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    /* Accent bar */
+
+    .reveal .slides section .accent-bar {
+      display: block;
+      box-sizing: border-box;
+      width: 240px;
+      height: 10px;
+      margin: 28px 0;
+      padding: 0;
+      border: 0;
+      border-radius: 999px;
+      background: var(--gradient-accent-bar);
+    }
+
+    /* Brand lockup */
+
+    .reveal .slides section .brand-lockup {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-family: var(--ff-display);
+      font-size: 34px;
+      font-weight: 600;
+      line-height: 1.2;
+      letter-spacing: 0.01em;
+      color: var(--blitzy-text-invert);
+      margin: 0;
+    }
+
+    .reveal .slides section .brand-lockup svg {
+      display: block;
+      flex: none;
+      width: 48px;
+      height: 48px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    /* Hero icon */
+
+    .reveal .slides section .hero-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: none;
+      margin: 0 0 36px;
+      color: var(--blitzy-primary);
+    }
+
+    .reveal .slides section .hero-icon svg,
+    .reveal .slides section svg.hero-icon {
+      display: block;
+      flex: none;
+      width: 148px;
+      height: 148px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    /* Icon row */
+
+    .reveal .slides section .icon-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 32px;
+      box-sizing: border-box;
+      width: 100%;
+      margin: 32px 0 0;
+      padding: 0;
+      list-style: none;
+      color: var(--blitzy-primary);
+    }
+
+    .reveal .slides section .icon-row svg {
+      display: block;
+      flex: none;
+      width: 52px;
+      height: 52px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .reveal .slides section .icon-row > li::before {
+      content: none;
+    }
+
+    .reveal .slides section .icon-row > li {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      margin: 0;
+      padding: 0;
+      font-size: 26px;
+      line-height: 1.3;
+    }
+
+
+    /* ---------------------------------------------------------------------
+       Block 5 - Mermaid container
+       Diagrams are authored as <pre class="mermaid">.
+       --------------------------------------------------------------------- */
+
+    .reveal .slides section .mermaid {
+      display: block;
+      box-sizing: border-box;
+      width: 100%;
+      max-width: 1560px;
+      max-height: 760px;
+      margin: 24px 0 0;
+      padding: 0;
+      background: none;
+      border: 0;
+      border-radius: 0;
+      box-shadow: none;
+      font-family: var(--ff-body);
+      font-size: 24px;
+      font-weight: 400;
+      line-height: 1.4;
+      color: var(--blitzy-text);
+      text-align: center;
+      white-space: normal;
+      word-break: normal;
+      overflow-wrap: normal;
+      tab-size: 4;
+      overflow: visible;
+    }
+
+    /* `max-width` carries no `!important`, so Mermaid's own inline cap - the diagram's
+       intrinsic width - wins over this one wherever it is the smaller of the two. A
+       diagram is therefore drawn at its authored size or reduced to fit, never enlarged
+       to fill the column, which is what held one label at 14.6px while another reached
+       35.5px in the same deck. `margin: 0` keeps the left edge on the content column.
+       See docs/testing/DECISION-LOG.md rows D372 and D373. */
+
+    .reveal .slides section .mermaid svg {
+      display: block;
+      width: auto;
+      height: auto;
+      max-width: 100%;
+      max-height: 760px;
+      margin: 0;
+      background: none;
+    }
+
+    .reveal .slides section .mermaid > * {
+      text-align: left;
+    }
+
+    /* Generated diagram labels paint in full; the measured label box does not clip them. */
+
+    .reveal .slides section .mermaid svg foreignObject {
+      overflow: visible;
+    }
+
+    /* Generated diagram label typography */
+
+    .reveal .slides section .mermaid svg p {
+      font-size: inherit;
+      font-weight: inherit;
+      line-height: inherit;
+      letter-spacing: inherit;
+      margin: 0;
+      padding: 0;
+      max-width: none;
+    }
+
+    .reveal .slides section .mermaid svg code {
+      font-family: inherit;
+      font-size: inherit;
+      font-weight: inherit;
+      color: inherit;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: none;
+      white-space: inherit;
+    }
+
+    .reveal .slides section .mermaid svg a {
+      color: inherit;
+      border-bottom: 0;
+    }
+
+
+    /* ---------------------------------------------------------------------
+       Block 6 - Tables
+       --------------------------------------------------------------------- */
+
+    .reveal .slides section table {
+      box-sizing: border-box;
+      width: 100%;
+      margin: 28px 0 0;
+      border-collapse: collapse;
+      border-spacing: 0;
+      table-layout: auto;
+      font-family: var(--ff-body);
+      font-size: 26px;
+      font-weight: 400;
+      line-height: 1.4;
+      color: var(--blitzy-text);
+      background: var(--blitzy-surface-0);
+      border: 1px solid var(--blitzy-border);
+      text-align: left;
+    }
+
+    /* A table carries 28px above it and none below, while body copy carries none above,
+       so a paragraph that follows a table met its bottom border at a gap of zero. The
+       same 28px restores the rhythm on both sides.
+       See docs/testing/DECISION-LOG.md row D374. */
+
+    .reveal .slides section table + p {
+      margin-top: 28px;
+    }
+
+    .reveal .slides section table caption {
+      font-family: var(--ff-mono);
+      font-size: 22px;
+      font-weight: 500;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--blitzy-text-muted-accessible);
+      text-align: left;
+      padding: 0 0 14px;
+    }
+
+    .reveal .slides section table th {
+      font-family: var(--ff-display);
+      font-size: 24px;
+      font-weight: 600;
+      line-height: 1.3;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--blitzy-primary-dark);
+      background: var(--blitzy-surface-1);
+      border: 0;
+      border-bottom: 2px solid var(--blitzy-border);
+      padding: 22px 26px;
+      text-align: left;
+      vertical-align: middle;
+    }
+
+    .reveal .slides section table td {
+      color: var(--blitzy-text);
+      background: none;
+      border: 0;
+      border-bottom: 1px solid var(--blitzy-border);
+      padding: 20px 26px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .reveal .slides section table tbody tr:nth-child(even) td {
+      background: var(--blitzy-surface-3);
+    }
+
+    .reveal .slides section table tbody tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .reveal .slides section table th + th,
+    .reveal .slides section table td + td {
+      border-left: 1px solid var(--blitzy-border);
+    }
+
+    .reveal .slides section table th code,
+    .reveal .slides section table td code {
+      font-size: 0.8em;
+      white-space: nowrap;
+    }
+
+    .reveal .slides section table td .kpi-value {
+      font-size: 34px;
+      letter-spacing: -0.01em;
+    }
+
+
+    /* ---------------------------------------------------------------------
+       Block 7 - Deck layout helpers
+       Layout-only additions for this deck: heading rows, two-column
+       splits, diagram size modifiers, compact tables and non-list
+       icon-row items.
+       --------------------------------------------------------------------- */
+
+    /* Heading row: icon chip beside a heading */
+
+    .reveal .slides section .deck-headrow {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      margin: 0 0 24px;
+    }
+
+    .reveal .slides section .deck-headrow h2 {
+      margin: 0;
+    }
+
+    /* Two-column split */
+
+    .reveal .slides section .deck-split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      align-items: start;
+      gap: 48px;
+      box-sizing: border-box;
+      width: 100%;
+      margin: 20px 0 0;
+    }
+
+    .reveal .slides section .deck-split-table-wide {
+      grid-template-columns: 0.8fr 1.2fr;
+    }
+
+    .reveal .slides section .deck-col {
+      box-sizing: border-box;
+      min-width: 0;
+    }
+
+    .reveal .slides section .deck-col .eyebrow {
+      margin: 0 0 14px;
+    }
+
+    .reveal .slides section .deck-split .mermaid {
+      max-height: 470px;
+      margin: 0;
+    }
+
+    .reveal .slides section .deck-split .mermaid svg {
+      max-height: 470px;
+    }
+
+    .reveal .slides section .deck-split table {
+      margin: 0;
+      font-size: 22px;
+    }
+
+    .reveal .slides section .deck-split table th {
+      font-size: 20px;
+      padding: 16px 18px;
+    }
+
+    .reveal .slides section .deck-split table td {
+      padding: 14px 18px;
+    }
+
+    /* Diagram size modifiers */
+
+    /* No horizontal `auto`: centring inside the 1560px column pushed these two
+       diagrams 68px right of the x=146 content column that every heading, table
+       and paragraph sits on. See docs/testing/DECISION-LOG.md row D373. */
+    .reveal .slides section .mermaid.deck-diagram-sm {
+      max-height: 270px;
+      margin: 20px 0 0;
+    }
+
+    .reveal .slides section .mermaid.deck-diagram-sm svg {
+      max-height: 270px;
+    }
+
+    .reveal .slides section .mermaid.deck-diagram-md {
+      max-height: 620px;
+    }
+
+    .reveal .slides section .mermaid.deck-diagram-md svg {
+      max-height: 620px;
+    }
+
+    /* Compact table */
+
+    .reveal .slides section table.deck-table-compact {
+      font-size: 23px;
+    }
+
+    .reveal .slides section table.deck-table-compact th {
+      font-size: 21px;
+      padding: 16px 20px;
+    }
+
+    .reveal .slides section table.deck-table-compact td {
+      padding: 15px 20px;
+    }
+
+    /* Icon-row items authored as inline elements */
+
+    .reveal .slides section .icon-row > .icon-row-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      margin: 0;
+      padding: 0;
+      font-size: 26px;
+      line-height: 1.3;
+    }
+
+    /* Reduced motion. The reveal configuration keeps the mandated slide
+       transition; this suppresses the movement itself for a viewer whose
+       operating system asks for it, leaving every slide reachable and
+       identical in content. Only `transition` and `animation` are cleared:
+       reveal carries the stage scale-and-centre on a transform of
+       `.reveal .slides` and positions each section with a transform of its
+       own, so clearing `transform` here would move content rather than
+       still it. See docs/testing/DECISION-LOG.md row D362. */
+
+    @media (prefers-reduced-motion: reduce) {
+      .reveal,
+      .reveal .slides,
+      .reveal .slides section,
+      .reveal .slides > section.stack,
+      .reveal .backgrounds .slide-background,
+      .reveal .progress span,
+      .reveal .controls button,
+      .reveal .controls .controls-arrow,
+      .reveal .controls .controls-arrow::before,
+      .reveal .controls .controls-arrow::after {
+        transition: none !important;
+        animation: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="reveal">
+    <!-- role="main" sits on `.slides` rather than on a wrapper because reveal.js
+         manages `aria-hidden` on this element's children, so the landmark and the
+         visibility it exposes stay on the same subtree. See DECISION-LOG.md D423. -->
+    <div class="slides" role="main" aria-label="Executive summary slides">
+
+      <!-- Slide 1 - Title -->
+      <section class="slide-title">
+        <span class="eyebrow">Test Suite Delivery</span>
+        <span class="hero-icon" aria-hidden="true"><i data-lucide="shield-check" aria-hidden="true" focusable="false"></i></span>
+        <h1>From zero executed tests to an enforced quality gate</h1>
+        <h2>Code Skeptic Scanner</h2>
+        <p>Prepared for leadership: what was built, what it now protects, and what remains open.</p>
+        <div class="accent-bar"></div>
+      </section>
+
+      <!-- Slide 2 - Headline KPIs -->
+      <section>
+        <span class="eyebrow">Headline numbers</span>
+        <h2>Where we started, and what we delivered</h2>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <span class="kpi-icon" aria-hidden="true"><i data-lucide="circle-slash" aria-hidden="true" focusable="false"></i></span>
+            <span class="kpi-value">0%</span>
+            <span class="kpi-label">Coverage executed before this work</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon" aria-hidden="true"><i data-lucide="list-checks" aria-hidden="true" focusable="false"></i></span>
+            <span class="kpi-value">1,638</span>
+            <span class="kpi-label">Tests passing now</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon" aria-hidden="true"><i data-lucide="gauge" aria-hidden="true" focusable="false"></i></span>
+            <span class="kpi-value">93%</span>
+            <span class="kpi-label">Backend coverage, 90% bar</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon" aria-hidden="true"><i data-lucide="bug" aria-hidden="true" focusable="false"></i></span>
+            <span class="kpi-value">42</span>
+            <span class="kpi-label">Deliberate defects, all caught</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Slide 3 - Architecture, after state -->
+      <section>
+        <span class="eyebrow">Architecture</span>
+        <h2>Five layers, one boundary</h2>
+        <pre class="mermaid deck-diagram-md" role="img" aria-label="Test architecture after the change: five test layers - backend unit, backend integration, frontend unit, frontend component and browser flows - reach the product code under test through one isolation boundary.">flowchart LR
+  subgraph L["Layers"]
+    A["Backend unit"]
+    B["Backend integration"]
+    C["Frontend unit"]
+    D["Frontend component"]
+    E["Browser flows"]
+  end
+  L --> G["Isolation boundary<br/>nothing leaves the machine<br/>synthetic credentials only<br/>clock held still"]
+  G --> S["Product code"]
+</pre>
+      </section>
+
+      <!-- Slide 4 - Divider -->
+      <section class="slide-divider">
+        <span class="hero-icon" aria-hidden="true"><i data-lucide="wrench" aria-hidden="true" focusable="false"></i></span>
+        <span class="eyebrow">Part one</span>
+        <h2>Restoring a broken test estate</h2>
+        <p>Three test files, three foundations, and not one check that ran.</p>
+        <div class="accent-bar"></div>
+      </section>
+
+      <!-- Slide 5 - Migration, plus the disposition summary -->
+      <section>
+        <span class="eyebrow">Migration</span>
+        <h2>Nothing was quietly dropped</h2>
+        <div class="deck-split deck-split-table-wide">
+          <div class="deck-col">
+            <pre class="mermaid" role="img" aria-label="Migration of the previous test files: three separate foundations became one foundation, on which every suite passes.">flowchart TB
+  A["Three foundations"] --> B["One foundation"]
+  B --> C["All suites pass"]
+</pre>
+          </div>
+          <div class="deck-col">
+            <table aria-label="Migration outcome by number of tests">
+              <thead>
+                <tr>
+                  <th scope="col">Outcome</th>
+                  <th scope="col">Tests</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Rewritten</td>
+                  <td>7</td>
+                </tr>
+                <tr>
+                  <td>Skipped with reason</td>
+                  <td>3</td>
+                </tr>
+                <tr>
+                  <td>Retired with reason</td>
+                  <td>15</td>
+                </tr>
+                <tr>
+                  <td>Total</td>
+                  <td>25</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Slide 6 - Divider -->
+      <section class="slide-divider">
+        <span class="hero-icon" aria-hidden="true"><i data-lucide="file-pen" aria-hidden="true" focusable="false"></i></span>
+        <span class="eyebrow">Part two</span>
+        <h2>Two authorised production changes</h2>
+        <p>Both exist so the suite can load the application under test.</p>
+        <div class="accent-bar"></div>
+      </section>
+
+      <!-- Slide 7 - Contained change -->
+      <section>
+        <span class="eyebrow">Scope control</span>
+        <div class="deck-headrow">
+          <span class="kpi-icon" aria-hidden="true"><i data-lucide="git-compare" aria-hidden="true" focusable="false"></i></span>
+          <h2>Change was deliberately contained</h2>
+        </div>
+        <table class="deck-table-compact" aria-label="Each authorised production change and why it was unavoidable">
+          <thead>
+            <tr>
+              <th scope="col">Change</th>
+              <th scope="col">Why unavoidable</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>One route file became four modules</td>
+              <td>It did not compile</td>
+            </tr>
+            <tr>
+              <td>Four settings given the narrowest defaults</td>
+              <td>Read while running, never declared</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>No behaviour changed; risks are logged.</p>
+      </section>
+
+      <!-- Slide 8 - Divider -->
+      <section class="slide-divider">
+        <span class="hero-icon" aria-hidden="true"><i data-lucide="lock" aria-hidden="true" focusable="false"></i></span>
+        <span class="eyebrow">Part three</span>
+        <h2>Safety by construction</h2>
+        <p>The safeguards are built into the suite, not left to memory.</p>
+        <div class="accent-bar"></div>
+      </section>
+
+      <!-- Slide 9 - Isolation -->
+      <section>
+        <span class="eyebrow">Isolation</span>
+        <h2>Tests cannot reach off the machine</h2>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <span class="kpi-icon" aria-hidden="true"><i data-lucide="cloud-off" aria-hidden="true" focusable="false"></i></span>
+            <span class="kpi-value">Live cloud</span>
+            <span class="kpi-label">Reached by one unguarded call</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon" aria-hidden="true"><i data-lucide="timer-off" aria-hidden="true" focusable="false"></i></span>
+            <span class="kpi-value">300s</span>
+            <span class="kpi-label">An unguarded listener hung</span>
+          </div>
+        </div>
+        <pre class="mermaid deck-diagram-sm" role="img" aria-label="How a test is isolated: a test's calls reach the guards, which answer from fakes held in memory and block anything addressed off the machine.">flowchart LR
+  T["Test"] --> G["Guards"]
+  G --> S["Fakes"]
+  G -.-> X["Outside blocked"]
+</pre>
+      </section>
+
+      <!-- Slide 10 - Divider -->
+      <section class="slide-divider">
+        <span class="hero-icon" aria-hidden="true"><i data-lucide="badge-check" aria-hidden="true" focusable="false"></i></span>
+        <span class="eyebrow">Part four</span>
+        <h2>Proof, not promises</h2>
+        <p>Enforced by the tooling, and shown by deliberate failure.</p>
+        <div class="accent-bar"></div>
+      </section>
+
+      <!-- Slide 11 - Coverage bars and the authored pipeline -->
+      <section>
+        <span class="eyebrow">Enforcement</span>
+        <h2>Runners fail below each bar</h2>
+        <div class="deck-split deck-split-table-wide">
+          <div class="deck-col">
+            <pre class="mermaid" role="img" aria-label="Continuous integration flow: a push starts an independent build job and browser job; the build job runs the coverage gates, and both jobs feed the reports.">flowchart TB
+  P["Push"] --> B["Build job"]
+  P --> E["Browser job"]
+  B --> G["Gates"]
+  G --> R["Reports"]
+  E --> R
+</pre>
+          </div>
+          <div class="deck-col">
+            <table aria-label="Coverage bar enforced for each scope">
+              <thead>
+                <tr>
+                  <th scope="col">Scope</th>
+                  <th scope="col">Bar</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Backend</td>
+                  <td>90%</td>
+                </tr>
+                <tr>
+                  <td>Frontend</td>
+                  <td>80%</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <p>Pipeline authored, not yet run.</p>
+      </section>
+
+      <!-- Slide 12 - Divider -->
+      <section class="slide-divider">
+        <span class="hero-icon" aria-hidden="true"><i data-lucide="triangle-alert" aria-hidden="true" focusable="false"></i></span>
+        <span class="eyebrow">Part five</span>
+        <h2>Limits and open risks</h2>
+        <p>Each one is pinned down as today's behaviour and recorded.</p>
+        <div class="accent-bar"></div>
+      </section>
+
+      <!-- Slide 13 - Documented limits and open risks -->
+      <section>
+        <span class="eyebrow">Documented limits</span>
+        <h2>Five product gaps, not test gaps</h2>
+        <pre class="mermaid deck-diagram-md" role="img" aria-label="Five documented limits: blocked screens are covered by tests skipped with a stated reason; missing cards, erroring lookups and blank charts have today's behaviour pinned down; absent self-reported health is recorded for the backlog.">flowchart TB
+  A["Screens blocked"] --> S["Skipped"]
+  B["Cards missing"] --> P["Pinned"]
+  C["Lookup errors"] --> P
+  D["Charts blank"] --> P
+  E["Health absent"] --> Q["Backlogged"]
+</pre>
+        <p class="deck-note">Also open: lint failures, an empty allowed-origin default, a blocked vendor fix.</p>
+      </section>
+
+      <!-- Slide 14 - Divider -->
+      <section class="slide-divider">
+        <span class="hero-icon" aria-hidden="true"><i data-lucide="compass" aria-hidden="true" focusable="false"></i></span>
+        <span class="eyebrow">Part six</span>
+        <h2>Onboarding and next steps</h2>
+        <p>From a clean machine to a running suite, unaided.</p>
+        <div class="accent-bar"></div>
+      </section>
+
+      <!-- Slide 15 - Onboarding and the delivered-to-backlog timeline -->
+      <section>
+        <span class="eyebrow">Handover</span>
+        <h2>A new engineer starts unaided</h2>
+        <div class="icon-row">
+          <span class="icon-row-item"><i data-lucide="server" aria-hidden="true" focusable="false"></i>Backend</span>
+          <span class="icon-row-item"><i data-lucide="monitor" aria-hidden="true" focusable="false"></i>Frontend</span>
+          <span class="icon-row-item"><i data-lucide="globe" aria-hidden="true" focusable="false"></i>Browser</span>
+          <span class="icon-row-item"><i data-lucide="book-open" aria-hidden="true" focusable="false"></i>Decisions</span>
+        </div>
+        <pre class="mermaid deck-diagram-sm" role="img" aria-label="From delivery to backlog: delivered, then signed off, then one pipeline run, then a prioritised backlog of the known gaps.">flowchart LR
+  A["Delivered"] --> B["Signed off"]
+  B --> C["Pipeline run"]
+  C --> D["Backlog"]
+</pre>
+        <ul>
+          <li>Three commands install, three run.</li>
+          <li>Every pitfall is recorded.</li>
+          <li>A prioritised backlog remains.</li>
+        </ul>
+      </section>
+
+      <!-- Slide 16 - Closing -->
+      <section class="slide-closing">
+        <span class="eyebrow">Outcome</span>
+        <h2>Quality is now measurable</h2>
+        <div class="accent-bar"></div>
+        <ul>
+          <li>From zero executed tests to a green suite.</li>
+          <li>Coverage bars enforced at 90 and 80.</li>
+          <li>Thirty-one browser flows passed, none skipped.</li>
+        </ul>
+        <p class="deck-note">This file loads three pinned third-party libraries, one of them
+          advisory-affected. Nothing it shows comes from outside the file, so that exposure is
+          bounded, and it is recorded with the other open items.</p>
+        <div class="brand-lockup"><i data-lucide="zap" aria-hidden="true" focusable="false"></i><span>Blitzy</span></div>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- Pinned CDN runtimes, each locked to the exact bytes jsDelivr serves for
+       its version by a sha384 subresource integrity hash: reveal.js 107670
+       bytes, mermaid 2571838 bytes, lucide 355975 bytes. A mismatch makes the
+       browser refuse to execute the file.
+
+       The mermaid pin is advisory-affected - 11.4.0 carries published XSS,
+       prototype-pollution and denial-of-service reports - and Rule 4 fixes the
+       version, so the pin is deliberate rather than clean. Every diagram source
+       in this file is a literal, so no untrusted input reaches the renderer.
+       That bound, and the deck's dependence on both pinned origins to render at
+       all, are recorded in docs/testing/SECURITY-GAPS.md §5 (D325). -->
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"
+    integrity="sha384-M/JtqCVlLcK9lwVnBnMXP0V577CBULkjodKsR/PITOe4MSKNbbwqCemEyluOw0+5"
+    crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js"
+    integrity="sha384-Wm9qzEgq4j1jEnuFK2FxKTlwuhbV2QqtGhcchvjDoKxeJ7WWAW7fysBq+1s6myfX"
+    crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"
+    integrity="sha384-ieG+IKD0d/ZPXyCBTMVAbqsQdns8QGJR/e26WMw7M4fkaI/rHcS/YIoi+ah9WGge"
+    crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+
+  <script>
+    (function () {
+      'use strict';
+
+      var DIAGRAM_SELECTOR = 'pre.mermaid';
+      var SOURCE_ATTR = 'data-diagram-source';
+      var PROCESSED_ATTR = 'data-processed';
+
+      /* Mermaid setup */
+
+      mermaid.initialize({
+        startOnLoad: false,
+        /* Mermaid 11.4.0 already defaults to 'strict'; declared so the posture is
+           read off the file rather than inherited from a pinned, advisory-affected
+           version. See docs/testing/SECURITY-GAPS.md row 17 (D325). */
+        securityLevel: 'strict',
+        theme: 'base',
+        /* SVG text labels rather than HTML ones, declared at BOTH levels. Mermaid
+           measures an HTML label with `getBoundingClientRect`, which reports this
+           deck's CSS-transformed stage in screen pixels, so a node was sized by the
+           stage scale while the label inside it was not: the diagram box measured
+           `76 + 200 x scale` in user units, and every label was clipped at every
+           viewport below 1920. An SVG label is measured with `getBBox` in user
+           units, which no ancestor transform can distort.
+           The flowchart-scoped key alone is NOT enough - Mermaid 11.4.0's unified
+           renderer honours it for cluster and edge labels but reads the top-level
+           key when it builds node labels, so both are declared.
+           `flowchart.wrappingWidth` is deliberately left at its 200-user-unit
+           default, which wraps a long authored line onto further lines rather than
+           letting it leave its box.
+           See docs/testing/DECISION-LOG.md rows D372 and D376. */
+        htmlLabels: false,
+        flowchart: {
+          htmlLabels: false
+        },
+        fontFamily: "'Inter', system-ui, sans-serif",
+        themeVariables: {
+          primaryColor: '#F2F0FE',
+          primaryTextColor: '#333333',
+          primaryBorderColor: '#5B39F3',
+          lineColor: '#999999',
+          secondaryColor: '#F4EFF6',
+          tertiaryColor: '#F5F5F5',
+          tertiaryTextColor: '#333333',
+          clusterBkg: '#F5F5F5',
+          clusterBorder: '#D9D9D9',
+          titleColor: '#333333',
+          fontFamily: "'Inter', system-ui, sans-serif",
+          fontSize: '24px'
+        }
+      });
+
+      /* Store the authored diagram markup before the first render replaces it. */
+      function cacheDiagramSources() {
+        var nodes = document.querySelectorAll(DIAGRAM_SELECTOR);
+        for (var i = 0; i < nodes.length; i += 1) {
+          if (!nodes[i].hasAttribute(SOURCE_ATTR)) {
+            nodes[i].setAttribute(SOURCE_ATTR, nodes[i].innerHTML);
+          }
+        }
+      }
+
+      /* Restore the source and clear the rendered marker so a re-run is safe. */
+      function resetDiagram(node) {
+        var source = node.getAttribute(SOURCE_ATTR);
+        if (source === null) {
+          return false;
+        }
+        node.removeAttribute(PROCESSED_ATTR);
+        node.innerHTML = source;
+        return true;
+      }
+
+      /* Smallest `viewBox` extent a real diagram of this deck draws into. Mermaid
+         resolves successfully with a 16-unit box when it measured nothing, and the
+         smallest genuine extent here is 50.8, so this separates the two.
+         See docs/testing/DECISION-LOG.md row D371. */
+      var MIN_DIAGRAM_EXTENT = 24;
+
+      /* A diagram counts as drawn only when all three agree: the marker Mermaid writes,
+         a graph in the DOM, and a `viewBox` large enough to hold one. A marker with no
+         svg, or an svg drawn at the zero-measurement size, is a failed render and stays
+         eligible for another attempt. */
+      function isDrawn(node) {
+        var svg = node.querySelector('svg');
+        if (node.getAttribute(PROCESSED_ATTR) !== 'true' || svg === null) {
+          return false;
+        }
+        var box = (svg.getAttribute('viewBox') || '').split(/[\s,]+/);
+        return box.length === 4
+          && parseFloat(box[2]) > MIN_DIAGRAM_EXTENT
+          && parseFloat(box[3]) > MIN_DIAGRAM_EXTENT;
+      }
+
+      /* Mermaid sizes a diagram from live DOM measurements, so one inside a slide
+         reveal.js has put beyond its view distance - `display: none`, no layout box -
+         measures zero and draws blank. A diagram is rendered only while it has a box;
+         otherwise it waits for the slide change that brings it into view. */
+      function isMeasurable(node) {
+        return node.getClientRects().length > 0
+          && node.getBoundingClientRect().width > 0;
+      }
+
+      function diagramsOn(slide) {
+        if (!slide || typeof slide.querySelectorAll !== 'function') {
+          return [];
+        }
+        return Array.prototype.slice.call(slide.querySelectorAll(DIAGRAM_SELECTOR));
+      }
+
+      /* Diagrams of `scope` awaiting a successful render that can be measured now,
+         restored to their source so `mermaid.run` accepts them. A drawn diagram and an
+         unmeasurable one are both left exactly as they are: the order of these tests is
+         load-bearing, because resetting either would discard a drawing for nothing. */
+      function pendingDiagramsOn(scope) {
+        return diagramsOn(scope).filter(function (node) {
+          return !isDrawn(node) && isMeasurable(node) && resetDiagram(node);
+        });
+      }
+
+      /* Scroll view shows every slide at once, so the render scope is the whole deck
+         rather than one slide. Reveal below pins slide view, so this is the guard for a
+         reader who selects scroll view explicitly. */
+      function renderScope() {
+        if (typeof Reveal.isScrollView === 'function' && Reveal.isScrollView()) {
+          return document;
+        }
+        return Reveal.getCurrentSlide();
+      }
+
+      /* Scope whose diagrams are mid-render, plus the scopes that arrived while that
+         render was still running. A cold load addressed straight at a diagram slide
+         fires every lifecycle path at once, and restoring the source under an
+         in-progress render would tear out the subtree it is drawing into. */
+      var renderingScope = null;
+      var deferredScopes = [];
+
+      function deferScope(scope) {
+        if (scope && deferredScopes.indexOf(scope) === -1) {
+          deferredScopes.push(scope);
+        }
+      }
+
+      function renderDiagrams(scope) {
+        if (renderingScope) {
+          if (scope && renderingScope !== scope) {
+            deferScope(scope);
+          }
+          return;
+        }
+        var target = scope;
+        var nodes = target ? pendingDiagramsOn(target) : [];
+        while (target && !nodes.length) {
+          target = deferredScopes.length ? deferredScopes.shift() : null;
+          nodes = target ? pendingDiagramsOn(target) : [];
+        }
+        if (!target) {
+          return;
+        }
+        renderingScope = target;
+        try {
+          var pending = mermaid.run({ nodes: nodes, suppressErrors: false });
+          if (pending && typeof pending.then === 'function') {
+            pending.then(settleRender, function (error) {
+              console.error('Mermaid render failed', error);
+              settleRender();
+            });
+          } else {
+            settleRender();
+          }
+        } catch (error) {
+          console.error('Mermaid render failed', error);
+          settleRender();
+        }
+      }
+
+      /* Measurability is tested when a render is scheduled, and Mermaid measures when it
+         completes, so a navigation fast enough to hide the slide in between resolves
+         successfully having measured nothing. Discard that drawing rather than leave a
+         graph in the DOM which no reader can see and no error reports.
+         See docs/testing/DECISION-LOG.md row D371. */
+      function discardFailedRenders(scope) {
+        diagramsOn(scope).forEach(function (node) {
+          if (!isDrawn(node) && node.querySelector('svg') !== null) {
+            resetDiagram(node);
+          }
+        });
+      }
+
+      /* Mermaid writes its own stylesheet into every diagram it draws, as a `<style>`
+         child of the svg. Chrome exposes that text as static content, so a reader on a
+         diagram slide is read about 3,581 characters of CSS before reaching the
+         diagram's own description. The `<pre>` already carries `role="img"` and an
+         `aria-label`; hiding the injected stylesheet is what makes that label the whole
+         of the announcement. Done after every render rather than once, because each
+         diagram is drawn when its slide first becomes measurable.
+         See docs/testing/DECISION-LOG.md row D423. */
+      function hideRenderedInternals() {
+        var styles = document.querySelectorAll(DIAGRAM_SELECTOR + ' svg style');
+        Array.prototype.forEach.call(styles, function (node) {
+          node.setAttribute('aria-hidden', 'true');
+        });
+      }
+
+      /* The slide on screen is served first, then every scope a faster-than-render
+         navigation passed over that is still measurable. One that is not waits for the
+         slide change that brings it back into view. */
+      function settleRender() {
+        var rendered = renderingScope;
+        renderingScope = null;
+        if (rendered) {
+          discardFailedRenders(rendered);
+        }
+        hideRenderedInternals();
+        relayout();
+        var current = renderScope();
+        var queued = deferredScopes.indexOf(current);
+        if (queued !== -1) {
+          deferredScopes.splice(queued, 1);
+        }
+        renderDiagrams(current);
+      }
+
+      /* Diagrams are inserted after reveal.js has already measured the slide,
+         so the slide is re-centred once the render resolves. */
+      function relayout() {
+        try {
+          Reveal.layout();
+        } catch (error) {
+          console.error('Reveal layout failed', error);
+        }
+      }
+
+      function renderIcons() {
+        try {
+          lucide.createIcons();
+        } catch (error) {
+          console.error('Lucide render failed', error);
+        }
+      }
+
+      /* Single refresh handler for both reveal.js lifecycle events. */
+      function refresh() {
+        cacheDiagramSources();
+        renderIcons();
+        renderDiagrams(renderScope());
+      }
+
+      /* Reveal setup */
+
+      Reveal.on('ready', refresh);
+      Reveal.on('slidechanged', refresh);
+
+      Reveal.initialize({
+        hash: true,
+        transition: 'slide',
+        controlsTutorial: false,
+        /* The two settings below are the only ones here that differ from reveal's own
+           defaults. See docs/testing/DECISION-LOG.md rows D369, which keeps the fixed
+           stage at every viewport width, and D370, for the back control. */
+        controlsBackArrows: 'visible',
+        scrollActivationWidth: 0,
+        width: 1920,
+        height: 1080
+      }).then(refresh);
+    }());
+  </script>
+</body>
+</html>

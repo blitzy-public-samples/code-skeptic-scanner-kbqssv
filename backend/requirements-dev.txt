@@ -1,0 +1,34 @@
+# test stack
+pytest==8.4.2
+pytest-asyncio==0.26.0
+pytest-cov==6.1.1
+coverage==7.10.7
+httpx==0.27.2
+freezegun==1.5.5
+pytest-xdist==3.8.0
+
+# runtime stack the tests exercise
+fastapi==0.95.2
+starlette==0.27.0
+pydantic==1.10.13
+# CONFIG: pydantic v1 reads Settings.Config.env_file through python-dotenv and
+# raises ImportError whenever a .env exists without it, which the README's
+# Configuration step tells a developer to create.
+python-dotenv==0.21.1
+uvicorn==0.22.0
+tweepy==3.10.0
+openai==0.27.8
+google-cloud-firestore==2.11.1
+google-cloud-bigquery==3.11.4
+google-auth==2.22.0
+google-api-core==2.11.1
+# CLOSURE: tests/conftest.py patches grpc, grpc.aio and grpc._channel directly.
+grpcio==1.80.0
+grpcio-status==1.62.3
+# SECURITY: above CVE-2024-33663 / CVE-2024-33664, fixed in 3.4.0.
+python-jose[cryptography]==3.5.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+pandas==1.5.3
+numpy==1.24.4
+sqlalchemy==1.4.49

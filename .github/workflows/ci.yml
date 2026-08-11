@@ -28,14 +28,46 @@ jobs:
       with:
         node-version: ${{ matrix.node-version }}
 
+    # Both invocations refuse a source distribution. A wheel is unpacked; an sdist is
+    # *built*, which runs its `setup.py` in this job with the workspace and the job
+    # token in reach - so `--only-binary=:all:` is what stops a compromised release of
+    # any of the 76 distributions in this closure executing code here. Verified rather
+    # than assumed: every one of them publishes a wheel for cp39 on manylinux and for
+    # `any`, so the constraint changes nothing about what gets installed.
+    #
+    # pip itself is pinned for the same reason: `--upgrade pip` fetches whatever the
+    # index serves on the day the workflow runs, which is an unpinned artifact in the
+    # one step that installs every other one. 26.0.1 is the newest release that
+    # declares `requires_python >=3.9`, the version this matrix pins, so the pin costs
+    # no available fix today.
+    #
+    # Still open, and deliberately not attempted here: `--require-hashes`, which needs
+    # every transitive distribution pinned with a digest - a lockfile in all but name -
+    # and AAP §0.6.1 fixes this manifest as exact *direct* pins while §0.6.2 declines a
+    # lockfile. docs/testing/SECURITY-GAPS.md row 32 carries what that leaves open.
+    # See docs/testing/DECISION-LOG.md row D411.
     - name: Install Python dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        python -m pip install --upgrade --only-binary=:all: "pip==26.0.1"
+        pip install --only-binary=:all: -r backend/requirements-dev.txt
 
+    # `--ignore-scripts`, on all three Node install steps of this workflow. Of the 112
+    # lifecycle hooks in the two trees, three run for a registry-tarball consumer -
+    # `esbuild@0.18.20`'s postinstall in both trees and `msw@1.3.5`'s - and each is
+    # arbitrary code executing in CI on the strength of a floating transitive
+    # resolution. Neither is needed: measured on a tree installed this way, esbuild's
+    # JS API and CLI both work and `msw/node` imports, and the frontend and end-to-end
+    # suites both pass in full.
+    #
+    # `npm ci` would be the stronger form and is not available: it refuses to run
+    # without a committed lockfile, and AAP §0.6.2 declines committing one (§0.10.5
+    # C7). That is also why no `cache:` is declared on setup-node - it keys the cache on
+    # a lockfile hash. docs/testing/SECURITY-GAPS.md row 32 carries both residuals.
+    # See docs/testing/DECISION-LOG.md row D411.
     - name: Install Node.js dependencies
+      working-directory: frontend
       run: |
-        npm ci
+        npm install --ignore-scripts
 
     - name: Run backend linting and type checking
       run: |
@@ -46,25 +78,434 @@ jobs:
       run: |
         npm run lint
 
-    - name: Run backend tests
+    # Every step from here to the end of this job carries `if: ${{ !cancelled() }}`,
+    # and a step added without it is skipped once the two lint steps above fail. The
+    # condition runs the tests and their reports regardless of the lint conclusion
+    # without masking it - the job still ends red - and stops on cancellation.
+    # See docs/testing/DECISION-LOG.md row D256.
+
+    # `--junitxml` is repeated here, and the repetition is the point: backend/pytest.ini
+    # carries `--junitxml=reports/junit.xml` in `addopts`, so every pytest invocation is a
+    # writer of the canonical result stream, and the value given on the command line wins.
+    # Naming a separate file keeps this probe from replacing a run's results with a
+    # zero-case discovery stub - the same neutraliser the frontend and e2e probes apply.
+    # See docs/testing/DECISION-LOG.md row D355.
+    - name: Check backend collection integrity
+      if: ${{ !cancelled() }}
+      working-directory: backend
       run: |
-        pytest --cov=./ --cov-report=xml
+        set -o pipefail
+        mkdir -p reports
+        pytest --collect-only -q --junitxml=reports/collect-only-junit.xml | tee reports/collect-only.txt
+
+    # The discovery census: which files a run would pick up. It imports none of them,
+    # so it is a census and not a gate - which is why the load step below exists as well.
+    # Ordered first, because a file that discovery does not list is never loaded.
+    - name: Check frontend test discovery
+      if: ${{ !cancelled() }}
+      working-directory: frontend
+      run: |
+        set -o pipefail
+        mkdir -p reports
+        npm run --silent test:list | tee reports/list-tests.txt
+
+    # `jest --listTests` walks the filesystem: it prints the files that match
+    # `testMatch` and loads none of them, so a suite with a broken import or a failing
+    # transformer is listed exactly like a healthy one and readiness passes on a suite
+    # that cannot run. `test:load` is a real load gate - a non-watch run whose name
+    # filter matches nothing. Jest can only know a test's name after transforming the
+    # file, evaluating it at module scope and running its `describe` callbacks, so this
+    # transforms and imports every suite and every module in their import graphs, then
+    # runs zero test bodies. A broken import exits non-zero naming the suite.
+    # `--runInBand` keeps it in one process, which keeps the retained output free of
+    # worker-pool teardown noise that has nothing to do with readiness.
+    # `--reporters=default` replaces the configured reporter list, so the probe cannot
+    # overwrite reports/jest-junit.xml with its own all-skipped stream.
+    # See docs/testing/DECISION-LOG.md and section 9 of frontend/TESTING.md.
+    - name: Check that every frontend suite loads
+      if: ${{ !cancelled() }}
+      working-directory: frontend
+      run: |
+        set -o pipefail
+        mkdir -p reports
+        npm run --silent test:load 2>&1 | tee reports/load-tests.txt
+
+    # This is the canonical backend producer command: the four gated packages in one
+    # invocation, every report the dashboard and Codecov consume, and the in-run
+    # threshold. `--cov-precision=2` makes the number pytest-cov prints agree with the
+    # status it exits on; backend/.coveragerc declares the same precision so a local
+    # run reads identically. backend/pytest.ini carries no coverage option at all,
+    # which is what keeps a bare `pytest` and `--collect-only` ungated.
+    # `--cov-fail-under` is not the whole gate - see the exact gate step below.
+    - name: Run backend tests
+      id: backend_tests
+      if: ${{ !cancelled() }}
+      working-directory: backend
+      run: |
+        pytest --cov=app/core --cov=app/services --cov=app/tasks --cov=app/db --cov-report=term-missing --cov-report=xml --cov-report=json --cov-precision=2 --cov-fail-under=90 --junitxml=reports/junit.xml
+
+    # The binding half of the >=90% gate. `--cov-fail-under` compares
+    # round(total, precision) < threshold, so at two decimals it still admits a total
+    # in [89.995, 90) and at the library default it admits anything from 89.5 up. No
+    # precision closes that band. This step compares the integer counts out of
+    # coverage.json instead - covered * 100 >= 90 * statements as exact rational
+    # arithmetic - and also refuses a report whose measured files fall outside the
+    # four gated packages, which is what stops a whole-tree measurement being read as
+    # the gated figure. Its reading is retained beside the other evidence.
+    # See docs/testing/DECISION-LOG.md and backend/tests/test_coverage_gate.py.
+    - name: Enforce the exact backend coverage gate
+      if: ${{ !cancelled() && steps.backend_tests.outcome == 'success' }}
+      working-directory: backend
+      run: |
+        set -o pipefail
+        mkdir -p reports
+        python tests/coverage_gate.py --coverage-json coverage.json --fail-under 90 \
+          --require-scope app/core --require-scope app/services \
+          --require-scope app/tasks --require-scope app/db | tee reports/coverage-gate.txt
 
     - name: Run frontend tests
+      id: frontend_tests
+      if: ${{ !cancelled() }}
+      working-directory: frontend
       run: |
-        npm test -- --coverage
+        npm run test:ci
+
+    # The last check is an equality, not a non-zero test. A zero-case stub is only the
+    # loudest way this stream can be wrong; a partial run - one file, one `-k` filter -
+    # leaves a non-zero count that no presence or non-zero check can tell apart from a
+    # full run, and every figure the dashboard publishes off it is then wrong while
+    # everything reports success. The collected count from the readiness step above is the
+    # independent witness, so the two are compared.
+    # See docs/testing/DECISION-LOG.md row D355.
+    - name: Verify backend report artifacts
+      if: ${{ !cancelled() && steps.backend_tests.outcome == 'success' }}
+      run: |
+        for f in backend/coverage.xml backend/coverage.json backend/reports/junit.xml backend/reports/collect-only.txt; do
+          if [ ! -s "$f" ]; then
+            echo "::error file=$f::report missing or empty - the upload below would have carried nothing"
+            exit 1
+          fi
+          echo "ok $f ($(wc -c < "$f") bytes)"
+        done
+        declared="$(grep -Eo 'tests="[0-9]+"' backend/reports/junit.xml | head -1 | grep -Eo '[0-9]+')"
+        collected="$(grep -Eo '[0-9]+ tests? collected' backend/reports/collect-only.txt | tail -1 | grep -Eo '[0-9]+')"
+        if [ -z "$declared" ] || [ -z "$collected" ]; then
+          echo "::error file=backend/reports/junit.xml::could not read a case count from the result stream (${declared:-none}) or a collected count from the readiness output (${collected:-none})"
+          exit 1
+        fi
+        if [ "$declared" != "$collected" ]; then
+          echo "::error file=backend/reports/junit.xml::result stream declares $declared test cases while collection found $collected - a partial, filtered or collection-only run overwrote the canonical stream"
+          exit 1
+        fi
+        echo "ok backend/reports/junit.xml declares $declared cases, equal to the $collected collected"
+
+    # The frontend needs a different partial-run comparison from the backend, because
+    # Jest fails the backend's one by construction: a name filter does not drop the
+    # tests it excludes, it registers every identity and re-classifies the excluded ones
+    # as *skipped*. So `tests=` stays at the full count and equals anything the
+    # readiness step could witness - measured, `-t "formatNumber"` still declares
+    # tests="371" while reporting 300 skipped and 71 passed, and would satisfy both a
+    # presence check and a case-count equality.
+    #
+    # The skips themselves are what discriminate, and they carry their own witness. Every
+    # deliberately skipped frontend test is skipped for a stated reason, and that reason
+    # is in the test's own title: the three page suites each build their `it.skip` titles
+    # from a `BLOCKED: ...` constant naming the missing store export. A filter-induced
+    # skip carries no such marker. So every `<skipped>` in the stream is required to be
+    # one of the reasoned skips, which needs no expected count and stays correct as
+    # reasoned skips are added or resolved.
+    # See docs/testing/DECISION-LOG.md row D384, and D355 for the backend counterpart.
+    - name: Verify frontend report artifacts
+      if: ${{ !cancelled() && steps.frontend_tests.outcome == 'success' }}
+      run: |
+        for f in frontend/coverage/coverage-final.json frontend/coverage/coverage-summary.json frontend/reports/jest-junit.xml; do
+          if [ ! -s "$f" ]; then
+            echo "::error file=$f::report missing or empty - the upload below would have carried nothing"
+            exit 1
+          fi
+          echo "ok $f ($(wc -c < "$f") bytes)"
+        done
+        if ! grep -Eq 'tests="[1-9][0-9]*"' frontend/reports/jest-junit.xml; then
+          echo "::error file=frontend/reports/jest-junit.xml::result stream declares no test cases"
+          exit 1
+        fi
+        skipped="$(grep -o '<skipped' frontend/reports/jest-junit.xml | wc -l | tr -d '[:space:]')"
+        reasoned="$(grep -o 'BLOCKED:' frontend/reports/jest-junit.xml | wc -l | tr -d '[:space:]')"
+        if [ "$skipped" != "$reasoned" ]; then
+          echo "::error file=frontend/reports/jest-junit.xml::result stream carries $skipped skipped cases but only $reasoned of them state a BLOCKED: reason - a name-filtered or partial run overwrote the canonical stream, which reports the tests it excluded as skipped"
+          exit 1
+        fi
+        echo "ok frontend/reports/jest-junit.xml declares $skipped skipped cases, all $reasoned of them reasoned"
 
     - name: Upload backend coverage to Codecov
+      if: ${{ !cancelled() && steps.backend_tests.outcome == 'success' }}
       uses: codecov/codecov-action@v1
       with:
-        file: ./coverage.xml
+        file: ./backend/coverage.xml
         flags: backend
+        fail_ci_if_error: true
 
     - name: Upload frontend coverage to Codecov
+      if: ${{ !cancelled() && steps.frontend_tests.outcome == 'success' }}
       uses: codecov/codecov-action@v1
       with:
-        file: ./coverage/coverage-final.json
+        file: ./frontend/coverage/coverage-final.json
         flags: frontend
+        fail_ci_if_error: true
+
+    - name: Upload backend and frontend test evidence
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: build-test-evidence
+        path: |
+          backend/reports/
+          backend/coverage.xml
+          backend/coverage.json
+          frontend/reports/
+          frontend/coverage/
+        if-no-files-found: error
+        retention-days: 30
+
+    # Both values are stated rather than inherited, for the reason the `e2e-junit` upload
+    # states at length: an omitted `retention-days` takes the repository or organisation
+    # default, decided somewhere this file cannot see. These two streams carry no
+    # attachment body, so 30 days matches the other result artifacts.
+    #
+    # `if-no-files-found` is now stated on all three single-file uploads, and the value is
+    # not the same on all three, which is the point. `error` here, because the step that
+    # writes each of these carries `if: ${{ !cancelled() }}` and pytest and jest-junit
+    # both write their stream even when tests fail - so absence means the stream was
+    # removed or the runner never got that far, which is worth an annotation rather than a
+    # log line. `warn` on `e2e-junit`, because the e2e job's browser gate is fail-closed:
+    # when it refuses, `Run end-to-end tests` is skipped and no stream is written, which is
+    # correct behaviour and must not be reported as a missing artifact.
+    # See docs/testing/DECISION-LOG.md rows D386 and D318.
+    - name: Upload backend test results
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: backend-junit
+        path: backend/reports/junit.xml
+        if-no-files-found: error
+        retention-days: 30
+
+    - name: Upload frontend test results
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: frontend-junit
+        path: frontend/reports/jest-junit.xml
+        if-no-files-found: error
+        retention-days: 30
+
+  e2e:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+    env:
+      # Lowest Chromium major version this job accepts. The browser is provisioned out
+      # of band (see the provisioning step below), so this is what keeps "whatever the
+      # image ships" from silently becoming an unusably old build: the resolver reads the
+      # resolved executable's own version and fails the job when it is below this floor,
+      # naming the version it found.
+      E2E_MIN_CHROMIUM_MAJOR: '120'
+
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        persist-credentials: false
+
+    - name: Set up Node.js 16.x
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: 16.x
+
+    # `--ignore-scripts` on both, for the reason the build job's Node install states at
+    # length: three consumer-run postinstall hooks across these two trees, none of them
+    # needed by the suites, each of them arbitrary code in CI. The frontend tree is
+    # installed first because the harness aliases React into `frontend/node_modules`.
+    # See docs/testing/DECISION-LOG.md row D411.
+    - name: Install frontend dependencies
+      working-directory: frontend
+      run: |
+        npm install --ignore-scripts
+
+    - name: Install e2e dependencies
+      working-directory: e2e
+      run: |
+        npm install --ignore-scripts
+
+    # `test:list` launches no browser and must stay ahead of the provisioning gate
+    # below, so a host with no browser still produces a retained readiness result.
+    # See docs/testing/DECISION-LOG.md rows D254 and D255.
+    - name: Check end-to-end test discovery
+      working-directory: e2e
+      run: |
+        set -o pipefail
+        mkdir -p reports
+        npm run --silent test:list | tee reports/list-tests.txt
+
+    # No step in this job downloads a browser. Playwright 1.44.1's downloader does not
+    # verify the TLS chain of the host it fetches from (CVE-2025-59288), so the browser
+    # is provisioned out of band from a channel that signs its artifacts and this job
+    # only resolves and validates the result. The pinned @playwright/test 1.44.1 declares
+    # no install script and e2e/package.json declares no download script, so nothing
+    # here fetches anything and this job must not add one.
+    #
+    # No path is hardcoded. e2e/scripts/require-browser.js searches, in order: an
+    # explicitly provisioned PLAYWRIGHT_CHROMIUM_EXECUTABLE (set it as a repository or
+    # environment variable to pin a specific artifact - a blank or undefined variable
+    # falls through), then CHROME_BIN, then the platform's vendor install locations,
+    # then the exact path chromium.executablePath() reports for this pin. It reads the
+    # resolved build's own version, refuses one below E2E_MIN_CHROMIUM_MAJOR, publishes
+    # the executable through $GITHUB_ENV so the path launched is provably the path
+    # logged, and fails the job when nothing is usable. Its reading is retained as
+    # evidence, so which browser produced a result is recoverable from the artifacts
+    # rather than only from the log.
+    # See docs/testing/DECISION-LOG.md rows D111, D129, D212 and D264, superseded by
+    # D300 for the resolution order, by D301 for this job's provisioning, and by D319
+    # for the digest that binds the validated executable to the launched one.
+    - name: Resolve, validate and record the pre-provisioned browser
+      working-directory: e2e
+      run: |
+        set -o pipefail
+        mkdir -p reports
+        npm run --silent browsers:require -- --min-major "$E2E_MIN_CHROMIUM_MAJOR" | tee reports/browser.txt
+
+    # e2e/scripts/verify-browser.js is the narrower reporter over the same provision: it
+    # checks the executable now published in the environment and, only if none is set,
+    # the Playwright cache path, and exits non-zero when neither is launchable. It
+    # fetches nothing. The runner version is printed from the pinned local binary so the
+    # report records which runner produced the result.
+    - name: Verify the pinned runner against the resolved browser
+      working-directory: e2e
+      run: |
+        set -o pipefail
+        ./node_modules/.bin/playwright --version | tee -a reports/browser.txt
+        npm run --silent browsers:verify | tee -a reports/browser.txt
+
+    # Invoked through the e2e package, never `npx` from the repository root, which can
+    # fetch an unpinned runner. `npm test` runs e2e/node_modules/.bin/playwright, so
+    # the runner is the pinned local binary and the config is the one beside it.
+    # See docs/testing/DECISION-LOG.md rows D49, D197 and D237.
+    - name: Run end-to-end tests
+      id: e2e_run
+      working-directory: e2e
+      run: |
+        npm test
+
+    # The last check is the same equality the backend applies, for the same reason: a
+    # zero-case stream is only the loudest way this one can be wrong, and a filtered run
+    # - one spec, one `--grep`, one retry of a single test - leaves a non-zero count that
+    # no presence check can tell from a full suite. Unlike Jest, Playwright genuinely
+    # drops the tests a filter excludes, so the stream's own case count is the
+    # discriminating figure and the discovery step above is its independent witness.
+    # Measured: a filtered run replaces this stream with a 3-case one and satisfied every
+    # check here before this comparison existed.
+    # The scripts that can run a subset pin `--reporter=line` and write no stream at all,
+    # which is the writer-side half of the same protection.
+    # See docs/testing/DECISION-LOG.md rows D385, D403 and D355.
+    - name: Verify end-to-end report artifacts
+      if: ${{ !cancelled() && steps.e2e_run.outcome != 'skipped' }}
+      working-directory: e2e
+      run: |
+        for f in reports/e2e-junit.xml playwright-report/index.html reports/list-tests.txt; do
+          if [ ! -s "$f" ]; then
+            echo "::error file=e2e/$f::report missing or empty - the upload below would have carried nothing"
+            exit 1
+          fi
+          echo "ok e2e/$f ($(wc -c < "$f") bytes)"
+        done
+        if ! grep -Eq 'tests="[1-9][0-9]*"' reports/e2e-junit.xml; then
+          echo "::error file=e2e/reports/e2e-junit.xml::result stream declares no test cases"
+          exit 1
+        fi
+        declared="$(grep -Eo 'tests="[0-9]+"' reports/e2e-junit.xml | head -1 | grep -Eo '[0-9]+')"
+        discovered="$(grep -Eo 'Total: [0-9]+ tests? in [0-9]+ files?' reports/list-tests.txt | tail -1 | grep -Eo '[0-9]+' | head -1)"
+        if [ -z "$declared" ] || [ -z "$discovered" ]; then
+          echo "::error file=e2e/reports/e2e-junit.xml::could not read a case count from the result stream (${declared:-none}) or a discovered count from the readiness listing (${discovered:-none})"
+          exit 1
+        fi
+        if [ "$declared" != "$discovered" ]; then
+          echo "::error file=e2e/reports/e2e-junit.xml::result stream declares $declared test cases while discovery found $discovered - a partial, filtered, single-spec or list-only run overwrote the canonical stream"
+          exit 1
+        fi
+        echo "ok e2e/reports/e2e-junit.xml declares $declared cases, equal to the $discovered discovered"
+
+    # Seven days, not thirty. The HTML reporter copies every attachment into
+    # playwright-report/data/, including the trace, screenshot and video a failing
+    # test retained - and e2e/tests/configuration.spec.ts drives credential-shaped
+    # values through a real browser, two of whose four fields render as type="text".
+    # Its attachments are redacted and use.trace.sources is off, but a DOM snapshot,
+    # filmstrip and video record what the browser showed and Playwright 1.44 cannot
+    # mask automatic failure evidence. Debugging a failed run is a matter of days, so
+    # the window is days; the result streams below carry no such content and keep 30.
+    # See docs/testing/DECISION-LOG.md row D318.
+    - name: Upload Playwright report
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: playwright-report
+        path: e2e/playwright-report/
+        if-no-files-found: error
+        retention-days: 7
+
+    - name: Upload end-to-end result stream and discovery output
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: e2e-test-evidence
+        path: e2e/reports/
+        if-no-files-found: error
+        retention-days: 30
+
+    - name: Upload end-to-end failure artifacts
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: e2e-failure-artifacts
+        # The three evidence globs rather than the whole directory, because
+        # `e2e/test-results/` is never empty: Playwright writes `.last-run.json` on every
+        # run and leaves one empty directory per test, so a whole-directory path always
+        # matched at least one file and the `warn` below could never fire. Naming the
+        # evidence itself makes the condition mean what it says - on a green run these
+        # match nothing and the step warns, which is the intended signal that there was
+        # no failure to record. Measured both ways: a passing run matches none of the
+        # three, and a controlled failure matches all three.
+        # See docs/testing/DECISION-LOG.md row D387.
+        path: |
+          e2e/test-results/**/*.png
+          e2e/test-results/**/*.webm
+          e2e/test-results/**/trace.zip
+        # `warn`, not `error`: trace, screenshot and video are retained on failure
+        # only, so a fully passing run legitimately writes none of them.
+        if-no-files-found: warn
+        # Seven days, for the same reason as the Playwright report above: this is the
+        # raw trace, screenshot and video, which is the richest carrier of anything a
+        # failing credential test typed. See docs/testing/DECISION-LOG.md row D318.
+        retention-days: 7
+
+    - name: Upload e2e test results
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: e2e-junit
+        path: e2e/reports/e2e-junit.xml
+        # `warn`, and stated rather than inherited, so the value is decided here. This
+        # job's browser gate is fail-closed: when no launchable browser resolves, `Run
+        # end-to-end tests` is skipped and no stream is written at all. That is the gate
+        # working, so `error` here would turn a correct refusal into a second, misleading
+        # failure. The `e2e-test-evidence` upload above keeps `error` and still proves the
+        # readiness and browser-provenance outputs exist. See row D386.
+        if-no-files-found: warn
+        # Stated rather than inherited: with no value here the artifact takes the
+        # repository or organisation default, which is 90 days unless someone changed
+        # it - a longer window than any other artifact this job uploads, decided
+        # somewhere this file cannot see. The result stream carries no attachment
+        # body, so 30 days matches the other result artifacts.
+        retention-days: 30
 
 # HUMAN ASSISTANCE NEEDED
 # Please review the following:

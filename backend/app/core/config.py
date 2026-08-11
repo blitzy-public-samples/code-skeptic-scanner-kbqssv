@@ -1,5 +1,5 @@
 from pydantic import BaseSettings
-from typing import Optional
+from typing import List, Optional
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Twitter Bot"
@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     BIGQUERY_DATASET: str
     DOUBT_RATING_THRESHOLD: float = 0.7
     POPULARITY_THRESHOLD: int = 100
+    ALLOWED_ORIGINS: List[str] = []  # TESTING: undeclared setting
+    ALGORITHM: str = "HS256"  # TESTING: undeclared setting
+    PROJECT_ID: str = ""  # TESTING: undeclared setting
+    TWITTER_TRACK_KEYWORDS: List[str] = []  # TESTING: undeclared setting
 
     class Config:
         env_file = ".env"

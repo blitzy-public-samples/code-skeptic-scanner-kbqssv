@@ -1,0 +1,22 @@
+{
+  "name": "code-skeptic-scanner-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright end-to-end layer for Code Skeptic Scanner, driven by its own self-contained Vite harness. Every script names a local binary, no script downloads a browser, browsers:require is the fail-closed gate that resolves the one it launches, and only the unqualified test script writes the canonical result stream. What each script does: e2e/README.md sections 2 and 3. Why any of it is shaped this way: docs/testing/DECISION-LOG.md rows D111, D129, D236, D252, D254, D264 (superseded by D300), D361 and D403.",
+  "scripts": {
+    "test": "playwright test",
+    "test:list": "playwright test --list --reporter=line",
+    "test:spec": "playwright test --reporter=line",
+    "test:headed": "playwright test --headed --reporter=line",
+    "test:debug": "playwright test --debug --reporter=line",
+    "report": "playwright show-report",
+    "harness": "node ./node_modules/vite/bin/vite.js --config vite.harness.config.ts",
+    "browsers:require": "node ./scripts/require-browser.js",
+    "browsers:verify": "node ./scripts/verify-browser.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.44.1",
+    "vite": "4.5.14",
+    "@vitejs/plugin-react": "4.0.4"
+  }
+}

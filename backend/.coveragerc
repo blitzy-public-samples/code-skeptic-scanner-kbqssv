@@ -1,0 +1,17 @@
+# Coverage configuration for the Code Skeptic Scanner backend suite.
+#
+# Discovered by coverage.py, and so by pytest-cov, when a command is invoked from
+# `backend/`, which is how every backend command in this repository is run.
+#
+# Contract, all of it asserted by `backend/tests/test_coverage_gate.py`:
+#   * `[report] precision = 2` is the number of digits `should_fail_under` rounds a
+#     total to before comparing it with `--cov-fail-under`, and the number of digits
+#     every reported percentage is rendered at.
+#   * no `fail_under` and no `[run] source` are declared here.
+#   * the binding half of the >= 90% gate is `backend/tests/coverage_gate.py`.
+#
+# Reasoning: docs/testing/DECISION-LOG.md rows D226, D291 and D361, and section 12
+# of backend/tests/README.md.
+
+[report]
+precision = 2
